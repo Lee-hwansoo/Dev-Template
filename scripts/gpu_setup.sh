@@ -4,7 +4,7 @@
 # GPU 하드웨어 가속 환경 자동 감지 및 설정 스위칭
 #
 # 지원 장치: NVIDIA, Intel, AMD, CPU(Software)
-# 특징: 
+# 특징:
 #   - Wayland/X11 디스플레이 자동 대응
 #   - NVIDIA 하이브리드 그래픽(PRIME) 최적화 설정
 #   - 가속 실패 시 소프트웨어 렌더링(llvmpipe) 자동 전환
@@ -91,7 +91,7 @@ setup_nvidia() {
     export LIBGL_ALWAYS_SOFTWARE=0
     export __NV_PRIME_RENDER_OFFLOAD=1
     export __GLX_VENDOR_LIBRARY_NAME="nvidia"
-    
+
     local ds=$(detect_display_server)
     log_info "Detected Display Server: $ds"
 
@@ -104,7 +104,7 @@ setup_nvidia() {
         export __GL_VRR_ALLOWED=0
         log_ok "NVIDIA Wayland optimizations applied"
     fi
-    
+
     write_gpu_env
     log_ok "NVIDIA GPU configured"
 }
@@ -179,6 +179,9 @@ setup_auto() {
                 log_warn "Check host X11 permissions (xhost +local:root) or NVIDIA toolkit."
                 setup_software
             fi
+        else
+            log_warn "glxinfo not found. Skipping hardware renderer validation."
+            log_warn "To enable validation, add 'mesa-utils' to dependencies/apt.txt."
         fi
     fi
 

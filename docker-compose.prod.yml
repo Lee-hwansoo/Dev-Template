@@ -15,24 +15,40 @@
 
 # ── 공통 환경변수 (런타임 제어용) ──────────────────────────────────────
 x-common-env: &common-env
-  ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-10}  # 배포망에서는 충돌을 피하기 위해 10 등 명시적 ID 사용 권장
-  RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
-  ROS_MASTER_URI: ${ROS_MASTER_URI:-http://localhost:11311}
-  ROS_HOSTNAME: ${ROS_HOSTNAME:-localhost}
-  ROS_IP: ${ROS_IP:-}
   DISPLAY: ${DISPLAY:-:0}
   WAYLAND_DISPLAY: ${HOST_WAYLAND_DISPLAY:-}
   XDG_RUNTIME_DIR: /tmp/runtime-root
   XAUTHORITY: /root/.Xauthority
+  QT_X11_NO_MITSHM: "1"   # GUI 호환성 및 성능 최적화
+  ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}  # 배포망 충돌 방지를 위해 명시적 ID 사용 권장
+  RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
+  ROS_MASTER_URI: ${ROS_MASTER_URI:-http://localhost:11311}
+  ROS_HOSTNAME: ${ROS_HOSTNAME:-localhost}
+  ROS_IP: ${ROS_IP:-}
+  GPU_MODE: ${GPU_MODE:-auto}
+
+# ── NVIDIA GPU 전용 환경변수 (Anchor) ───────────────────────────────────
+x-nvidia-env: &nvidia-env
+  GPU_MODE: nvidia
+  NVIDIA_VISIBLE_DEVICES: all
+  NVIDIA_DRIVER_CAPABILITIES: all
+  LIBGL_ALWAYS_SOFTWARE: "0"
+  __NV_PRIME_RENDER_OFFLOAD: "1"
+  __GLX_VENDOR_LIBRARY_NAME: nvidia
 
 # ── 공통 서비스 보안 정책 (최소 권한) ───────────────────────────────────
+# 운영 환경에서는 'privileged: true'를 제거하고 필요한 권한만 명시적으로 부여
 x-prod-svc: &prod-svc
   restart: always
-  network_mode: host      # ROS2 DDS/DDS discovery (운영망에서도 필요)
-  ipc: host               # FastDDS zero-copy 통신 최적화
-  # ❌ privileged: true 가 없습니다! 대신 명시적 장치를 마운트합니다.
+  network_mode: host      # ROS2 DDS discovery
+  ipc: host               # Shared memory transport 최적화
+  # privileged: true 대신 명시적 장치를 마운트합니다.
   cap_add:
-    - NET_ADMIN           # SocketCAN 인터페이스 접근 용도
+    - NET_ADMIN           # SocketCAN 인터페이스 접근용
+    - NET_RAW             # ROS 2 DDS Discovery 및 통신 최적화
+    - SYS_PTRACE          # Shared Memory transport (FastDDS 등) 권한
+  devices:
+    - /dev/dri:/dev/dri
 
 # ── NVIDIA GPU 예약 공통 설정 ──────────────────────────────────────────
 x-nvidia-deploy: &nvidia-deploy
@@ -49,67 +65,68 @@ x-prod-volumes: &prod-volumes
   - ${HOST_XAUTHORITY:-${HOME}/.Xauthority}:/root/.Xauthority:ro
   - ${HOST_XDG_RUNTIME_DIR:-/tmp}:/tmp/runtime-root:rw
 
+# ── 공통 빌드 설정 (Bake & Switch) ──────────────────────────────────────
+# 개발 환경(.env)과 동일한 베이스 이미지 및 스냅샷 날짜를 빌드 타임에 주입
+x-prod-build: &prod-build
+  context: .
+  dockerfile: docker/Dockerfile.prod
+  args:
+    LANG: ${LANG:-ko_KR.UTF-8}
+    BASE_IMAGE: ${BASE_IMAGE:-ubuntu:22.04}
+    ROS_DISTRO: ${ROS_DISTRO:-humble}
+    APT_SNAPSHOT_DATE: ${APT_SNAPSHOT_DATE:-latest}
+    UV_VERSION: ${UV_VERSION:-0.10.10}
+    PYTHON_VERSION: ${UV_PYTHON:-3.10}
+    CMAKE_CXX_STANDARD: ${CMAKE_CXX_STANDARD:-17}
+
+# ── 공통 Healthcheck ──────────────────────────────────────────────────────
+x-ros-healthcheck: &ros-healthcheck
+  test: ["CMD", "bash", "-c", "source /opt/ros/${ROS_DISTRO:-humble}/setup.bash && (ros2 --help >/dev/null 2>&1 || roscore -h >/dev/null 2>&1)"]
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 15s
+
 services:
   # ── [ROS] 기본 배포 환경 (Intel/AMD/CPU) ───────────────────────────
   ros-prod:
     <<: *prod-svc
     image: ${COMPOSE_PROJECT_NAME}/ros-runtime:latest
     build:
-      context: .
-      dockerfile: docker/Dockerfile.prod
+      <<: *prod-build
       target: ros-runtime
-      args:
-        ROS_DISTRO: ${ROS_DISTRO:-humble}
-        APT_SNAPSHOT_DATE: ${APT_SNAPSHOT_DATE:-latest}
     profiles: ["ros"]
     environment:
       <<: *common-env
-      GPU_MODE: auto
-    devices:
-      - /dev/dri:/dev/dri
     volumes: *prod-volumes
     command: ["bash", "-c", "echo 'Add your main ROS launch command here' && sleep infinity"]
+    healthcheck: *ros-healthcheck
 
   # ── [ROS] NVIDIA 배포 환경 ──────────────────────────────────────────
   ros-prod-nv:
     <<: *prod-svc
     image: ${COMPOSE_PROJECT_NAME}/ros-runtime-nv:latest
     build:
-      context: .
-      dockerfile: docker/Dockerfile.prod
+      <<: *prod-build
       target: ros-runtime
-      args:
-        ROS_DISTRO: ${ROS_DISTRO:-humble}
-        APT_SNAPSHOT_DATE: ${APT_SNAPSHOT_DATE:-latest}
     profiles: ["ros-nv"]
     environment:
-      <<: *common-env
-      GPU_MODE: nvidia
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: all
-      LIBGL_ALWAYS_SOFTWARE: "0"
-      __NV_PRIME_RENDER_OFFLOAD: "1"
-      __GLX_VENDOR_LIBRARY_NAME: nvidia
+      <<: [*common-env, *nvidia-env]
     deploy: *nvidia-deploy
     volumes: *prod-volumes
     command: ["bash", "-c", "echo 'Add your main ROS launch command here' && sleep infinity"]
+    healthcheck: *ros-healthcheck
 
   # ── [Dev] 순수 C++/Python 배포 환경 (ROS 없음) ──────────────────────
   dev-prod:
     <<: *prod-svc
     image: ${COMPOSE_PROJECT_NAME}/dev-runtime:latest
     build:
-      context: .
-      dockerfile: docker/Dockerfile.prod
+      <<: *prod-build
       target: dev-runtime
-      args:
-        APT_SNAPSHOT_DATE: ${APT_SNAPSHOT_DATE:-latest}
     profiles: ["dev"]
     environment:
       <<: *common-env
-      GPU_MODE: auto
-    devices:
-      - /dev/dri:/dev/dri
     volumes: *prod-volumes
     command: ["bash", "-c", "echo 'Add your main dev executable command here' && sleep infinity"]
 
@@ -118,20 +135,11 @@ services:
     <<: *prod-svc
     image: ${COMPOSE_PROJECT_NAME}/dev-runtime-nv:latest
     build:
-      context: .
-      dockerfile: docker/Dockerfile.prod
+      <<: *prod-build
       target: dev-runtime
-      args:
-        APT_SNAPSHOT_DATE: ${APT_SNAPSHOT_DATE:-latest}
     profiles: ["dev-nv"]
     environment:
-      <<: *common-env
-      GPU_MODE: nvidia
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: all
-      LIBGL_ALWAYS_SOFTWARE: "0"
-      __NV_PRIME_RENDER_OFFLOAD: "1"
-      __GLX_VENDOR_LIBRARY_NAME: nvidia
+      <<: [*common-env, *nvidia-env]
     deploy: *nvidia-deploy
     volumes: *prod-volumes
     command: ["bash", "-c", "echo 'Add your main dev executable command here' && sleep infinity"]

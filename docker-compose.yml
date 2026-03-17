@@ -32,14 +32,23 @@ x-common-env: &common-env
   UV_CACHE_DIR: /cache/uv
   UV_TOOL_DIR: /cache/uv/tools
   UV_LINK_MODE: copy
-  UV_PYTHON: ${UV_PYTHON:-3.11}
+  UV_PYTHON: ${UV_PYTHON:-3.10}
+
+# ── NVIDIA GPU 전용 환경변수 (Anchor) ───────────────────────────────────
+x-nvidia-env: &nvidia-env
+  GPU_MODE: nvidia
+  NVIDIA_VISIBLE_DEVICES: all
+  NVIDIA_DRIVER_CAPABILITIES: all
+  LIBGL_ALWAYS_SOFTWARE: "0"
+  __NV_PRIME_RENDER_OFFLOAD: "1"
+  __GLX_VENDOR_LIBRARY_NAME: nvidia
 
 # ── 공통 빌드 인자 ────────────────────────────────────────────────────────
 x-build-args: &build-args
-  LANG: ${LANG:-en_US.UTF-8}
+  LANG: ${LANG:-ko_KR.UTF-8}
   APT_SNAPSHOT_DATE: ${APT_SNAPSHOT_DATE:-latest}
-  UV_VERSION: ${UV_VERSION:-0.5.14}
-  PYTHON_VERSION: ${UV_PYTHON:-3.11}
+  UV_VERSION: ${UV_VERSION:-0.10.10}
+  PYTHON_VERSION: ${UV_PYTHON:-3.10}
   CMAKE_CXX_STANDARD: ${CMAKE_CXX_STANDARD:-17}
   BASE_IMAGE: ${BASE_IMAGE:-ubuntu:22.04}
   ROS_DISTRO: ${ROS_DISTRO:-humble}
@@ -78,8 +87,7 @@ x-ros-volumes: &ros-volumes
   - ${ROS_INSTALL_VOL:-ros_install_data}:/workspace/install
   - ${ROS_LOG_VOL:-ros_log_data}:/workspace/log
   - ${DOCKER_DEV_CACHE_DIR:-${WORKSPACE_PATH}/.docker_cache}:/cache:rw
-  - /dev:/dev:rw
-  - /sys/devices:/sys/devices:rw
+  # /dev 및 /sys/devices 는 privileged: true 시 자동 접근되므로 명시적 마운트 생략
   - ${GIT_CONFIG_PATH:-${HOME}/.gitconfig}:/root/.gitconfig:ro
   - ${SSH_PATH:-${HOME}/.ssh}:/root/.ssh:ro
 
@@ -95,9 +103,7 @@ x-dev-volumes: &dev-volumes
   - ${DEV_INSTALL_VOL:-dev_install_data}:/workspace/install
   # 컴파일러/패키지 캐시 (호스트 바인드 마운트로 ros2 서비스와 공유 및 영구 유지)
   - ${DOCKER_DEV_CACHE_DIR:-${WORKSPACE_PATH}/.docker_cache}:/cache:rw
-  # 하드웨어 접근
-  - /dev:/dev:rw
-  - /sys/devices:/sys/devices:rw
+  # /dev 및 /sys/devices 는 privileged: true 시 자동 접근되므로 명시적 마운트 생략
   # Git / SSH
   - ${GIT_CONFIG_PATH:-${HOME}/.gitconfig}:/root/.gitconfig:ro
   - ${SSH_PATH:-${HOME}/.ssh}:/root/.ssh:ro
@@ -156,13 +162,7 @@ services:
       - nvidia
     container_name: ${COMPOSE_PROJECT_NAME}_nvidia
     environment:
-      <<: *common-env
-      GPU_MODE: nvidia
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: all
-      LIBGL_ALWAYS_SOFTWARE: "0"
-      __NV_PRIME_RENDER_OFFLOAD: "1"
-      __GLX_VENDOR_LIBRARY_NAME: nvidia
+      <<: [*common-env, *nvidia-env]
     volumes: *dev-volumes
     deploy: *nvidia-deploy
 
@@ -180,18 +180,14 @@ services:
       - ros-nvidia
     container_name: ${COMPOSE_PROJECT_NAME}_ros_nvidia
     environment:
-      <<: *common-env
-      GPU_MODE: nvidia
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: all
-      LIBGL_ALWAYS_SOFTWARE: "0"
-      __NV_PRIME_RENDER_OFFLOAD: "1"
-      __GLX_VENDOR_LIBRARY_NAME: nvidia
+      <<: [*common-env, *nvidia-env]
     volumes: *ros-volumes
     deploy: *nvidia-deploy
     healthcheck: *ros-healthcheck
 
 # Docker Compose가 COMPOSE_PROJECT_NAME을 자동으로 prefix로 붙임
+# 주의: .env에서 XXX_VOL 변수를 수정하여 새로운 네임드 볼륨을 쓰려면 아래에도 선언해야 합니다.
+# (로컬 상대 경로인 ./build 등은 아래 선언 없이 사용 가능합니다.)
 volumes:
   ros_build_data:
   ros_install_data:

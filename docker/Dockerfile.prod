@@ -7,53 +7,50 @@
 ARG BASE_IMAGE=ubuntu:22.04
 ARG ROS_DISTRO=humble
 ARG APT_SNAPSHOT_DATE=latest
-ARG UV_VERSION=0.5.14
-ARG PYTHON_VERSION=3.11
+ARG UV_VERSION=0.10.10
+ARG PYTHON_VERSION=3.10
 ARG CMAKE_CXX_STANDARD=17
 
-# ── Stage 1A: builder-dev ───────────────────────────────────────────────────
-# 순수 C++/Python 소스 코드를 빌드하는 builder 스테이지
-FROM ubuntu:22.04 AS builder-dev
-
-ARG DEBIAN_FRONTEND=noninteractive
+# ── Stage 0A: base-ubuntu (Common Setup) ────────────────────────────────────
+# 모든 스테이지에서 공통으로 사용할 APT 스냅샷 및 보안 설정을 단일화
+FROM ${BASE_IMAGE} AS base-ubuntu
 ARG APT_SNAPSHOT_DATE
+COPY scripts/internal_apt_helper.sh /tmp/internal_apt_helper.sh
+RUN chmod +x /tmp/internal_apt_helper.sh && \
+    /tmp/internal_apt_helper.sh init-apt && \
+    /tmp/internal_apt_helper.sh configure-snapshot ${APT_SNAPSHOT_DATE}
+
+# ── Stage 0B: base-ros (Common Setup) ───────────────────────────────────────
+# ROS 빌드 환경을 위한 공통 부모 스테이지
+FROM ros:${ROS_DISTRO}-ros-base AS base-ros
+ARG APT_SNAPSHOT_DATE
+COPY scripts/internal_apt_helper.sh /tmp/internal_apt_helper.sh
+RUN chmod +x /tmp/internal_apt_helper.sh && /tmp/internal_apt_helper.sh configure-snapshot ${APT_SNAPSHOT_DATE}
+
+# ── Stage 0C: base-ros-runtime (Common Setup) ───────────────────────────────
+# 초경량 ROS 실행 환경(core)을 위한 부모 스테이지
+FROM ros:${ROS_DISTRO}-ros-core AS base-ros-runtime
+ARG APT_SNAPSHOT_DATE
+COPY scripts/internal_apt_helper.sh /tmp/internal_apt_helper.sh
+RUN chmod +x /tmp/internal_apt_helper.sh && /tmp/internal_apt_helper.sh configure-snapshot ${APT_SNAPSHOT_DATE}
+
+# ── Stage 1A: builder-dev (Pure C++/Python Build) ──────────────────────────
+# 소스 코드를 복사하여 릴리즈 모드로 컴파일을 수행 (Bake)
+FROM base-ubuntu AS builder-dev
+ARG DEBIAN_FRONTEND=noninteractive
 ARG UV_VERSION
 ARG PYTHON_VERSION
 ARG CMAKE_CXX_STANDARD
 ARG TARGETARCH
+ARG ROS_DISTRO
 
-# APT 스냅샷 설정
-RUN if [ "${APT_SNAPSHOT_DATE}" != "latest" ]; then \
-        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
-            echo "APT::Snapshot \"${APT_SNAPSHOT_DATE}\";" > /etc/apt/apt.conf.d/99-snapshot; \
-        elif [ -f /etc/apt/sources.list ]; then \
-            echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99-disable-valid-until && \
-            sed -i "s|http://archive.ubuntu.com/ubuntu/|http://snapshot.ubuntu.com/ubuntu/${APT_SNAPSHOT_DATE}/|g" /etc/apt/sources.list && \
-            sed -i "s|http://security.ubuntu.com/ubuntu/|http://snapshot.ubuntu.com/ubuntu/${APT_SNAPSHOT_DATE}/|g" /etc/apt/sources.list && \
-            sed -i "s|http://ports.ubuntu.com/ubuntu-ports/|http://snapshot.ubuntu.com/ubuntu-ports/${APT_SNAPSHOT_DATE}/|g" /etc/apt/sources.list; \
-        fi && \
-        echo "Using APT Snapshot: ${APT_SNAPSHOT_DATE}"; \
-    fi
-
-# 빌드 도구 및 시스템 패키지 설치
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    ca-certificates \
-    cmake \
-    curl \
-    g++ \
-    gcc \
-    git \
-    libasio-dev \
-    libboost-all-dev \
-    libeigen3-dev \
-    libtbb-dev \
-    libyaml-cpp-dev \
+    build-essential ca-certificates cmake curl g++ gcc git \
+    libasio-dev libboost-all-dev libeigen3-dev libtbb-dev libyaml-cpp-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# uv 설치 (Multi-Arch)
 RUN case "${TARGETARCH}" in \
     amd64) UV_ARCH="x86_64-unknown-linux-musl" ;; \
     arm64) UV_ARCH="aarch64-unknown-linux-musl" ;; \
@@ -63,175 +60,136 @@ RUN case "${TARGETARCH}" in \
     | tar -xz -C /usr/local/bin --strip-components=1 "uv-${UV_ARCH}/uv" \
     && chmod +x /usr/local/bin/uv
 
-# 소스 코드 복사
+# 프로젝트 전용 Python 버전 설치 (재현성 보장)
+RUN uv python install ${PYTHON_VERSION}
+
 WORKDIR /workspace
 COPY src/ src/
 COPY dependencies/ dependencies/
 COPY pyproject.toml* uv.lock* ./
 
-# 사용자 정의 apt 패키지 설치 (개발 환경과 동일한 빌드 의존성 확보)
+# 빌드 타임 의존성 설치 (개발 환경과 동일한 패키지 확보)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && \
-    grep -E '^[^#]+' dependencies/apt.txt | sed 's/ # runtime.*//' | xargs -r apt-get install -y --no-install-recommends || true
+    cp dependencies/apt.txt /tmp/apt.txt && \
+    /tmp/internal_apt_helper.sh install-packages all ${ROS_DISTRO}
 
-# Python 의존성 설치 (Strict Determinism: uv.lock 존재 시 --frozen 사용)
 ENV UV_PROJECT_ENVIRONMENT="/workspace/install/.venv"
 RUN uv venv /workspace/install/.venv && \
     . /workspace/install/.venv/bin/activate && \
-    if [ -f uv.lock ]; then \
-        uv sync --frozen; \
-    elif [ -f dependencies/requirements.txt ]; then \
-        uv pip install -r dependencies/requirements.txt; \
-    fi
+    if [ -f uv.lock ]; then uv sync --frozen; \
+    elif [ -f dependencies/requirements.txt ]; then uv pip install -r dependencies/requirements.txt; fi
 
-# C++ 프로젝트 빌드 (Release 모드)
 RUN mkdir -p build && cd build && \
     cmake ../src -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD} && \
     make -j$(nproc) && \
     make install DESTDIR=/workspace/install
 
-# ── Stage 1C: verifier ──────────────────────────────────────────────────
-# 빌드된 아티팩트의 의존성을 검증하는 중간 스테이지
-FROM ubuntu:22.04 AS verifier
-
+# ── Stage 1C: verifier-dev (Binary Sanity Check) ──────────────────────────
+# 빌드된 아티팩트의 런타임 공유 라이브러리 누락 여부를 검증
+FROM base-ubuntu AS verifier-dev
 ARG DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    file \
-    binutils \
-    && rm -rf /var/lib/apt/lists/*
-
+RUN apt-get update && apt-get install -y --no-install-recommends file binutils && rm -rf /var/lib/apt/lists/*
 WORKDIR /workspace
 COPY --from=builder-dev /workspace/install /workspace/install
 COPY scripts/check_deps.sh /opt/scripts/check_deps.sh
-RUN chmod +x /opt/scripts/check_deps.sh
+RUN chmod +x /opt/scripts/check_deps.sh && \
+    /opt/scripts/check_deps.sh /workspace/install && \
+    touch /workspace/verify_dev_success
 
-# 의존성 검증 수행 (실패 시 빌드 중단)
-# RUN /opt/scripts/check_deps.sh /workspace/install
-
-# ── Stage 2A: dev-runtime ───────────────────────────────────────────────────
-# 빌드 도구를 제거하고 최종 결과물만 포함하는 순수 런타임 이미지
-FROM ubuntu:22.04 AS dev-runtime
-
+# ── Stage 1D: verifier-ros (ROS Binary Sanity Check) ──────────────────────
+# 빌드된 ROS 아티팩트의 런타임 공유 라이브러리 누락 여부를 검증
+FROM base-ros-runtime AS verifier-ros
 ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends file binutils && rm -rf /var/lib/apt/lists/*
+WORKDIR /workspace
+COPY --from=builder-ros /workspace/install /workspace/install
+COPY scripts/check_deps.sh /opt/scripts/check_deps.sh
+RUN chmod +x /opt/scripts/check_deps.sh && \
+    /opt/scripts/check_deps.sh /workspace/install && \
+    touch /workspace/verify_ros_success
 
-# apt.txt에서 # runtime 주석이 포함된 줄만 추출하여 설치
+# ── Stage 2A: dev-runtime (Final Execution Image) ──────────────────────────
+# 컴파일러를 제거하고 실행에 필요한 아티팩트와 런타임 라이브러리만 포함 (Switch)
+FROM base-ubuntu AS dev-runtime
+ARG DEBIAN_FRONTEND=noninteractive
+ARG ROS_DISTRO
 COPY dependencies/apt.txt /tmp/apt.txt
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && \
-    grep -E '^[^#]+ # runtime' /tmp/apt.txt | sed 's/ # runtime.*//' | xargs -r apt-get install -y --no-install-recommends && \
-    apt-get install -y --no-install-recommends \
-    libegl1-mesa \
-    libgl1-mesa-dri \
-    libglx-mesa0 \
-    mesa-utils \
+    /tmp/internal_apt_helper.sh install-packages runtime ${ROS_DISTRO} && \
+    apt-get install -y --no-install-recommends libegl1-mesa libgl1-mesa-dri libglx-mesa0 mesa-utils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
-
-# builder-dev에서 컴파일된 아티팩트(/workspace/install)만 복사
-COPY --from=builder-dev /workspace/install /workspace/install
-
-# 런타임 스크립트 복사 (Root 실행)
+COPY --from=verifier-dev /workspace/verify_dev_success /tmp/verify_success
+COPY --from=verifier-dev /workspace/install /workspace/install
 COPY docker/entrypoint.prod.sh /entrypoint.sh
 COPY scripts/gpu_setup.sh /opt/scripts/gpu_setup.sh
 RUN chmod +x /entrypoint.sh /opt/scripts/gpu_setup.sh
-
-ENV PATH="/workspace/install/.venv/bin:/workspace/install/bin:$PATH" \
-    VIRTUAL_ENV="/workspace/install/.venv"
-
+ENV PATH="/workspace/install/.venv/bin:/workspace/install/bin:$PATH" VIRTUAL_ENV="/workspace/install/.venv"
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["bash"]
 
-
-# ── Stage 1B: builder-ros ──────────────────────────────────────────────────
-# ROS 환경이 포함된 컴파일 전용 스테이지
-ARG ROS_DISTRO=humble
-FROM ros:${ROS_DISTRO}-ros-base AS builder-ros
-
+# ── Stage 1B: builder-ros (ROS Bake) ───────────────────────────────────────
+# ROS 워크스페이스를 깨끗한 환경에서 릴리즈 빌드
+FROM base-ros AS builder-ros
 ARG DEBIAN_FRONTEND=noninteractive
 ARG ROS_DISTRO
 ARG PYTHON_VERSION
+ARG CMAKE_CXX_STANDARD
 
-# 빌드 도구 설치
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    cmake \
-    git \
-    python3-colcon-common-extensions \
-    python3-pip \
-    python3-rosdep \
-    python3-vcstool \
-    wget \
+    build-essential cmake git python3-colcon-common-extensions python3-pip python3-rosdep python3-vcstool wget \
     && rm -rf /var/lib/apt/lists/*
 
-# 소스 코드 복사
 WORKDIR /workspace
 COPY src/ src/
 COPY dependencies/ dependencies/
 
-# 사용자 정의 apt 패키지 설치 (개발 환경과 동일한 빌드 의존성 확보)
+# ROS 빌드 타임 의존성 설치
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && \
-    grep -E '^[^#]+' dependencies/apt.txt | sed 's/ # runtime.*//' | xargs -r apt-get install -y --no-install-recommends && \
-    if [ -f dependencies/apt_ros.txt ]; then \
-        grep -E '^[^#]+' dependencies/apt_ros.txt | sed 's/ # runtime.*//' | sed "s/\${ROS_DISTRO}/${ROS_DISTRO}/g" | xargs -r apt-get install -y --no-install-recommends; \
-    fi || true
+    cp dependencies/apt.txt /tmp/apt.txt && \
+    cp dependencies/apt_ros.txt* /tmp/apt_ros.txt 2>/dev/null || true && \
+    /tmp/internal_apt_helper.sh install-packages all ${ROS_DISTRO}
 
-# 서드파티 소스 및 오버레이 병합
+# 외부 저장소 통합 및 오버레이
 RUN if [ -f dependencies/dependencies.repos ]; then \
         mkdir -p src/thirdparty && \
         vcs import src/thirdparty < dependencies/dependencies.repos && \
         (cp -a dependencies/overlay/. src/thirdparty/ 2>/dev/null || true); \
     fi
 
-# rosdep 의존성 설치
 RUN rosdep update --rosdistro ${ROS_DISTRO} && \
     apt-get update && \
     rosdep install --from-paths src --ignore-src -r -y --rosdistro ${ROS_DISTRO}
 
-# ROS 릴리즈 빌드
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 --install-base /workspace/install
+    colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD} --install-base /workspace/install
 
-# ── Stage 2B: ros-runtime ──────────────────────────────────────────────────
-# 최종 배포용 초경량 ROS 이미지
-FROM ros:${ROS_DISTRO}-ros-core AS ros-runtime
-
+# ── Stage 2B: ros-runtime (Final Execution Image) ──────────────────────────
+# ROS 실행에 필요한 최소한의 아티팩트만 포함하는 가벼운 이미지 (Switch)
+FROM base-ros-runtime AS ros-runtime
 ARG DEBIAN_FRONTEND=noninteractive
 ARG ROS_DISTRO
-
-# apt.txt 및 apt_ros.txt에서 # runtime 주석이 포함된 줄만 추출하여 설치
 COPY dependencies/apt.txt /tmp/apt.txt
 COPY dependencies/apt_ros.txt* /tmp/apt_ros.txt
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && \
-    grep -E '^[^#]+ # runtime' /tmp/apt.txt | sed 's/ # runtime.*//' | xargs -r apt-get install -y --no-install-recommends && \
-    if [ -f /tmp/apt_ros.txt ]; then \
-        grep -E '^[^#]+ # runtime' /tmp/apt_ros.txt | sed 's/ # runtime.*//' | sed "s/\${ROS_DISTRO}/${ROS_DISTRO}/g" | xargs -r apt-get install -y --no-install-recommends; \
-    fi && \
-    apt-get install -y --no-install-recommends \
-    libegl1-mesa \
-    libgl1-mesa-dri \
-    libglx-mesa0 \
-    mesa-utils \
+    /tmp/internal_apt_helper.sh install-packages runtime ${ROS_DISTRO} && \
+    apt-get install -y --no-install-recommends libegl1-mesa libgl1-mesa-dri libglx-mesa0 mesa-utils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
-
-# 빌드된 install 폴더(최종 아티팩트)만 복사
-COPY --from=builder-ros /workspace/install /workspace/install
-
-# 권한 설정 및 스크립트 (Root 실행)
+# ROS 바이너리 검증 확인 및 아티팩트 복사
+COPY --from=verifier-ros /workspace/verify_ros_success /tmp/verify_success
+COPY --from=verifier-ros /workspace/install /workspace/install
 COPY docker/entrypoint.prod.sh /entrypoint.sh
 COPY scripts/gpu_setup.sh /opt/scripts/gpu_setup.sh
 RUN chmod +x /entrypoint.sh /opt/scripts/gpu_setup.sh
-
+ENV ROS_DISTRO=${ROS_DISTRO}
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["bash"]

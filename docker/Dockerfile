@@ -7,32 +7,22 @@
 ARG BASE_IMAGE=ubuntu:22.04
 ARG ROS_DISTRO=humble
 ARG APT_SNAPSHOT_DATE=latest
-ARG UV_VERSION=0.5.14
-ARG PYTHON_VERSION=3.11
+ARG UV_VERSION=0.10.10
+ARG PYTHON_VERSION=3.10
 ARG CMAKE_CXX_STANDARD=17
 
 # ── Stage 1: base ─────────────────────────────────────────────────────────
 FROM ${BASE_IMAGE} AS base
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG LANG=en_US.UTF-8
+ARG LANG=ko_KR.UTF-8
 ARG APT_SNAPSHOT_DATE
 
-# APT 캐시 보존 및 스냅샷 설정 (BuildKit 캐시 마운트를 위해 필수)
-RUN rm -f /etc/apt/apt.conf.d/docker-clean \
-    && echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
-
-RUN if [ "${APT_SNAPSHOT_DATE}" != "latest" ]; then \
-        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
-            echo "APT::Snapshot \"${APT_SNAPSHOT_DATE}\";" > /etc/apt/apt.conf.d/99-snapshot; \
-        elif [ -f /etc/apt/sources.list ]; then \
-            echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99-disable-valid-until && \
-            sed -i "s|http://archive.ubuntu.com/ubuntu/|http://snapshot.ubuntu.com/ubuntu/${APT_SNAPSHOT_DATE}/|g" /etc/apt/sources.list && \
-            sed -i "s|http://security.ubuntu.com/ubuntu/|http://snapshot.ubuntu.com/ubuntu/${APT_SNAPSHOT_DATE}/|g" /etc/apt/sources.list && \
-            sed -i "s|http://ports.ubuntu.com/ubuntu-ports/|http://snapshot.ubuntu.com/ubuntu-ports/${APT_SNAPSHOT_DATE}/|g" /etc/apt/sources.list; \
-        fi && \
-        echo "Using APT Snapshot: ${APT_SNAPSHOT_DATE}"; \
-    fi
+# 공통 빌드 헬퍼 복사 및 초기화
+COPY scripts/internal_apt_helper.sh /tmp/internal_apt_helper.sh
+RUN chmod +x /tmp/internal_apt_helper.sh && \
+    /tmp/internal_apt_helper.sh init-apt && \
+    /tmp/internal_apt_helper.sh configure-snapshot ${APT_SNAPSHOT_DATE}
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -151,10 +141,8 @@ RUN case "${TARGETARCH}" in \
     | tar -xz -C /usr/local/bin --strip-components=1 "uv-${UV_ARCH}/uv" \
     && chmod +x /usr/local/bin/uv
 
-RUN if [ -z "${PYTHON_VERSION}" ]; then \
-        if [ "${ROS_DISTRO}" = "noetic" ]; then PYTHON_VERSION="3.8"; else PYTHON_VERSION="3.10"; fi \
-    fi \
-    && uv python install ${PYTHON_VERSION}
+# 주입된 PYTHON_VERSION을 사용하여 uv가 관리하는 Python 설치
+RUN uv python install ${PYTHON_VERSION}
 
 # ── Stage 6: common ───────────────────────────────────────────────────────
 # 공통 환경 설정
@@ -164,9 +152,6 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG CMAKE_CXX_STANDARD
 ARG ROS_DISTRO
 ARG PYTHON_VERSION
-RUN if [ -z "${PYTHON_VERSION}" ]; then \
-        if [ "${ROS_DISTRO}" = "noetic" ]; then PYTHON_VERSION="3.8"; else PYTHON_VERSION="3.10"; fi \
-    fi && echo "Using Python ${PYTHON_VERSION} for ${ROS_DISTRO}"
 
 # 캐시 디렉토리 (named volume 초기화용 — entrypoint.sh가 mkdir -p로 보완)
 RUN mkdir -p /cache/ccache /cache/uv /workspace/install
@@ -206,6 +191,7 @@ CMD ["bash"]
 # make build-dev → --target dev
 FROM common AS dev
 
+ARG ROS_DISTRO
 RUN mkdir -p /workspace/src
 
 ENV COLCON_HOME=/workspace
@@ -214,9 +200,7 @@ ENV COLCON_HOME=/workspace
 COPY dependencies/apt.txt /tmp/apt.txt
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update \
-    && sed -e '/^#/d' -e '/^$/d' /tmp/apt.txt | xargs -r apt-get install -y --no-install-recommends \
-    || echo "No additional user apt packages installed."
+    /tmp/internal_apt_helper.sh install-packages all ${ROS_DISTRO}
 
 WORKDIR /workspace
 
@@ -226,18 +210,15 @@ FROM common AS ros-base
 ARG DEBIAN_FRONTEND=noninteractive
 ARG ROS_DISTRO
 
-# ROS 1 (noetic) vs ROS 2 (humble) 동적 리포지토리 추가 및 패키지 설치
-RUN if [ "${ROS_DISTRO}" = "noetic" ]; then \
-        curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | apt-key add - && \
-        echo "deb http://packages.ros.org/ros/ubuntu $(lsb_release -cs) main" > /etc/apt/sources.list.d/ros1-latest.list && \
-        apt-get update && apt-get install -y --no-install-recommends \
+# ROS 1 (noetic) vs ROS 2 (humble) 리포지토리 설정 및 필수 패키지 설치
+RUN /tmp/internal_apt_helper.sh setup-ros-repo ${ROS_DISTRO} && \
+    if [ "${ROS_DISTRO}" = "noetic" ]; then \
+        apt-get install -y --no-install-recommends \
             ros-${ROS_DISTRO}-desktop-full \
             python3-rosdep python3-rosinstall python3-rosinstall-generator python3-wstool build-essential \
             python3-catkin-tools python3-osrf-pycommon python3-colcon-common-extensions python3-vcstool; \
     else \
-        curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key | gpg --dearmor -o /usr/share/keyrings/ros-archive-keyring.gpg && \
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" > /etc/apt/sources.list.d/ros2.list && \
-        apt-get update && apt-get install -y --no-install-recommends \
+        apt-get install -y --no-install-recommends \
             ros-${ROS_DISTRO}-desktop \
             ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
             ros-${ROS_DISTRO}-gazebo-ros-pkgs \
@@ -267,11 +248,7 @@ COPY dependencies/apt.txt /tmp/apt.txt
 COPY dependencies/apt_ros.txt* /tmp/apt_ros.txt
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && \
-    grep -E '^[^#]+' /tmp/apt.txt | sed 's/ # runtime.*//' | xargs -r apt-get install -y --no-install-recommends && \
-    if [ -f /tmp/apt_ros.txt ]; then \
-        grep -E '^[^#]+' /tmp/apt_ros.txt | sed 's/ # runtime.*//' | sed "s/\${ROS_DISTRO}/${ROS_DISTRO}/g" | xargs -r apt-get install -y --no-install-recommends; \
-    fi || echo "No additional user ROS apt packages installed."
+    /tmp/internal_apt_helper.sh install-packages all ${ROS_DISTRO}
 
 # 서드파티 의존성 빌드 타임 패키징 (오버레이 포함)
 COPY dependencies/ /tmp/dependencies/

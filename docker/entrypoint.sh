@@ -21,7 +21,7 @@ log_info "GPU mode: ${GPU_MODE:-auto}"
 source /docker_dev/scripts/gpu_setup.sh "${GPU_MODE:-auto}"
 
 # GPU env를 /root/.gpu_env.sh에 기록하여 .bashrc에서 source 하도록 유지
-# (다중 터미널 접속 시 활용)
+# (다중 터미널 접속 시 활용 — gpu_setup.sh의 일부 코드 경로에서 write_gpu_env 미호출 방지)
 cat > /root/.gpu_env.sh << EOF
 # __GPU_ENV_START (managed by entrypoint.sh)
 export LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-0}

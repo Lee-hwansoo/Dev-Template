@@ -19,6 +19,7 @@ COMPOSE := docker compose
 # 진단 엔진 연동
 DETECTOR := bash scripts/env_detector.sh
 $(foreach line,$(shell $(DETECTOR)),$(eval $(line)))
+export HAS_NVIDIA HAS_TOOLKIT HOST_ARCH DISPLAY_TYPE HOST_XDG_RUNTIME_DIR HOST_WAYLAND_DISPLAY HOST_XAUTHORITY
 
 .PHONY: help setup check xauth status \
         build-ros build-dev rebuild-ros rebuild-dev \
@@ -81,6 +82,12 @@ status: check
 	@echo "  ROS 버전:      $(ROS_DISTRO)"
 	@echo "  아키텍처:      $(HOST_ARCH)"
 	@echo "  디스플레이:    $(DISPLAY) ($(DISPLAY_TYPE))"
+	@if [ "$(DISPLAY_TYPE)" = "Wayland" ]; then \
+		echo "  Wayland 소켓:  $(HOST_XDG_RUNTIME_DIR)/$(HOST_WAYLAND_DISPLAY)"; \
+		if [ ! -S "$(HOST_XDG_RUNTIME_DIR)/$(HOST_WAYLAND_DISPLAY)" ]; then \
+			echo "  [경고] Wayland 소켓 파일을 찾을 수 없습니다."; \
+		fi \
+	fi
 	@echo "  ---------------------------------------------------"
 	@echo "  [GPU 가속 상태]"
 	@if [ "$(HAS_NVIDIA)" = "true" ]; then \
@@ -116,15 +123,16 @@ check-host:
 	fi
 
 xauth:
-	@touch $(HOST_XAUTHORITY)
-	@if command -v xauth &> /dev/null && [ -n "$$DISPLAY" ]; then \
-		xauth nlist $$DISPLAY | sed -e 's/^..../ffff/' | xauth -f $(HOST_XAUTHORITY) nmerge - 2>/dev/null || true; \
+	@if [ "$(DISPLAY_TYPE)" = "X11" ] && command -v xauth &> /dev/null && [ -n "$(DISPLAY)" ]; then \
+		touch $(HOST_XAUTHORITY) 2>/dev/null || true; \
+		xauth nlist $(DISPLAY) | sed -e 's/^..../ffff/' | xauth -f $(HOST_XAUTHORITY) nmerge - 2>/dev/null || true; \
 	fi
 	@xhost +local:root > /dev/null 2>&1 || true
 
 check: check-host
 	@if [ ! -f .env ]; then echo "  오류: .env가 없습니다. make setup 실행 필요"; exit 1; fi
-	@mkdir -p ~/.ssh && touch ~/.gitconfig $(HOST_XAUTHORITY)
+	@mkdir -p ~/.ssh && touch ~/.gitconfig
+	@if [ ! -f $(HOST_XAUTHORITY) ]; then touch $(HOST_XAUTHORITY) 2>/dev/null || true; fi
 
 # =============================================================================
 # 빌드 (Build)
@@ -164,32 +172,40 @@ dev: check xauth
 	fi
 	@echo "  셸 진입: make dev-shell (기존 창) 또는 make dev-term (새 창)"
 
+# 필터 정의
+ROS_FILTER := $(COMPOSE_PROJECT_NAME)_ros
+DEV_FILTER := $(COMPOSE_PROJECT_NAME)_basic\|$(COMPOSE_PROJECT_NAME)_nvidia
+
 ros-shell: check
-	@if docker ps --format '{{.Names}}' | grep -q "$(COMPOSE_PROJECT_NAME)_ros"; then \
-		docker exec -it $$(docker ps --filter "name=$(COMPOSE_PROJECT_NAME)_ros" --format "{{.Names}}" | head -n 1) bash; \
+	@CONTAINER=$$(docker ps --filter "name=$(ROS_FILTER)" --format "{{.Names}}" | head -n 1); \
+	if [ -n "$$CONTAINER" ]; then \
+		docker exec -it $$CONTAINER bash; \
 	else \
 		echo "  실행 중인 ROS 컨테이너가 없습니다. make ros를 먼저 실행하세요."; \
 	fi
 
 ros-term: check xauth
-	@if docker ps --format '{{.Names}}' | grep -q "$(COMPOSE_PROJECT_NAME)_ros"; then \
+	@CONTAINER=$$(docker ps --filter "name=$(ROS_FILTER)" --format "{{.Names}}" | head -n 1); \
+	if [ -n "$$CONTAINER" ]; then \
 		echo "  새 창(Terminator)을 엽니다..."; \
-		docker exec -d $$(docker ps --filter "name=$(COMPOSE_PROJECT_NAME)_ros" --format "{{.Names}}" | head -n 1) terminator; \
+		docker exec -d $$CONTAINER terminator; \
 	else \
 		echo "  실행 중인 ROS 컨테이너가 없습니다. make ros를 먼저 실행하세요."; \
 	fi
 
 dev-shell: check
-	@if docker ps --format '{{.Names}}' | grep -q "$(COMPOSE_PROJECT_NAME)_basic\|$(COMPOSE_PROJECT_NAME)_nvidia"; then \
-		docker exec -it $$(docker ps --filter "name=$(COMPOSE_PROJECT_NAME)_basic\|$(COMPOSE_PROJECT_NAME)_nvidia" --format "{{.Names}}" | head -n 1) bash; \
+	@CONTAINER=$$(docker ps --filter "name=$(DEV_FILTER)" --format "{{.Names}}" | head -n 1); \
+	if [ -n "$$CONTAINER" ]; then \
+		docker exec -it $$CONTAINER bash; \
 	else \
 		echo "  실행 중인 개발 컨테이너가 없습니다. make dev를 먼저 실행하세요."; \
 	fi
 
 dev-term: check xauth
-	@if docker ps --format '{{.Names}}' | grep -q "$(COMPOSE_PROJECT_NAME)_basic\|$(COMPOSE_PROJECT_NAME)_nvidia"; then \
+	@CONTAINER=$$(docker ps --filter "name=$(DEV_FILTER)" --format "{{.Names}}" | head -n 1); \
+	if [ -n "$$CONTAINER" ]; then \
 		echo "  새 창(Terminator)을 엽니다..."; \
-		docker exec -d $$(docker ps --filter "name=$(COMPOSE_PROJECT_NAME)_basic\|$(COMPOSE_PROJECT_NAME)_nvidia" --format "{{.Names}}" | head -n 1) terminator; \
+		docker exec -d $$CONTAINER terminator; \
 	else \
 		echo "  실행 중인 개발 컨테이너가 없습니다. make dev를 먼저 실행하세요."; \
 	fi
@@ -220,17 +236,20 @@ dev-prod: check
 # =============================================================================
 down:
 	$(COMPOSE) down
+	@if [ -f docker-compose.prod.yml ]; then \
+		$(COMPOSE) -f docker-compose.prod.yml down 2>/dev/null || true; \
+	fi
 
 logs:
-	@if [ -n "$$(docker compose ps --status running -q 2>/dev/null)" ]; then \
+	@if [ -n "$$($(COMPOSE) ps --status running -q 2>/dev/null)" ]; then \
 		echo "  [Dev] 개발 환경 로그를 스트리밍합니다..."; \
-		docker compose logs -f --tail 100; \
-	elif [ -f docker-compose.prod.yml ] && [ -n "$$(docker compose -f docker-compose.prod.yml ps --status running -q 2>/dev/null)" ]; then \
+		$(COMPOSE) logs -f --tail 100; \
+	elif [ -f docker-compose.prod.yml ] && [ -n "$$($(COMPOSE) -f docker-compose.prod.yml ps --status running -q 2>/dev/null)" ]; then \
 		echo "  [Prod] 배포 환경 로그를 스트리밍합니다..."; \
-		docker compose -f docker-compose.prod.yml logs -f --tail 100; \
+		$(COMPOSE) -f docker-compose.prod.yml logs -f --tail 100; \
 	else \
 		echo "  [Dev] 개발 환경 로그를 스트리밍합니다..."; \
-		docker compose logs -f --tail 100; \
+		$(COMPOSE) logs -f --tail 100; \
 	fi
 
 clean-builder:
@@ -239,32 +258,21 @@ clean-builder:
 
 clean: down
 	$(COMPOSE) down -v
-	@docker volume rm $(COMPOSE_PROJECT_NAME)_ros_build_data 2>/dev/null || true
-	@docker volume rm $(COMPOSE_PROJECT_NAME)_ros_install_data 2>/dev/null || true
-	@docker volume rm $(COMPOSE_PROJECT_NAME)_ros_log_data 2>/dev/null || true
-	@docker volume rm $(COMPOSE_PROJECT_NAME)_dev_build_data 2>/dev/null || true
-	@docker volume rm $(COMPOSE_PROJECT_NAME)_dev_install_data 2>/dev/null || true
+	@echo "  $(COMPOSE_PROJECT_NAME) 관련 모든 네임드 볼륨을 삭제합니다..."
+	@VOLUMES=$$(docker volume ls -q --filter "name=$(COMPOSE_PROJECT_NAME)"); \
+	if [ -n "$$VOLUMES" ]; then \
+		docker volume rm $$VOLUMES 2>/dev/null || true; \
+	fi
 
 clean-cache:
-	@CACHE_DIR=$(WORKSPACE_PATH)/.docker_cache; \
+	@CACHE_DIR=$(DOCKER_DEV_CACHE_DIR); \
+	if [ -z "$$CACHE_DIR" ]; then CACHE_DIR=$(WORKSPACE_PATH)/.docker_cache; fi; \
 	if [ -d "$$CACHE_DIR" ]; then \
 		echo "  호스트 측 도커 캐시 폴더($$CACHE_DIR)를 삭제합니다..."; \
 		sudo rm -rf "$$CACHE_DIR"; \
 	fi
 
-clean-all: down
-	@echo "  $(COMPOSE_PROJECT_NAME) 관련 모든 리소스(컨테이너, 볼륨)를 삭제합니다..."
-	$(COMPOSE) down -v --remove-orphans
-	@echo "  잔여 프로젝트 볼륨 강제 삭제 중..."
-	@VOLUMES=$$(docker volume ls -q --filter "name=$(COMPOSE_PROJECT_NAME)"); \
-	if [ -n "$$VOLUMES" ]; then \
-		docker volume rm $$VOLUMES 2>/dev/null || true; \
-	fi
-	@CACHE_DIR=$(WORKSPACE_PATH)/.docker_cache; \
-	if [ -d "$$CACHE_DIR" ]; then \
-		read -p "  $$CACHE_DIR (ccache, uv 등)도 삭제하시겠습니까? [y/N] " ans; \
-		if [ "$$ans" = "y" ] || [ "$$ans" = "Y" ]; then \
-			sudo rm -rf "$$CACHE_DIR"; \
-		fi \
-	fi
+clean-all: clean clean-cache
+	@echo "  $(COMPOSE_PROJECT_NAME) 관련 모든 도커 빌드 캐시를 정리합니다..."
+	docker builder prune -a -f
 
