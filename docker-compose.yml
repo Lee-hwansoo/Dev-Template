@@ -11,12 +11,16 @@
 #   - 하드웨어 가속(GPU), GUI(X11/Wayland) 자동 연동
 #   - 호스트 네트워크 모드 (ROS DDS 통신 최적화)
 #   - ccache/uv 캐시 호스트 볼륨 공유
+#
+# 💡 팁: 'make ros' 등을 통한 실행을 권장합니다. 'docker compose up'을 직접 실행하면
+#   Makefile의 호스트 환경 진단(Wayland 소켓 경로 등)이 누락될 수 있습니다.
 # =============================================================================
 
 # ── 공통 환경변수 (map 형식 — anchor merge로 선택적 override 가능) ─────────
 # GPU 프로파일 서비스는 GPU_MODE만 override, 나머지는 여기서 상속
 x-common-env: &common-env
   LANG: ${LANG:-ko_KR.UTF-8}
+  TZ: ${TZ:-Asia/Seoul}
   DISPLAY: ${DISPLAY:-:0}
   WAYLAND_DISPLAY: ${HOST_WAYLAND_DISPLAY:-}
   XDG_RUNTIME_DIR: /tmp/runtime-root

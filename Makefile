@@ -19,7 +19,7 @@ COMPOSE := docker compose
 # 진단 엔진 연동
 DETECTOR := bash scripts/env_detector.sh
 $(foreach line,$(shell $(DETECTOR)),$(eval $(line)))
-export HAS_NVIDIA HAS_TOOLKIT HOST_ARCH DISPLAY_TYPE HOST_XDG_RUNTIME_DIR HOST_WAYLAND_DISPLAY HOST_XAUTHORITY
+export HAS_NVIDIA HAS_TOOLKIT HAS_DRI HOST_ARCH DISPLAY_TYPE HOST_XDG_RUNTIME_DIR HOST_WAYLAND_DISPLAY HOST_XAUTHORITY
 
 .PHONY: help setup check xauth status \
         build-ros build-dev rebuild-ros rebuild-dev \
@@ -39,7 +39,7 @@ help:
 	@echo "    make setup          : .env 초기화 및 기본 환경 구성 (최초 1회 실행)"
 	@echo "    make status         : 현재 프로젝트 설정, GPU 가속, 디스플레이 상태 확인"
 	@echo ""
-	@echo "  [ 개발 환경 (Development) ] - 💡 GPU 및 GUI(X11/Wayland) 자동 감지 적용"
+	@echo "  [ 개발 환경 (Development) ] - GPU 및 GUI(X11/Wayland) 자동 감지 적용"
 	@echo "    make ros            : ROS 개발 컨테이너 백그라운드 실행"
 	@echo "    make ros-shell      : 실행 중인 ROS 컨테이너 셸(bash) 진입"
 	@echo "    make ros-term       : 새 창(Terminator)으로 ROS 셸 실행 (GUI 필수)"
@@ -49,7 +49,7 @@ help:
 	@echo "    make build-ros      : ROS용 도커 이미지 빌드"
 	@echo "    make build-dev      : 순수 개발용 도커 이미지 빌드"
 	@echo ""
-	@echo "  [ 배포 환경 (Production) ] - 💡 Bake & Switch 전략 기반 초경량 런타임"
+	@echo "  [ 배포 환경 (Production) ] - Bake & Switch 전략 기반 런타임"
 	@echo "    make ros-prod       : 배포용 ROS 서비스 실행"
 	@echo "    make dev-prod       : 배포용 순수 C++/Python 서비스 실행"
 	@echo ""
@@ -59,7 +59,7 @@ help:
 	@echo "    make clean          : 빌드 결과물(build, install, log) 도커 볼륨 삭제"
 	@echo "    make clean-cache    : 호스트 측 .docker_cache (ccache, uv) 완전 삭제"
 	@echo "    make clean-builder  : 도커 빌드 캐시(BuildKit) 정리 (디스크 용량 확보)"
-	@echo "    make clean-all      : ⚠️ 프로젝트 관련 모든 도커 리소스(볼륨/이미지) 완전 초기화"
+	@echo "    make clean-all      : 프로젝트 관련 모든 도커 리소스(볼륨/이미지) 완전 초기화"
 	@echo "======================================================================"
 
 # =============================================================================
@@ -172,9 +172,9 @@ dev: check xauth
 	fi
 	@echo "  셸 진입: make dev-shell (기존 창) 또는 make dev-term (새 창)"
 
-# 필터 정의
+# 필터 정의 (Go 정규식 준수)
 ROS_FILTER := $(COMPOSE_PROJECT_NAME)_ros
-DEV_FILTER := $(COMPOSE_PROJECT_NAME)_basic\|$(COMPOSE_PROJECT_NAME)_nvidia
+DEV_FILTER := $(COMPOSE_PROJECT_NAME)_(basic|nvidia)
 
 ros-shell: check
 	@CONTAINER=$$(docker ps --filter "name=$(ROS_FILTER)" --format "{{.Names}}" | head -n 1); \
@@ -217,6 +217,9 @@ ros-prod: check
 	@if [ "$(HAS_NVIDIA)" = "true" ] && [ "$(HAS_TOOLKIT)" = "true" ]; then \
 		echo "  NVIDIA 모드로 ROS 배포 서비스를 시작합니다..."; \
 		$(COMPOSE) -f docker-compose.prod.yml --profile ros-nv up -d; \
+	elif [ "$(HAS_DRI)" = "true" ]; then \
+		echo "  iGPU(Intel/AMD) 가속 모드로 ROS 배포 서비스를 시작합니다..."; \
+		$(COMPOSE) -f docker-compose.prod.yml --profile ros-igpu up -d; \
 	else \
 		echo "  기본 모드로 ROS 배포 서비스를 시작합니다..."; \
 		$(COMPOSE) -f docker-compose.prod.yml --profile ros up -d; \
@@ -226,6 +229,9 @@ dev-prod: check
 	@if [ "$(HAS_NVIDIA)" = "true" ] && [ "$(HAS_TOOLKIT)" = "true" ]; then \
 		echo "  NVIDIA 모드로 순수 배포 서비스를 시작합니다..."; \
 		$(COMPOSE) -f docker-compose.prod.yml --profile dev-nv up -d; \
+	elif [ "$(HAS_DRI)" = "true" ]; then \
+		echo "  iGPU(Intel/AMD) 가속 모드로 순수 배포 서비스를 시작합니다..."; \
+		$(COMPOSE) -f docker-compose.prod.yml --profile dev-igpu up -d; \
 	else \
 		echo "  기본 모드로 순수 배포 서비스를 시작합니다..."; \
 		$(COMPOSE) -f docker-compose.prod.yml --profile dev up -d; \

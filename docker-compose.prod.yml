@@ -19,6 +19,7 @@
 # ── 공통 환경변수 (런타임 제어용) ──────────────────────────────────────
 x-common-env: &common-env
   LANG: ${LANG:-ko_KR.UTF-8}
+  TZ: ${TZ:-Asia/Seoul}
   DISPLAY: ${DISPLAY:-:0}
   WAYLAND_DISPLAY: ${HOST_WAYLAND_DISPLAY:-}
   XDG_RUNTIME_DIR: /tmp/runtime-root
@@ -92,7 +93,7 @@ x-ros-healthcheck: &ros-healthcheck
   start_period: 15s
 
 services:
-  # ── [ROS] 기본 배포 환경 (Intel/AMD/CPU) ───────────────────────────
+  # ── [ROS] 기본 배포 환경 (CPU 전용 - 가속 없음) ──────────────────────
   ros-prod:
     <<: *prod-svc
     image: ${COMPOSE_PROJECT_NAME}/ros-runtime:latest
@@ -102,6 +103,23 @@ services:
     profiles: ["ros"]
     environment:
       <<: *common-env
+      LIBGL_ALWAYS_SOFTWARE: "1"
+    volumes: *prod-volumes
+    command: ["bash", "-c", "echo 'Add your main ROS launch command here' && sleep infinity"]
+    healthcheck: *ros-healthcheck
+
+  # ── [ROS] iGPU 배포 환경 (Intel/AMD 가속) ──────────────────────────
+  ros-prod-igpu:
+    <<: *prod-svc
+    image: ${COMPOSE_PROJECT_NAME}/ros-runtime:latest
+    build:
+      <<: *prod-build
+      target: ros-runtime
+    profiles: ["ros-igpu"]
+    environment:
+      <<: *common-env
+    devices:
+      - /dev/dri:/dev/dri
     volumes: *prod-volumes
     command: ["bash", "-c", "echo 'Add your main ROS launch command here' && sleep infinity"]
     healthcheck: *ros-healthcheck
@@ -123,7 +141,7 @@ services:
     command: ["bash", "-c", "echo 'Add your main ROS launch command here' && sleep infinity"]
     healthcheck: *ros-healthcheck
 
-  # ── [Dev] 순수 C++/Python 배포 환경 (ROS 없음) ──────────────────────
+  # ── [Dev] 순수 C++/Python 배포 환경 (CPU 전용 - 가속 없음) ─────────
   dev-prod:
     <<: *prod-svc
     image: ${COMPOSE_PROJECT_NAME}/dev-runtime:latest
@@ -133,6 +151,22 @@ services:
     profiles: ["dev"]
     environment:
       <<: *common-env
+      LIBGL_ALWAYS_SOFTWARE: "1"
+    volumes: *prod-volumes
+    command: ["bash", "-c", "echo 'Add your main dev executable command here' && sleep infinity"]
+
+  # ── [Dev] 순수 C++/Python iGPU 배포 환경 (Intel/AMD 가속) ──────────
+  dev-prod-igpu:
+    <<: *prod-svc
+    image: ${COMPOSE_PROJECT_NAME}/dev-runtime:latest
+    build:
+      <<: *prod-build
+      target: dev-runtime
+    profiles: ["dev-igpu"]
+    environment:
+      <<: *common-env
+    devices:
+      - /dev/dri:/dev/dri
     volumes: *prod-volumes
     command: ["bash", "-c", "echo 'Add your main dev executable command here' && sleep infinity"]
 
