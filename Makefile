@@ -84,7 +84,8 @@ export HAS_NVIDIA HAS_TOOLKIT HAS_DRI HOST_ARCH TARGETARCH DISPLAY_TYPE HOST_XDG
         build-ros build-dev rebuild-ros rebuild-dev \
         ros dev ros-shell dev-shell ros-term dev-term \
         ros-prod dev-prod \
-        clean clean-cache clean-all clean-builder
+        logs down clean clean-cache clean-all clean-builder \
+        scale-basic scale-ros
 
 # =============================================================================
 # Default & Help
@@ -107,6 +108,8 @@ help:
 	@echo "    make dev-term       : 새 창(Terminator)으로 순수 개발 셸 실행"
 	@echo "    make build-ros      : ROS용 도커 이미지 빌드"
 	@echo "    make build-dev      : 순수 개발용 도커 이미지 빌드"
+	@echo "    make rebuild-ros    : 캐시 없이 ROS용 도커 이미지 처음부터 다시 빌드"
+	@echo "    make rebuild-dev    : 캐시 없이 순수 개발용 도커 이미지 처음부터 다시 빌드"
 	@echo ""
 	@echo "  [ 배포 환경 (Production) ] - Bake & Switch 전략 기반 런타임"
 	@echo "    make ros-prod       : 배포용 ROS 서비스 실행"
