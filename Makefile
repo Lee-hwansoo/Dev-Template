@@ -83,6 +83,7 @@ export HAS_NVIDIA HAS_TOOLKIT HAS_DRI HOST_ARCH TARGETARCH DISPLAY_TYPE HOST_XDG
 .PHONY: help setup check xauth status \
         build-ros build-dev rebuild-ros rebuild-dev \
         ros dev ros-shell dev-shell ros-term dev-term \
+		build-ros-prod build-dev-prod rebuild-ros-prod rebuild-dev-prod \
         ros-prod dev-prod \
         logs down clean clean-cache clean-all clean-builder \
         scale-basic scale-ros
@@ -108,8 +109,12 @@ help:
 	@echo "    make dev-term       : 새 창(Terminator)으로 순수 개발 셸 실행"
 	@echo "    make build-ros      : ROS용 도커 이미지 빌드"
 	@echo "    make build-dev      : 순수 개발용 도커 이미지 빌드"
-	@echo "    make rebuild-ros    : 캐시 없이 ROS용 도커 이미지 처음부터 다시 빌드"
+	@echo "    make rebuild-ros    : 캐시 없이 ROS 이미지 전체 재빌드"
 	@echo "    make rebuild-dev    : 캐시 없이 순수 개발용 도커 이미지 처음부터 다시 빌드"
+	@echo "    make build-ros-prod : 배포용 ROS 이미지 빌드"
+	@echo "    make build-dev-prod : 배포용 순수 개발 이미지 빌드"
+	@echo "    make rebuild-ros-prod : 캐시 없이 배포용 ROS 이미지 빌드"
+	@echo "    make rebuild-dev-prod : 캐시 없이 배포용 순수 개발 이미지 빌드"
 	@echo ""
 	@echo "  [ 배포 환경 (Production) ] - Bake & Switch 전략 기반 런타임"
 	@echo "    make ros-prod       : 배포용 ROS 서비스 실행"
@@ -187,25 +192,70 @@ check: check-host
 # 빌드 (Build)
 # =============================================================================
 build-ros: check
-	$(COMPOSE) $(COMPOSE_DEV) build ros-cpu
+	@$(DETECT_MODE) \
+	TARGET_SVC=ros-$$CHOSEN_MODE; \
+	echo "  [Build] ROS 이미지를 빌드합니다 (Service: $$TARGET_SVC)..."; \
+	$(COMPOSE) $(COMPOSE_DEV) build $$TARGET_SVC
+	@echo "\n[Hint] 빌드가 완료되었습니다! 'make ros'를 실행하여 컨테이너를 시작하세요."
 
 build-dev: check
-	$(COMPOSE) $(COMPOSE_DEV) build basic-cpu
+	@$(DETECT_MODE) \
+	TARGET_SVC=basic-$$CHOSEN_MODE; \
+	echo "  [Build] 순수 개발 이미지를 빌드합니다 (Service: $$TARGET_SVC)..."; \
+	$(COMPOSE) $(COMPOSE_DEV) build $$TARGET_SVC
+	@echo "\n[Hint] 빌드가 완료되었습니다! 'make dev'를 실행하여 컨테이너를 시작하세요."
 
 rebuild-ros: check
-	$(COMPOSE) $(COMPOSE_DEV) build --no-cache ros-cpu
+	@$(DETECT_MODE) \
+	TARGET_SVC=ros-$$CHOSEN_MODE; \
+	echo "  [Rebuild] 캐시 없이 ROS 이미지를 처음부터 다시 빌드합니다 (Service: $$TARGET_SVC)..."; \
+	$(COMPOSE) $(COMPOSE_DEV) build --no-cache $$TARGET_SVC
+	@echo "\n[Hint] 빌드가 완료되었습니다! 'make ros'를 실행하여 컨테이너를 시작하세요."
 
 rebuild-dev: check
-	$(COMPOSE) $(COMPOSE_DEV) build --no-cache basic-cpu
+	@$(DETECT_MODE) \
+	TARGET_SVC=basic-$$CHOSEN_MODE; \
+	echo "  [Rebuild] 캐시 없이 순수 개발 이미지를 처음부터 다시 빌드합니다 (Service: $$TARGET_SVC)..."; \
+	$(COMPOSE) $(COMPOSE_DEV) build --no-cache $$TARGET_SVC
+	@echo "\n[Hint] 빌드가 완료되었습니다! 'make dev'를 실행하여 컨테이너를 시작하세요."
+
+build-ros-prod: check
+	@$(DETECT_MODE) \
+	TARGET_SVC=ros-$$CHOSEN_MODE; \
+	$(COMPOSE) $(COMPOSE_PROD) build $$TARGET_SVC
+	@echo "\n  [Hint] 배포용 이미지가 빌드되었습니다! 'docker save'로 추출하거나 'make ros-prod'로 실행하세요."
+
+build-dev-prod: check
+	@$(DETECT_MODE) \
+	TARGET_SVC=basic-$$CHOSEN_MODE; \
+	echo "  [Bake] 배포용 순수 개발 이미지를 빌드합니다 (Service: $$TARGET_SVC)..."; \
+	$(COMPOSE) $(COMPOSE_PROD) build $$TARGET_SVC
+	@echo "\n  [Hint] 배포용 이미지가 빌드되었습니다! 'docker save'로 추출하거나 'make dev-prod'로 실행하세요."
+
+rebuild-ros-prod: check
+	@$(DETECT_MODE) \
+	TARGET_SVC=ros-$$CHOSEN_MODE; \
+	echo "  [Rebuild] 캐시 없이 배포용 ROS 이미지를 처음부터 다시 빌드합니다 (Service: $$TARGET_SVC)..."; \
+	$(COMPOSE) $(COMPOSE_PROD) build --no-cache $$TARGET_SVC
+	@echo "\n  [Hint] 배포용 이미지가 빌드되었습니다! 'docker save'로 추출하거나 'make ros-prod'로 실행하세요."
+
+rebuild-dev-prod: check
+	@$(DETECT_MODE) \
+	TARGET_SVC=basic-$$CHOSEN_MODE; \
+	echo "  [Rebuild] 캐시 없이 배포용 순수 개발 이미지를 처음부터 다시 빌드합니다 (Service: $$TARGET_SVC)..."; \
+	$(COMPOSE) $(COMPOSE_PROD) build --no-cache $$TARGET_SVC
+	@echo "\n  [Hint] 배포용 이미지가 빌드되었습니다! 'docker save'로 추출하거나 'make dev-prod'로 실행하세요."
 
 # =============================================================================
 # 실행 및 셸 진입 (Dev) - 자동 GPU 감지
 # =============================================================================
 ros: check xauth
 	$(call RUN_SERVICE,$(COMPOSE_DEV),ros,ROS 개발)
+	@echo "\n  [Hint] 컨테이너가 시작되었습니다! 컨테이너 접속을 위해 'make ros-shell' 또는 'make ros-term'을 사용하세요."
 
 dev: check xauth
 	$(call RUN_SERVICE,$(COMPOSE_DEV),basic,순수 개발)
+	@echo "\n  [Hint] 컨테이너가 시작되었습니다! 컨테이너 접속을 위해 'make dev-shell' 또는 'make dev-term'을 사용하세요."
 
 # 필터 정의
 ROS_FILTER := ^$(COMPOSE_PROJECT_NAME)[-_]ros-(cpu|igpu|nvidia)

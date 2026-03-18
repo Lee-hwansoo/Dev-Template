@@ -175,6 +175,64 @@ make dev            # 순수 C++/Python 컨테이너 시작 (GPU 자동 감지)
 | **ROS 배포** | **`make ros-prod`** | 최적화된 ROS 아티팩트 기반 서비스 시작 |
 | **순수 배포** | **`make dev-prod`** | 가벼운 C++/Python 아티팩트 전용 서비스 시작 |
 
+### 3. 오프라인 배포 및 이미지 관리 (Step-by-Step Deployment)
+
+네트워크가 제한된 환경이나 보안이 중요한 타겟 서버에 프로젝트를 배포할 때는 다음 순서를 따릅니다.
+
+#### **Step 1: 배포용 생산 이미지 빌드 (Build Production Image)**
+
+호스트 PC(개발 환경)에서 소스 코드가 포함되지 않은 최적화된 배포용 이미지를 빌드합니다. 이 단계는 **Bake** 단계로, 실제 로봇이나 서버에 올릴 최종 완성본 이미지를 만드는 과정입니다.
+
+```bash
+make build-ros-prod  # ROS 배포용 이미지 빌드 (ros-runtime 스테이지)
+# 또는
+make build-dev-prod  # C++/Python 배포용 이미지 빌드 (dev-runtime 스테이지)
+```
+
+#### **Step 2: 이미지 태깅 및 버전 관리 (Tag)**
+
+빌드된 이미지(`[PROJECT_NAME]/ros-runtime`)를 관리하기 쉬운 이름과 버전으로 태깅합니다.
+
+```bash
+# docker tag [기존_이미지_이름] [저장소/앱_이름:버전]
+docker tag my_project/ros-runtime:latest my_registry/ros-app:v1.0.0
+```
+
+#### **Step 3: 이미지 파일로 추출 (Save)**
+
+이미지를 압축 파일(`.tar.gz`) 형태로 내려받습니다.
+
+```bash
+docker save my_registry/ros-app:v1.0.0 | gzip > release_v1.0.0.tar.gz
+```
+
+#### **Step 4: 타겟 서버로 전송 및 로드 (Transfer & Load)**
+
+생성된 파일을 타겟 서버로 옮긴 후 다시 도커로 불러옵니다.
+
+```bash
+# 타겟 서버에서 실행
+docker load < release_v1.0.0.tar.gz
+```
+
+#### **Step 5: 타겟 서버에서 컨테이너 실행 (Run)**
+
+타겟 서버에서 이미지를 실행합니다. 이미지 이름만 맞추면 `docker run`으로 즉시 실행하거나, `docker-compose.prod.yml` 파일을 타겟 서버로 복사하여 설정 환경 그대로 실행할 수 있습니다.
+
+- **방법 A: docker run으로 즉시 실행**
+
+```bash
+docker run -d --name my-robot-app my_registry/ros-app:v1.0.0
+```
+
+- **방법 B: docker-compose로 관리 (권장)**
+
+타겟 서버에 `docker-compose.prod.yml` 및 `.env` 파일을 복사한 후 실행합니다. (Makefile이 없는 환경에서도 작동합니다)
+
+```bash
+IMAGE_TAG=v1.0.0 docker compose -f docker-compose.prod.yml up -d
+```
+
 ---
 
 ## 📦 외부 의존성 관리 전략 (SSOT Determinism)
