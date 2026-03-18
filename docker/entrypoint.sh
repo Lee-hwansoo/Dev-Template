@@ -13,7 +13,48 @@ log_ok()    { echo -e "\033[0;32m${LOG_PREFIX} [OK]   $1\033[0m"; }
 log_warn()  { echo -e "\033[0;33m${LOG_PREFIX} [WARN] $1\033[0m"; }
 
 # =============================================================================
-# [1] GPU 설정 — gpu_setup.sh에 위임 (SSOT)
+# [0] Clean up empty environment variables (Suppresses ROS/GUI issues)
+# =============================================================================
+# Docker Compose V2 with ${VAR:-} injects "" if VAR is not set.
+# We unset these so they don't interfere with logic or ROS nodes.
+for var in ROS_IP WAYLAND_DISPLAY HOST_WAYLAND_DISPLAY; do
+    if [ -n "${!var+x}" ] && [ -z "${!var}" ]; then
+        unset "$var"
+    fi
+done
+
+# =============================================================================
+# [1] Clean Workspace (Volume Linking)
+# =============================================================================
+# Named Volume 사용 시 호스트에 빈 폴더가 생기는 것을 방지하기 위해
+# /opt/dockervol에 마운트된 볼륨을 /workspace로 심볼릭 링크합니다.
+setup_link() {
+    local src=$1
+    local dest=$2
+    if [ -d "$src" ]; then
+        # 목적지에 이미 폴더가 있으면 (호스트에서 수동 생성 등) 링크를 위해 삭제 시도
+        if [ ! -L "$dest" ] && [ -d "$dest" ]; then
+            rmdir "$dest" 2>/dev/null || true
+        fi
+        # 링크 생성 (이미 존재하면 무시)
+        if [ ! -e "$dest" ]; then
+            ln -s "$src" "$dest"
+        fi
+    fi
+}
+
+# 워크스페이스 루트로 이동하여 링크 생성
+cd /workspace
+setup_link /opt/dockervol/ros/build build
+setup_link /opt/dockervol/ros/install install
+setup_link /opt/dockervol/ros/log log
+setup_link /opt/dockervol/dev/build build
+setup_link /opt/dockervol/dev/install install
+setup_link /opt/dockervol/dev/log log
+setup_link /opt/dockervol/prod/log log
+
+# =============================================================================
+# [2] GPU 설정 — gpu_setup.sh에 위임 (SSOT)
 # =============================================================================
 # GPU_MODE는 .env → docker-compose environment → 여기서 읽힘
 # 값: auto (기본) | nvidia | intel | amd | cpu

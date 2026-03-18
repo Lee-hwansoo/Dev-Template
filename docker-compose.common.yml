@@ -6,8 +6,8 @@
 # ── 공통 환경변수 (런타임) ──────────────────────────────────────────────
 # ⚠ 주의: 이 경로들은 docker/entrypoint.sh 내부 경로와 동기화되어야 합니다.
 x-common-env: &common-env
-  LANG: ${LANG:-ko_KR.UTF-8}
-  TZ: ${TZ:-Asia/Seoul}
+  LANG: ${LANG:-C.UTF-8}
+  TZ: ${TZ:-UTC}
   DISPLAY: ${DISPLAY:-:0}
   WAYLAND_DISPLAY: ${HOST_WAYLAND_DISPLAY:-}
   UV_PYTHON: ${UV_PYTHON:-3.10}
@@ -50,9 +50,9 @@ services:
     restart: unless-stopped
     tty: true
     stdin_open: true
-    network_mode: host
-    ipc: host
-    privileged: ${PRIVILEGED:-true}
+    network_mode: ${NETWORK_MODE:-bridge}
+    ipc: ${IPC_MODE:-private}
+    privileged: ${PRIVILEGED:-false}
     ulimits:
       nofile:
         soft: 65535
@@ -61,7 +61,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile
       args:
-        LANG: ${LANG:-ko_KR.UTF-8}
+        LANG: ${LANG:-C.UTF-8}
         APT_SNAPSHOT_DATE: ${APT_SNAPSHOT_DATE:-latest}
         UV_VERSION: ${UV_VERSION:-0.10.10}
         UV_PYTHON: ${UV_PYTHON:-3.10}
@@ -102,5 +102,6 @@ services:
 
   # ROS + NVIDIA 병합 템플릿
   base-ros-nvidia:
-    extends: base-nvidia
-    healthcheck: *ros-healthcheck
+    extends: base-ros
+    environment:
+      <<: *nvidia-env

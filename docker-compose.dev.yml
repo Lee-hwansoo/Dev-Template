@@ -16,28 +16,29 @@ x-dev-volumes: &dev-volumes
   - ${GIT_CONFIG_PATH:-${HOME}/.gitconfig}:/root/.gitconfig:ro
   - ${SSH_PATH:-${HOME}/.ssh}:/root/.ssh:ro
   - ${DOCKER_DEV_CACHE_DIR:-${WORKSPACE_PATH}/.docker_cache}:/cache:rw
-  - ${DEV_BUILD_VOL:-dev_build_data}:/workspace/build
-  - ${DEV_INSTALL_VOL:-dev_install_data}:/workspace/install
+  - ${DEV_BUILD_VOL:-dev_build_data}:/opt/dockervol/dev/build
+  - ${DEV_INSTALL_VOL:-dev_install_data}:/opt/dockervol/dev/install
+  - ${APP_LOG_VOL:-dev_log_data}:/opt/dockervol/dev/log
 
 x-ros-volumes: &ros-volumes
   - ${WORKSPACE_PATH:?WORKSPACE_PATH를 .env에 설정하세요}:/workspace:rw
   - ${GIT_CONFIG_PATH:-${HOME}/.gitconfig}:/root/.gitconfig:ro
   - ${SSH_PATH:-${HOME}/.ssh}:/root/.ssh:ro
   - ${DOCKER_DEV_CACHE_DIR:-${WORKSPACE_PATH}/.docker_cache}:/cache:rw
-  - ${ROS_BUILD_VOL:-ros_build_data}:/workspace/build
-  - ${ROS_INSTALL_VOL:-ros_install_data}:/workspace/install
-  - ${ROS_LOG_VOL:-ros_log_data}:/workspace/log
+  - ${ROS_BUILD_VOL:-ros_build_data}:/opt/dockervol/ros/build
+  - ${ROS_INSTALL_VOL:-ros_install_data}:/opt/dockervol/ros/install
+  - ${APP_LOG_VOL:-ros_log_data}:/opt/dockervol/ros/log
 
 # ── 개발 환경 서비스 공유 설정 앵커 ──────────────────────────────────────────
 x-dev-shared: &dev-shared
   build: { target: dev }
   volumes: *dev-volumes
-  command: ["bash", "-c", "${APP_COMMAND:-bash}"]
+  command: ${APP_COMMAND:-bash}
 
 x-ros-dev-shared: &ros-dev-shared
   build: { target: ros }
   volumes: *ros-volumes
-  command: ["bash", "-c", "${ROS_LAUNCH_COMMAND:-bash}"]
+  command: ${ROS_LAUNCH_COMMAND:-bash}
 
 services:
   # ── 순수 C++/Python 서비스 ──────────────────────────────────────────────
@@ -90,3 +91,4 @@ volumes:
   ros_log_data:
   dev_build_data:
   dev_install_data:
+  dev_log_data:

@@ -13,15 +13,10 @@ x-gpu-devices: &gpu-devices
 
 x-prod-svc: &prod-svc
   restart: always
-  privileged: ${PRIVILEGED:-true}
-  cap_add:
-    - NET_ADMIN
-    - NET_RAW
-    - SYS_PTRACE
 
 # 배포 환경 전용 볼륨 (로그 등 영구 데이터)
 x-prod-volumes: &prod-volumes
-  - ${ROS_LOG_VOL:-ros_prod_log_data}:/workspace/log
+  - ${APP_LOG_VOL:-prod_log_data}:/opt/dockervol/prod/log
 
 # ── 배포 환경 서비스 공유 설정 앵커 ──────────────────────────────────────────
 x-ros-prod-shared: &ros-prod-shared
@@ -30,7 +25,7 @@ x-ros-prod-shared: &ros-prod-shared
   build:
     target: ros-runtime
   volumes: *prod-volumes
-  command: ["bash", "-c", "${ROS_LAUNCH_COMMAND:?ROS_LAUNCH_COMMAND를 .env에 설정하세요}"]
+  command: ${ROS_LAUNCH_COMMAND:?ROS_LAUNCH_COMMAND를 .env에 설정하세요}
 
 x-dev-prod-shared: &dev-prod-shared
   <<: *prod-svc
@@ -38,7 +33,7 @@ x-dev-prod-shared: &dev-prod-shared
   build:
     target: dev-runtime
   volumes: *prod-volumes
-  command: ["bash", "-c", "${APP_COMMAND:?APP_COMMAND를 .env에 설정하세요}"]
+  command: ${APP_COMMAND:?APP_COMMAND를 .env에 설정하세요}
 
 services:
   # ── [ROS] 배포 서비스 (CPU/iGPU/NVIDIA) ─────────────────────────────────
@@ -82,4 +77,4 @@ services:
     profiles: ["dev-nv"]
 
 volumes:
-  ros_prod_log_data:
+  prod_log_data:
