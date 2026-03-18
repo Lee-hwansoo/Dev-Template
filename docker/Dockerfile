@@ -36,7 +36,7 @@ RUN chmod +x /tmp/internal_apt_helper.sh && \
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update \
-    && apt-get install -y --no-install-recommends locales \
+    && apt-get install -y --no-install-recommends locales tzdata \
     && locale-gen ${LANG} \
     && update-locale LANG=${LANG}
 
@@ -45,7 +45,7 @@ FROM base AS runtime-common
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-    locales libegl1-mesa libgl1-mesa-dri libglx-mesa0 mesa-utils \
+    locales tzdata libegl1-mesa libgl1-mesa-dri libglx-mesa0 mesa-utils \
     && locale-gen ${LANG} && update-locale LANG=${LANG}
 
 COPY docker/entrypoint.sh /entrypoint.sh

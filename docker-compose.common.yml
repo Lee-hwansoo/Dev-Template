@@ -68,8 +68,8 @@ services:
     privileged: ${PRIVILEGED:-false}
     ulimits:
       nofile:
-        soft: 65535
-        hard: 65535
+        soft: ${ULIMIT_NOFILE:-65535}
+        hard: ${ULIMIT_NOFILE:-65535}
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -83,10 +83,6 @@ services:
         BASE_IMAGE: ${BASE_IMAGE:-ubuntu:22.04}
         ROS_DISTRO: ${ROS_DISTRO:-humble}
         TARGETARCH: ${TARGETARCH:-amd64}
-    volumes:
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - ${HOST_XAUTHORITY:-${HOME}/.Xauthority}:/root/.Xauthority:ro
-      - ${HOST_XDG_RUNTIME_DIR:-/tmp/.docker_x11}:/tmp/runtime-root:rw
 
   # 순수 개발 전용 템플릿
   base-dev:
