@@ -27,6 +27,8 @@ DETECT_MODE := \
 		if [ "$(HAS_NVIDIA)" = "true" ] && [ "$(HAS_TOOLKIT)" = "true" ]; then CHOSEN_MODE=nvidia; \
 		elif [ "$(HAS_DRI)" = "true" ]; then CHOSEN_MODE=igpu; \
 		else CHOSEN_MODE=cpu; fi; \
+	elif [ "$$CHOSEN_MODE" = "intel" ] || [ "$$CHOSEN_MODE" = "amd" ]; then \
+		CHOSEN_MODE=igpu; \
 	fi;
 
 # $1: COMPOSE_FILES, $2: SERVICE_PREFIX, $3: MSG
@@ -55,6 +57,13 @@ define VALIDATE_ROS_ENV
 	fi
 	@if [ -n "$(RMW_IMPLEMENTATION)" ] && [ "$(RMW_IMPLEMENTATION)" != "rmw_cyclonedds_cpp" ] && [ "$(RMW_IMPLEMENTATION)" != "rmw_fastrtps_cpp" ]; then \
 		echo "  [경고] 비표준 RMW_IMPLEMENTATION이 감지되었습니다: $(RMW_IMPLEMENTATION)"; \
+	fi
+endef
+
+define VALIDATE_COMPOSE_NAME
+	@if echo "$(COMPOSE_PROJECT_NAME)" | grep -q '[A-Z[:space:]]'; then \
+		echo "  [오류] COMPOSE_PROJECT_NAME은 소문자와 대시(-)/언더스코어(_)만 포함해야 합니다."; \
+		exit 1; \
 	fi
 endef
 
@@ -185,6 +194,7 @@ xauth:
 check: check-host
 	@if [ ! -f .env ]; then echo "  오류: .env가 없습니다. make setup 실행 필요"; exit 1; fi
 	@if [ ! -d "$(WORKSPACE_PATH)" ]; then echo "  [오류] WORKSPACE_PATH($(WORKSPACE_PATH))가 존재하지 않는 디렉토리입니다."; exit 1; fi
+	$(call VALIDATE_COMPOSE_NAME)
 	$(call VALIDATE_ROS_ENV)
 	@mkdir -p ~/.ssh && touch ~/.gitconfig
 	@if [ ! -f $(HOST_XAUTHORITY) ]; then touch $(HOST_XAUTHORITY) 2>/dev/null || true; fi
