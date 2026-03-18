@@ -14,9 +14,9 @@ x-dev-volumes: &dev-volumes
   - ${GIT_CONFIG_PATH:-${HOST_HOME:-${HOME}}/.gitconfig}:/root/.gitconfig:ro
   - ${SSH_PATH:-${HOST_HOME:-${HOME}}/.ssh}:/root/.ssh:ro
   - ${HOST_CACHE_DIR:-${WORKSPACE_PATH:-.}/.docker_cache}:/cache:rw
-  - ${DEV_BUILD_VOL:-dev_build_data}:${DOCKER_VOL_MOUNT_ROOT:-/opt/dockervol}/dev/build
-  - ${DEV_INSTALL_VOL:-dev_install_data}:${DOCKER_VOL_MOUNT_ROOT:-/opt/dockervol}/dev/install
-  - ${DEV_LOG_VOL:-dev_log_data}:${DOCKER_VOL_MOUNT_ROOT:-/opt/dockervol}/dev/log
+  - ${DEV_BUILD_VOL:-dev_build_data}:/workspace/build
+  - ${DEV_INSTALL_VOL:-dev_install_data}:/workspace/install
+  - ${DEV_LOG_VOL:-dev_log_data}:/workspace/log
 
 x-ros-volumes: &ros-volumes
   - /tmp/.X11-unix:/tmp/.X11-unix:rw
@@ -26,9 +26,9 @@ x-ros-volumes: &ros-volumes
   - ${GIT_CONFIG_PATH:-${HOST_HOME:-${HOME}}/.gitconfig}:/root/.gitconfig:ro
   - ${SSH_PATH:-${HOST_HOME:-${HOME}}/.ssh}:/root/.ssh:ro
   - ${HOST_CACHE_DIR:-${WORKSPACE_PATH:-.}/.docker_cache}:/cache:rw
-  - ${ROS_BUILD_VOL:-ros_build_data}:${DOCKER_VOL_MOUNT_ROOT:-/opt/dockervol}/ros/build
-  - ${ROS_INSTALL_VOL:-ros_install_data}:${DOCKER_VOL_MOUNT_ROOT:-/opt/dockervol}/ros/install
-  - ${ROS_LOG_VOL:-ros_log_data}:${DOCKER_VOL_MOUNT_ROOT:-/opt/dockervol}/ros/log
+  - ${ROS_BUILD_VOL:-ros_build_data}:/workspace/build
+  - ${ROS_INSTALL_VOL:-ros_install_data}:/workspace/install
+  - ${ROS_LOG_VOL:-ros_log_data}:/workspace/log
 
 # ── 개발 환경 서비스 공유 설정 앵커 ──────────────────────────────────────────
 x-dev-shared: &dev-shared

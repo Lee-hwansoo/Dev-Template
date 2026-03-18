@@ -12,7 +12,7 @@ x-prod-svc: &prod-svc
     DOCKER_VOL_PREFIX: prod
 
 x-prod-volumes: &prod-volumes
-  - ${PROD_LOG_VOL:-prod_log_data}:${DOCKER_VOL_MOUNT_ROOT:-/opt/dockervol}/prod/log
+  - ${PROD_LOG_VOL:-prod_log_data}:/workspace/log
 
 # ── 배포 환경 서비스 공유 설정 (Image Naming SSOT) ──────────────────────────
 x-ros-prod-shared: &ros-prod-shared

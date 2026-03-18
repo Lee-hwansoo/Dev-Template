@@ -87,7 +87,7 @@ define SCALE_SERVICE
 endef
 
 # 인프라 핵심 변수 export
-export HAS_NVIDIA HAS_TOOLKIT HAS_DRI HOST_ARCH TARGETARCH DISPLAY_TYPE HOST_XDG_RUNTIME_DIR HOST_WAYLAND_DISPLAY HOST_XAUTHORITY HOST_HOME DOCKER_VOL_MOUNT_ROOT NVIDIA_VISIBLE_DEVICES NVIDIA_DRIVER_CAPABILITIES NVIDIA_GPU_COUNT HOST_CACHE_DIR
+export HAS_NVIDIA HAS_TOOLKIT HAS_DRI HOST_ARCH TARGETARCH DISPLAY_TYPE HOST_XDG_RUNTIME_DIR HOST_WAYLAND_DISPLAY HOST_XAUTHORITY HOST_HOME NVIDIA_VISIBLE_DEVICES NVIDIA_DRIVER_CAPABILITIES NVIDIA_GPU_COUNT HOST_CACHE_DIR
 
 .PHONY: help setup check xauth status \
         build-ros build-dev rebuild-ros rebuild-dev \
@@ -230,12 +230,14 @@ rebuild-dev: check
 	@echo "\n[Hint] 빌드가 완료되었습니다! 'make dev'를 실행하여 컨테이너를 시작하세요."
 
 build-ros-prod: check
+	@echo "  [Notice] 최상의 빌드 품질을 위해 'make clean'을 먼저 수행하는 것이 권장됩니다 (현재 빌드 시작...)"
 	@$(DETECT_MODE) \
 	TARGET_SVC=ros-$$CHOSEN_MODE; \
 	$(COMPOSE) $(COMPOSE_PROD) build $$TARGET_SVC
 	@echo "\n  [Hint] 배포용 이미지가 빌드되었습니다! 'docker save'로 추출하거나 'make ros-prod'로 실행하세요."
 
 build-dev-prod: check
+	@echo "  [Notice] 최상의 빌드 품질을 위해 'make clean'을 먼저 수행하는 것이 권장됩니다 (현재 빌드 시작...)"
 	@$(DETECT_MODE) \
 	TARGET_SVC=basic-$$CHOSEN_MODE; \
 	echo "  [Bake] 배포용 순수 개발 이미지를 빌드합니다 (Service: $$TARGET_SVC)..."; \
@@ -243,6 +245,7 @@ build-dev-prod: check
 	@echo "\n  [Hint] 배포용 이미지가 빌드되었습니다! 'docker save'로 추출하거나 'make dev-prod'로 실행하세요."
 
 rebuild-ros-prod: check
+	@echo "  [Notice] 최상의 빌드 품질을 위해 'make clean'을 먼저 수행하는 것이 권장됩니다 (현재 빌드 시작...)"
 	@$(DETECT_MODE) \
 	TARGET_SVC=ros-$$CHOSEN_MODE; \
 	echo "  [Rebuild] 캐시 없이 배포용 ROS 이미지를 처음부터 다시 빌드합니다 (Service: $$TARGET_SVC)..."; \
@@ -250,6 +253,7 @@ rebuild-ros-prod: check
 	@echo "\n  [Hint] 배포용 이미지가 빌드되었습니다! 'docker save'로 추출하거나 'make ros-prod'로 실행하세요."
 
 rebuild-dev-prod: check
+	@echo "  [Notice] 최상의 빌드 품질을 위해 'make clean'을 먼저 수행하는 것이 권장됩니다 (현재 빌드 시작...)"
 	@$(DETECT_MODE) \
 	TARGET_SVC=basic-$$CHOSEN_MODE; \
 	echo "  [Rebuild] 캐시 없이 배포용 순수 개발 이미지를 처음부터 다시 빌드합니다 (Service: $$TARGET_SVC)..."; \

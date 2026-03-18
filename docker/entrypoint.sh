@@ -1,9 +1,6 @@
 #!/bin/bash
 # docker/entrypoint.sh
 # 컨테이너 시작 시 실행 — 빌드 타임에 결정할 수 없는 런타임 환경 설정
-#
-# dev 타겟 (ROS2 없음)과 ros2 타겟 공용
-# ROS2 관련 로직은 /opt/ros 존재 여부로 조건 분기
 
 set -e
 
@@ -13,7 +10,7 @@ log_ok()    { echo -e "\033[0;32m${LOG_PREFIX} [OK]   $1\033[0m"; }
 log_warn()  { echo -e "\033[0;33m${LOG_PREFIX} [WARN] $1\033[0m"; }
 
 # =============================================================================
-# [0] Clean up empty environment variables (Suppresses ROS/GUI issues)
+# [0] Clean up empty environment variables
 # =============================================================================
 # Docker Compose V2 with ${VAR:-} injects "" if VAR is not set.
 # We unset these so they don't interfere with logic or ROS nodes.
@@ -23,43 +20,11 @@ for var in ROS_IP WAYLAND_DISPLAY HOST_WAYLAND_DISPLAY; do
     fi
 done
 
-# =============================================================================
-# [1] Clean Workspace (Volume Linking)
-# =============================================================================
-# Named Volume 사용 시 호스트에 빈 폴더가 생기는 것을 방지하기 위해
-# DOCKER_VOL_MOUNT_ROOT에 마운트된 볼륨을 /workspace로 심볼릭 링크합니다.
-setup_link() {
-    local src=$1
-    local dest=$2
-    if [ -d "$src" ]; then
-        # 목적지에 이미 폴더가 있으면 (호스트에서 수동 생성 등) 링크를 위해 삭제 시도
-        if [ ! -L "$dest" ] && [ -d "$dest" ]; then
-            rmdir "$dest" 2>/dev/null || true
-        fi
-        # 링크 생성 (이미 존재하면 무시)
-        if [ ! -e "$dest" ]; then
-            ln -s "$src" "$dest"
-        fi
-    fi
-}
-
-# 워크스페이스 루트로 이동하여 링크 생성
+# 워크스페이스 루트로 이동
 cd /workspace
 
-# 환경 변수 기반 동적 볼륨 대응 (SSOT: DOCKER_VOL_MOUNT_ROOT)
-PREFIX=${DOCKER_VOL_PREFIX:-dev}
-MOUNT_ROOT=${DOCKER_VOL_MOUNT_ROOT:-/opt/dockervol}
-MOUNT_TARGET="$MOUNT_ROOT/$PREFIX"
-
-if [ -d "$MOUNT_TARGET" ]; then
-    log_info "Linking volumes from $MOUNT_TARGET"
-    for subdir in build install log; do
-        setup_link "$MOUNT_TARGET/$subdir" "$subdir"
-    done
-fi
-
 # =============================================================================
-# [2] GPU 설정 — gpu_setup.sh에 위임 (SSOT)
+# [1] GPU 설정 — gpu_setup.sh에 위임
 # =============================================================================
 # GPU_MODE는 .env → docker-compose environment → 여기서 읽힘
 # 값: auto (기본) | nvidia | intel | amd | cpu
@@ -122,7 +87,7 @@ if [ "$IS_DEV" = true ]; then
 fi
 
 # =============================================================================
-# [4] 캐시 디렉토리 초기화 (Dev Only)
+# [4] 캐시 및 기타 설정 (Dev Only)
 # =============================================================================
 if [ "$IS_DEV" = true ]; then
     mkdir -p /cache/ccache /cache/uv /cache/apt
@@ -176,11 +141,11 @@ fi
 # =============================================================================
 # [9] 환경 소스 (ROS 및 Python venv)
 # =============================================================================
-# ROS2 환경 소스
+# ROS 환경 소스
 ROS_SETUP="/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
 if [ -f "$ROS_SETUP" ]; then
     source "$ROS_SETUP"
-    log_ok "ROS2 ${ROS_DISTRO:-humble} sourced"
+    log_ok "ROS ${ROS_DISTRO:-humble} sourced"
 
     if [ -f /workspace/install/setup.bash ]; then
         source /workspace/install/setup.bash

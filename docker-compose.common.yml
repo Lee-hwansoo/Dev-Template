@@ -15,7 +15,6 @@ x-common-env: &common-env
   XDG_RUNTIME_DIR: /tmp/runtime-root
   UV_PYTHON: ${UV_PYTHON:-3.10}
   GPU_MODE: ${GPU_MODE:-auto}
-  DOCKER_VOL_MOUNT_ROOT: ${DOCKER_VOL_MOUNT_ROOT:-/opt/dockervol}
   ROS_DISTRO: ${ROS_DISTRO:-humble}
   SYNC_TARGET_DIR: ${SYNC_TARGET_DIR:-src/thirdparty}
   ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
