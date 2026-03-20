@@ -3,6 +3,20 @@
 # 원 커맨드 워크플로우 (KISS 기반 명령어 통합)
 # =============================================================================
 
+SHELL := /bin/bash
+
+# 색상 및 로깅 정의
+BLUE   := \033[0;34m
+GREEN  := \033[0;32m
+RED    := \033[0;31m
+YELLOW := \033[1;33m
+CYAN   := \033[0;36m
+NC     := \033[0m
+INFO   := $(CYAN)[INFO]$(NC)
+OK     := $(GREEN)[OK]$(NC)
+WARN   := $(YELLOW)[WARN]$(NC)
+ERROR  := $(RED)[ERROR]$(NC)
+
 # 환경 변수 로드
 -include .env
 
@@ -38,14 +52,14 @@ define RUN_SERVICE
 	@$(DETECT_MODE) \
 	PROF=$$CHOSEN_MODE; \
 	TARGET_SVC=$2-$$CHOSEN_MODE; \
-	echo "  [$$CHOSEN_MODE] $3 환경을 시작합니다 (Service: $$TARGET_SVC)..."; \
+	echo -e "  $(INFO) [$$CHOSEN_MODE] $3 환경을 시작합니다 (Service: $$TARGET_SVC)..."; \
 	$(COMPOSE) $1 --profile $$TARGET_SVC up -d $$TARGET_SVC
 endef
 
 # $1: ENV_VAR_NAME
 define CHECK_ENV
 	@if [ -z "$($1)" ]; then \
-		echo "  [오류] $1 변수가 .env에 설정되어 있지 않습니다. 배포를 위해 반드시 필요합니다."; \
+		echo -e "  $(ERROR) $1 변수가 .env에 설정되어 있지 않습니다. 배포를 위해 반드시 필요합니다."; \
 		exit 1; \
 	fi
 endef
@@ -53,18 +67,18 @@ endef
 define VALIDATE_ROS_ENV
 	@if [ -n "$(ROS_DOMAIN_ID)" ]; then \
 		if ! [ "$(ROS_DOMAIN_ID)" -eq "$(ROS_DOMAIN_ID)" ] 2>/dev/null || [ "$(ROS_DOMAIN_ID)" -lt 0 ] || [ "$(ROS_DOMAIN_ID)" -gt 101 ]; then \
-			echo "  [오류] ROS_DOMAIN_ID는 0에서 101 사이의 숫자여야 합니다 (현재: $(ROS_DOMAIN_ID))"; \
+			echo -e "  $(ERROR) ROS_DOMAIN_ID는 0에서 101 사이의 숫자여야 합니다 (현재: $(ROS_DOMAIN_ID))"; \
 			exit 1; \
 		fi \
 	fi
 	@if [ -n "$(RMW_IMPLEMENTATION)" ] && [ "$(RMW_IMPLEMENTATION)" != "rmw_cyclonedds_cpp" ] && [ "$(RMW_IMPLEMENTATION)" != "rmw_fastrtps_cpp" ]; then \
-		echo "  [경고] 비표준 RMW_IMPLEMENTATION이 감지되었습니다: $(RMW_IMPLEMENTATION)"; \
+		echo -e "  $(WARN) 비표준 RMW_IMPLEMENTATION이 감지되었습니다: $(RMW_IMPLEMENTATION)"; \
 	fi
 endef
 
 define VALIDATE_COMPOSE_NAME
 	@if echo "$(COMPOSE_PROJECT_NAME)" | grep -q '[^a-z0-9_-]'; then \
-		echo "  [오류] COMPOSE_PROJECT_NAME은 소문자와 대시(-)/언더스코어(_)만 포함해야 합니다."; \
+		echo -e "  $(ERROR) COMPOSE_PROJECT_NAME은 소문자와 대시(-)/언더스코어(_)만 포함해야 합니다."; \
 		exit 1; \
 	fi
 endef
@@ -75,7 +89,7 @@ define EXEC_CONTAINER
 	if [ -n "$$CONTAINER" ]; then \
 		docker exec -it $$CONTAINER $2; \
 	else \
-		echo "  [오류] 실행 중인 $3 컨테이너가 없습니다."; \
+		echo -e "  $(ERROR) 실행 중인 $3 컨테이너가 없습니다."; \
 		exit 1; \
 	fi
 endef
@@ -95,7 +109,7 @@ endef
 define SCALE_SERVICE
 	@$(DETECT_MODE) \
 	TARGET_SVC=$2-$$CHOSEN_MODE; \
-	echo "  [$3] 서비스를 $(N)개로 확장합니다 (Service: $$TARGET_SVC)..."; \
+	echo -e "  $(INFO) [$3] 서비스를 $(N)개로 확장합니다 (Service: $$TARGET_SVC)..."; \
 	$(COMPOSE) $1 --profile $$TARGET_SVC up -d --scale $$TARGET_SVC=$(N) $$TARGET_SVC
 endef
 
@@ -103,9 +117,9 @@ endef
 define BUILD_SERVICE
 	@$(DETECT_MODE) \
 	TARGET_SVC=$2-$$CHOSEN_MODE; \
-	echo "  [$3] 이미지를 빌드합니다 (Service: $$TARGET_SVC)..."; \
+	echo -e "  $(INFO) [$3] 이미지를 빌드합니다 (Service: $$TARGET_SVC)..."; \
 	$(COMPOSE) $1 build $4 $$TARGET_SVC
-	@echo "\n  [Hint] $5"
+	@echo -e "\n  $(INFO) [Hint] $5"
 endef
 
 # 인프라 핵심 변수 export
@@ -124,7 +138,7 @@ export HAS_NVIDIA HAS_TOOLKIT HAS_DRI HOST_ARCH TARGETARCH DISPLAY_TYPE HOST_XDG
 # =============================================================================
 help:
 	@echo "======================================================================"
-	@echo "        🚀 All-in-One Docker Dev Environment Template 🚀              "
+	@echo "            All-in-One Docker Dev Environment Template                "
 	@echo "======================================================================"
 	@echo ""
 	@echo "  [ 초기 설정 & 상태 (Setup & Status) ]"
@@ -170,9 +184,9 @@ help:
 setup:
 	@if [ ! -f .env ]; then \
 		cp .env.example .env; \
-		echo "  .env 파일이 생성되었습니다. 설정을 수정하세요."; \
+		echo -e "  $(OK) .env 파일이 생성되었습니다. 설정을 수정하세요."; \
 	else \
-		echo "  .env 파일이 이미 존재합니다."; \
+		echo -e "  $(INFO) .env 파일이 이미 존재합니다."; \
 	fi
 	@$(MAKE) xauth
 
@@ -200,7 +214,7 @@ status: check
 
 check-host:
 	@if [ "$(HAS_NVIDIA)" = "true" ] && [ "$(HAS_TOOLKIT)" = "false" ]; then \
-		echo "  [경고] NVIDIA GPU가 감지되었으나 NVIDIA Container Toolkit이 없습니다."; \
+		echo -e "  $(WARN) NVIDIA GPU가 감지되었으나 NVIDIA Container Toolkit이 없습니다."; \
 	fi
 
 xauth:
@@ -215,8 +229,8 @@ xauth:
 	fi
 
 check: check-host
-	@if [ ! -f .env ]; then echo "  오류: .env가 없습니다. make setup 실행 필요"; exit 1; fi
-	@if [ ! -d "$(WORKSPACE_PATH)" ]; then echo "  [오류] WORKSPACE_PATH($(WORKSPACE_PATH))가 존재하지 않는 디렉토리입니다."; exit 1; fi
+	@if [ ! -f .env ]; then echo -e "  $(ERROR) .env가 없습니다. make setup 실행 필요"; exit 1; fi
+	@if [ ! -d "$(WORKSPACE_PATH)" ]; then echo -e "  $(ERROR) WORKSPACE_PATH($(WORKSPACE_PATH))가 존재하지 않는 디렉토리입니다."; exit 1; fi
 	$(call VALIDATE_COMPOSE_NAME)
 	$(call VALIDATE_ROS_ENV)
 
@@ -235,19 +249,19 @@ rebuild-dev: check
 	$(call BUILD_SERVICE,$(COMPOSE_DEV),basic,Rebuild 캐시 없이 순수 개발,--no-cache,"빌드가 완료되었습니다! 'make dev'를 실행하여 컨테이너를 시작하세요.")
 
 build-ros-prod: check
-	@echo "  [Notice] 최상의 빌드 품질을 위해 'make clean'을 먼저 수행하는 것이 권장됩니다 (현재 빌드 시작...)"
+	@echo -e "  $(INFO) [Notice] 최상의 빌드 품질을 위해 'make clean'을 먼저 수행하는 것이 권장됩니다 (현재 빌드 시작...)"
 	$(call BUILD_SERVICE,$(COMPOSE_PROD),ros,Bake 배포용 ROS,,"배포용 이미지가 빌드되었습니다! 'docker save'로 추출하거나 'make ros-prod'로 실행하세요.")
 
 build-dev-prod: check
-	@echo "  [Notice] 최상의 빌드 품질을 위해 'make clean'을 먼저 수행하는 것이 권장됩니다 (현재 빌드 시작...)"
+	@echo -e "  $(INFO) [Notice] 최상의 빌드 품질을 위해 'make clean'을 먼저 수행하는 것이 권장됩니다 (현재 빌드 시작...)"
 	$(call BUILD_SERVICE,$(COMPOSE_PROD),basic,Bake 배포용 순수 개발,,"배포용 이미지가 빌드되었습니다! 'docker save'로 추출하거나 'make dev-prod'로 실행하세요.")
 
 rebuild-ros-prod: check
-	@echo "  [Notice] 최상의 빌드 품질을 위해 'make clean'을 먼저 수행하는 것이 권장됩니다 (현재 빌드 시작...)"
+	@echo -e "  $(INFO) [Notice] 최상의 빌드 품질을 위해 'make clean'을 먼저 수행하는 것이 권장됩니다 (현재 빌드 시작...)"
 	$(call BUILD_SERVICE,$(COMPOSE_PROD),ros,Rebuild 캐시 없이 배포용 ROS,--no-cache,"배포용 이미지가 빌드되었습니다! 'docker save'로 추출하거나 'make ros-prod'로 실행하세요.")
 
 rebuild-dev-prod: check
-	@echo "  [Notice] 최상의 빌드 품질을 위해 'make clean'을 먼저 수행하는 것이 권장됩니다 (현재 빌드 시작...)"
+	@echo -e "  $(INFO) [Notice] 최상의 빌드 품질을 위해 'make clean'을 먼저 수행하는 것이 권장됩니다 (현재 빌드 시작...)"
 	$(call BUILD_SERVICE,$(COMPOSE_PROD),basic,Rebuild 캐시 없이 배포용 순수 개발,--no-cache,"배포용 이미지가 빌드되었습니다! 'docker save'로 추출하거나 'make dev-prod'로 실행하세요.")
 
 # =============================================================================
@@ -255,11 +269,11 @@ rebuild-dev-prod: check
 # =============================================================================
 ros: check xauth
 	$(call RUN_SERVICE,$(COMPOSE_DEV),ros,ROS 개발)
-	@echo "\n  [Hint] 컨테이너가 시작되었습니다! 컨테이너 접속을 위해 'make ros-shell' 또는 'make ros-term'을 사용하세요."
+	@echo -e "\n  $(INFO) [Hint] 컨테이너가 시작되었습니다! 컨테이너 접속을 위해 'make ros-shell' 또는 'make ros-term'을 사용하세요."
 
 dev: check xauth
 	$(call RUN_SERVICE,$(COMPOSE_DEV),basic,순수 개발)
-	@echo "\n  [Hint] 컨테이너가 시작되었습니다! 컨테이너 접속을 위해 'make dev-shell' 또는 'make dev-term'을 사용하세요."
+	@echo -e "\n  $(INFO) [Hint] 컨테이너가 시작되었습니다! 컨테이너 접속을 위해 'make dev-shell' 또는 'make dev-term'을 사용하세요."
 
 # 필터 정의
 ROS_FILTER := ^$(COMPOSE_PROJECT_NAME)[-_]ros-(cpu|igpu|nvidia)
@@ -279,11 +293,11 @@ dev-term: check xauth
 
 # 수평 확장 (Scaling)
 scale-basic: check
-	@if [ -z "$(N)" ]; then echo "  [오류] 확장할 개수 N을 지정하세요. (예: make scale-basic N=2)"; exit 1; fi
+	@if [ -z "$(N)" ]; then echo -e "  $(ERROR) 확장할 개수 N을 지정하세요. (예: make scale-basic N=2)"; exit 1; fi
 	$(call SCALE_SERVICE,$(COMPOSE_DEV),basic,개발)
 
 scale-ros: check
-	@if [ -z "$(N)" ]; then echo "  [오류] 확장할 개수 N을 지정하세요. (예: make scale-ros N=2)"; exit 1; fi
+	@if [ -z "$(N)" ]; then echo -e "  $(ERROR) 확장할 개수 N을 지정하세요. (예: make scale-ros N=2)"; exit 1; fi
 	$(call SCALE_SERVICE,$(COMPOSE_DEV),ros,ROS)
 
 # =============================================================================
@@ -310,15 +324,15 @@ down:
 
 logs:
 	@if [ -n "$$($(COMPOSE) $(COMPOSE_DEV) ps --status running -q 2>/dev/null)" ]; then \
-		echo "  [Dev] 개발 환경 로그를 스트리밍합니다..."; \
+		echo -e "  $(INFO) [Dev] 개발 환경 로그를 스트리밍합니다..."; \
 		$(COMPOSE) $(COMPOSE_DEV) logs -f --tail 100; \
 	elif [ -f docker-compose.prod.yml ] && [ -n "$$($(COMPOSE) $(COMPOSE_PROD) ps --status running -q 2>/dev/null)" ]; then \
-		echo "  [Prod] 배포 환경 로그를 스트리밍합니다..."; \
+		echo -e "  $(INFO) [Prod] 배포 환경 로그를 스트리밍합니다..."; \
 		$(COMPOSE) $(COMPOSE_PROD) logs -f --tail 100; \
 	fi
 
 clean-builder:
-	@echo "  Docker BuildKit 캐시를 정리하여 용량을 확보합니다..."
+	@echo -e "  $(INFO) Docker BuildKit 캐시를 정리하여 용량을 확보합니다..."
 	docker builder prune -f
 
 clean:
@@ -326,7 +340,7 @@ clean:
 	@if [ -f docker-compose.prod.yml ]; then \
 		$(COMPOSE) $(COMPOSE_PROD) --profile "*" down -v --remove-orphans 2>/dev/null || true; \
 	fi
-	@echo "  $(COMPOSE_PROJECT_NAME) 관련 모든 네임드 볼륨을 삭제합니다..."
+	@echo -e "  $(INFO) $(COMPOSE_PROJECT_NAME) 관련 모든 네임드 볼륨을 삭제합니다..."
 	@VOLUMES=$$(docker volume ls -q --filter "name=$(COMPOSE_PROJECT_NAME)"); \
 	if [ -n "$$VOLUMES" ]; then \
 		docker volume rm $$VOLUMES 2>/dev/null || true; \
@@ -335,16 +349,16 @@ clean:
 clean-cache:
 	@CACHE_DIR=$(HOST_CACHE_DIR); \
 	if [ -z "$$CACHE_DIR" ] || [ "$$CACHE_DIR" = "/" ] || ! (echo "$$CACHE_DIR" | grep -q "$(COMPOSE_PROJECT_NAME)" || echo "$$CACHE_DIR" | grep -q "$(WORKSPACE_PATH)"); then \
-		echo "  [오류] 캐시 경로($$CACHE_DIR)가 유효하지 않거나 안전하지 않습니다."; \
+		echo -e "  $(ERROR) 캐시 경로($$CACHE_DIR)가 유효하지 않거나 안전하지 않습니다."; \
 		exit 1; \
 	fi; \
 	if [ -d "$$CACHE_DIR" ]; then \
-		echo "  호스트 측 도커 캐시 폴더($$CACHE_DIR)를 정말 삭제하시겠습니까? [y/N]"; \
-		read ans && if [ "$$ans" != "y" ] && [ "$$ans" != "Y" ]; then echo "  삭제를 취소합니다."; exit 1; fi; \
-		echo "  호스트 측 도커 캐시 폴더($$CACHE_DIR)를 삭제합니다..."; \
+		echo -e "  $(WARN) 호스트 측 도커 캐시 폴더($$CACHE_DIR)를 정말 삭제하시겠습니까? [y/N]"; \
+		read ans && if [ "$$ans" != "y" ] && [ "$$ans" != "Y" ]; then echo -e "  $(INFO) 삭제를 취소합니다."; exit 1; fi; \
+		echo -e "  $(INFO) 호스트 측 도커 캐시 폴더($$CACHE_DIR)를 삭제합니다..."; \
 		sudo rm -rf "$$CACHE_DIR"; \
 	fi
 
 clean-all: clean clean-cache
-	@echo "  $(COMPOSE_PROJECT_NAME) 관련 모든 도커 빌드 캐시를 정리합니다..."
+	@echo -e "  $(INFO) $(COMPOSE_PROJECT_NAME) 관련 모든 도커 빌드 캐시를 정리합니다..."
 	docker builder prune -a -f

@@ -106,3 +106,42 @@ alias use_intel='source /docker_dev/scripts/gpu_setup.sh intel && __gpu_status_i
 alias use_amd='source /docker_dev/scripts/gpu_setup.sh amd && __gpu_status_impl'
 alias use_nvidia='source /docker_dev/scripts/gpu_setup.sh nvidia && __gpu_status_impl'
 alias use_cpu='source /docker_dev/scripts/gpu_setup.sh cpu && __gpu_status_impl'
+
+# =========================``====================================================
+# Help / Documentation
+# =============================================================================
+function __print_help() {
+    # Ensure ANSI colors are defined for standalone shell usage (if utils_logging.sh wasn't sourced)
+    [ -z "${NC}" ] && CYAN='\033[0;36m' && BLUE='\033[0;34m' && GREEN='\033[0;32m' && YELLOW='\033[1;33m' && NC='\033[0m'
+
+    echo -e "${CYAN}======================================================================${NC}"
+    echo -e "                  ${GREEN}Docker Dev Alias & Shortcut Guide${NC}                  "
+    echo -e "${CYAN}======================================================================${NC}"
+    echo -e ""
+    echo -e "  ${BLUE}[ROS & Build]${NC}"
+    echo -e "    ${GREEN}cb${NC} / ${GREEN}cbm${NC} / ${GREEN}cbr${NC}  : colcon build (standard / metas / release)"
+    echo -e "    ${GREEN}s${NC} / ${GREEN}sb${NC}           : Source workspace / Source bashrc"
+    echo -e "    ${GREEN}rt${NC} / ${GREEN}rn${NC} / ${GREEN}rl${NC}     : ros2 topic / node / launch list"
+    echo -e "    ${GREEN}cw${NC} / ${GREEN}cs${NC}           : cd to /workspace or /workspace/src"
+    echo -e ""
+    echo -e "  ${BLUE}[Python & uv]${NC}"
+    echo -e "    ${GREEN}mkenv${NC} / ${GREEN}activate${NC} : Create & Activate python venv"
+    echo -e "    ${GREEN}uvs${NC} / ${GREEN}uvr${NC}        : uv sync / uv run"
+    echo -e "    ${GREEN}pyv${NC}               : Show Python & uv versions"
+    echo -e ""
+    echo -e "  ${BLUE}[Hardware & GPU]${NC}"
+    echo -e "    ${GREEN}hw_check${NC}          : Run full hardware diagnostics"
+    echo -e "    ${GREEN}gpu_status${NC}        : Show detailed GPU & Display info"
+    echo -e "    ${GREEN}gpu_setup ${NC}        : Auto-configure GPU mode"
+    echo -e "    ${GREEN}use_cpu${NC} / ${GREEN}nvidia${NC}  : Force Software / NVIDIA rendering"
+    echo -e ""
+    echo -e "  ${BLUE}[Utils]${NC}"
+    echo -e "    ${GREEN}ll${NC} / ${GREEN}la${NC}           : Detailed ls (all / long format)"
+    echo -e "    ${GREEN}sync_deps${NC}        : Sync external repos from .repos file"
+    echo -e "    ${GREEN}ccache-stat${NC}       : Show compiler cache statistics"
+    echo -e "    ${GREEN}h${NC} / ${GREEN}help${NC}         : Show this help guide"
+    echo -e ""
+    echo -e "${CYAN}======================================================================${NC}"
+}
+alias h='__print_help'
+alias help='__print_help'

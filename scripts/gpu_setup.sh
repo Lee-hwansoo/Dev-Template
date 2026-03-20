@@ -10,16 +10,11 @@
 #   - 가속 실패 시 소프트웨어 렌더링(llvmpipe) 자동 전환
 # =============================================================================
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
+# 로깅 유틸리티 로드
+SOURCE_LOG="/docker_dev/scripts/utils_logging.sh"
+[ ! -f "$SOURCE_LOG" ] && SOURCE_LOG="$(dirname "${BASH_SOURCE[0]}")/utils_logging.sh"
+[ -f "$SOURCE_LOG" ] && source "$SOURCE_LOG"
 LOG_PREFIX="[GPU]"
-log_info()  { echo -e "${BLUE}${LOG_PREFIX}${NC} $1"; }
-log_ok()    { echo -e "${GREEN}${LOG_PREFIX}${NC} ✓ $1"; }
-log_warn()  { echo -e "${YELLOW}${LOG_PREFIX}${NC} ⚠ $1"; }
 
 # =============================================================================
 # Detection Helpers

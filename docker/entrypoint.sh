@@ -4,10 +4,10 @@
 
 set -e
 
+# 로깅 유틸리티 로드
+SOURCE_LOG="/docker_dev/scripts/utils_logging.sh"
+[ -f "$SOURCE_LOG" ] && source "$SOURCE_LOG"
 LOG_PREFIX="[Entrypoint]"
-log_info()  { echo -e "\033[0;36m${LOG_PREFIX} [INFO] $1\033[0m"; }
-log_ok()    { echo -e "\033[0;32m${LOG_PREFIX} [OK]   $1\033[0m"; }
-log_warn()  { echo -e "\033[0;33m${LOG_PREFIX} [WARN] $1\033[0m"; }
 
 # =============================================================================
 # [0] Clean up empty environment variables

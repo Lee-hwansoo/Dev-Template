@@ -9,10 +9,11 @@
 #   3. rosdep 기반 누락된 시스템 의존성 자동 확인
 # =============================================================================
 
+# 로깅 유틸리티 로드
+SOURCE_LOG="/docker_dev/scripts/utils_logging.sh"
+[ ! -f "$SOURCE_LOG" ] && SOURCE_LOG="$(dirname "${BASH_SOURCE[0]}")/utils_logging.sh"
+[ -f "$SOURCE_LOG" ] && source "$SOURCE_LOG"
 LOG_PREFIX="[Sync Deps]"
-log_info()  { echo -e "\033[0;36m${LOG_PREFIX} [INFO] $1\033[0m"; }
-log_ok()    { echo -e "\033[0;32m${LOG_PREFIX} [OK]   $1\033[0m"; }
-log_warn()  { echo -e "\033[0;33m${LOG_PREFIX} [WARN] $1\033[0m"; }
 
 # 1. 작업 공간 및 프로젝트 루트 감지 (Hierarchical Detection)
 # 컨테이너 내 볼륨(/workspace) 우선, 그 외에는 스크립트 위치 기준 상위 탐색

@@ -1,18 +1,22 @@
 #!/bin/bash
 # scripts/internal_apt_helper.sh
 # ── Build-time APT Management Utility ──────────────────────────────────────
-# This script is used during Docker builds to handle APT snapshots and
-# filter user-defined packages from apt.txt and apt_ros.txt.
 
 set -e
-
 COMMAND=$1
+
+# 로깅 유틸리티 로드 (도커 빌드 중에는 경로가 다를 수 있음)
+SOURCE_LOG="/tmp/utils_logging.sh"
+[ ! -f "$SOURCE_LOG" ] && SOURCE_LOG="/docker_dev/scripts/utils_logging.sh"
+[ ! -f "$SOURCE_LOG" ] && SOURCE_LOG="$(dirname "${BASH_SOURCE[0]}")/utils_logging.sh"
+[ -f "$SOURCE_LOG" ] && source "$SOURCE_LOG"
+LOG_PREFIX="[APT Helper]"
 
 # 0. Initialize APT for Docker (Keep cache for BuildKit mounts)
 init_apt() {
     rm -f /etc/apt/apt.conf.d/docker-clean
     echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
-    echo "[APT Helper] Docker APT cache preservation enabled."
+    log_info "Docker APT cache preservation enabled."
 }
 
 # 1. Configure APT Snapshot and disable Valid-Until checks
@@ -31,7 +35,7 @@ setup_snapshot() {
             sed -i "s|http://security.ubuntu.com/ubuntu/|http://snapshot.ubuntu.com/ubuntu/$date/|g" /etc/apt/sources.list
             sed -i "s|http://ports.ubuntu.com/ubuntu-ports/|http://snapshot.ubuntu.com/ubuntu-ports/$date/|g" /etc/apt/sources.list
         fi
-        echo "[APT Helper] Snapshot configured for: $date"
+        log_info "Snapshot configured for: $date"
     fi
 }
 
@@ -55,7 +59,7 @@ setup_ros_repo() {
         curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key | gpg --dearmor -o /usr/share/keyrings/ros-archive-keyring.gpg
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $codename main" > /etc/apt/sources.list.d/ros2.list
     fi
-    echo "[APT Helper] ROS repository configured for: $distro ($codename)"
+    log_info "ROS repository configured for: $distro ($codename)"
 }
 # 2. Install user-defined packages with optional filtering
 install_packages() {
@@ -111,18 +115,18 @@ install_packages() {
     pkgs=$(echo "$pkgs" | xargs) # Clean whitespace
 
     if [ -n "$pkgs" ]; then
-        echo "[APT Helper] Installing ($filter) packages for $distro ($target_tag): $pkgs"
+        log_info "Installing ($filter) packages for $distro ($target_tag): $pkgs"
         if ! apt-get update; then
-            echo "[APT Helper] ERROR: 'apt-get update' failed."
+            log_error "'apt-get update' failed."
             if [ -f /etc/apt/apt.conf.d/99-snapshot ]; then
-                echo "[APT Helper] TIP: An APT Snapshot is active. If this persists, the snapshot date might be invalid or the repository might be down."
+                log_info "TIP: An APT Snapshot is active. If this persists, the snapshot date might be invalid or the repository might be down."
             fi
             exit 1
         fi
         read -r -a pkg_array <<< "$pkgs"
         apt-get install -y --no-install-recommends "${pkg_array[@]}"
     else
-        echo "[APT Helper] No packages matched filter ($filter, $target_tag)"
+        log_info "No packages matched filter ($filter, $target_tag)"
     fi
 }
 

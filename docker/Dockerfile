@@ -27,6 +27,7 @@ ENV LANG=${LANG} \
 
 # 공통 빌드 헬퍼 및 의존성 정의 파일 중앙화
 COPY scripts/internal_apt_helper.sh /tmp/internal_apt_helper.sh
+COPY scripts/utils_logging.sh /tmp/utils_logging.sh
 COPY dependencies/ /opt/dependencies/
 
 RUN chmod +x /tmp/internal_apt_helper.sh && \
