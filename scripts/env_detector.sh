@@ -29,7 +29,15 @@ case "${RAW_ARCH}" in
     *)       HOST_ARCH="unknown" ;;
 esac
 
-# 3. 디스플레이 서버 감지
+# 3. 디스플레이 서버 감지 및 캐시 경로 확보
+# DOCKER_DEV_CACHE_DIR이 설정되어 있으면 사용, 없으면 워크스페이스 내 .docker_cache 사용
+if [ -z "${DOCKER_DEV_CACHE_DIR}" ]; then
+    HOST_CACHE_DIR="${WORKSPACE_PATH:-$(pwd)}/.docker_cache"
+else
+    HOST_CACHE_DIR="${DOCKER_DEV_CACHE_DIR}"
+fi
+mkdir -p "${HOST_CACHE_DIR}"
+
 DISPLAY_TYPE="X11"
 HOST_XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}"
 HOST_WAYLAND_DISPLAY="${WAYLAND_DISPLAY}"
@@ -53,12 +61,38 @@ if [ -n "$WAYLAND_DISPLAY" ]; then
     fi
 fi
 
-# 4. 캐시 및 경로 설정 (SSOT)
-# DOCKER_DEV_CACHE_DIR이 설정되어 있으면 사용, 없으면 워크스페이스 내 .docker_cache 사용
-if [ -z "${DOCKER_DEV_CACHE_DIR}" ]; then
-    HOST_CACHE_DIR="${WORKSPACE_PATH:-$(pwd)}/.docker_cache"
+if [ -z "${HOST_XDG_RUNTIME_DIR}" ] || [ ! -d "${HOST_XDG_RUNTIME_DIR}" ]; then
+    mkdir -p "${HOST_CACHE_DIR}/dummy_xdg_runtime"
+    HOST_XDG_RUNTIME_DIR="${HOST_CACHE_DIR}/dummy_xdg_runtime"
+fi
+
+# X11 소켓 디렉토리 감지 (자동 생성 포함)
+if [ -d /tmp/.X11-unix ]; then
+    HOST_X11_DIR="/tmp/.X11-unix"
 else
-    HOST_CACHE_DIR="${DOCKER_DEV_CACHE_DIR}"
+    # X11이 없거나 특수한 환경인 경우를 대비한 가상 경로 생성
+    mkdir -p "${HOST_CACHE_DIR}/dummy_x11_unix"
+    HOST_X11_DIR="${HOST_CACHE_DIR}/dummy_x11_unix"
+fi
+
+# 4. 호스트 파일 더미 매핑 (SSOT & Headless 대비)
+if [ -d "${HOST_HOME}/.ssh" ]; then
+    HOST_SSH_DIR="${HOST_HOME}/.ssh"
+else
+    mkdir -p "${HOST_CACHE_DIR}/dummy_ssh"
+    HOST_SSH_DIR="${HOST_CACHE_DIR}/dummy_ssh"
+fi
+
+if [ -f "${HOST_HOME}/.gitconfig" ]; then
+    HOST_GITCONFIG="${HOST_HOME}/.gitconfig"
+else
+    touch "${HOST_CACHE_DIR}/dummy_gitconfig"
+    HOST_GITCONFIG="${HOST_CACHE_DIR}/dummy_gitconfig"
+fi
+
+if [ ! -f "${HOST_XAUTHORITY}" ]; then
+    touch "${HOST_CACHE_DIR}/dummy_xauthority"
+    HOST_XAUTHORITY="${HOST_CACHE_DIR}/dummy_xauthority"
 fi
 
 # 5. 결과 출력 (Makefile 등에서 활용 가능한 KEY=VALUE 형식)
@@ -72,3 +106,6 @@ echo "HOST_WAYLAND_DISPLAY=${HOST_WAYLAND_DISPLAY}"
 echo "HOST_XAUTHORITY=${HOST_XAUTHORITY}"
 echo "HOST_HOME=${HOST_HOME}"
 echo "HOST_CACHE_DIR=${HOST_CACHE_DIR}"
+echo "HOST_X11_DIR=${HOST_X11_DIR}"
+echo "HOST_GITCONFIG=${HOST_GITCONFIG}"
+echo "HOST_SSH_DIR=${HOST_SSH_DIR}"

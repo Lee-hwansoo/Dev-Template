@@ -7,24 +7,24 @@ include:
 
 # ── 개발 환경 전용 볼륨 앵커 (Flat List) ──────────────────────────────────────
 x-dev-volumes: &dev-volumes
-  - /tmp/.X11-unix:/tmp/.X11-unix:rw
-  - ${HOST_XAUTHORITY:-${HOME}/.Xauthority}:/root/.Xauthority:ro
-  - ${HOST_XDG_RUNTIME_DIR:-/tmp/.docker_x11}:/tmp/runtime-root:rw
+  - ${HOST_X11_DIR}:/tmp/.X11-unix:rw
+  - ${HOST_XAUTHORITY}:/root/.Xauthority:ro
+  - ${HOST_XDG_RUNTIME_DIR}:/tmp/runtime-root:rw
   - ${WORKSPACE_PATH:-.}:/workspace:rw
-  - ${GIT_CONFIG_PATH:-${HOST_HOME:-${HOME}}/.gitconfig}:/root/.gitconfig:ro
-  - ${SSH_PATH:-${HOST_HOME:-${HOME}}/.ssh}:/root/.ssh:ro
+  - ${GIT_CONFIG_PATH:-${HOST_GITCONFIG}}:/root/.gitconfig:ro
+  - ${SSH_PATH:-${HOST_SSH_DIR}}:/root/.ssh:ro
   - ${HOST_CACHE_DIR:-${WORKSPACE_PATH:-.}/.docker_cache}:/cache:rw
   - ${DEV_BUILD_VOL:-dev_build_data}:/workspace/build
   - ${DEV_INSTALL_VOL:-dev_install_data}:/workspace/install
   - ${DEV_LOG_VOL:-dev_log_data}:/workspace/log
 
 x-ros-volumes: &ros-volumes
-  - /tmp/.X11-unix:/tmp/.X11-unix:rw
-  - ${HOST_XAUTHORITY:-${HOME}/.Xauthority}:/root/.Xauthority:ro
-  - ${HOST_XDG_RUNTIME_DIR:-/tmp/.docker_x11}:/tmp/runtime-root:rw
+  - ${HOST_X11_DIR}:/tmp/.X11-unix:rw
+  - ${HOST_XAUTHORITY}:/root/.Xauthority:ro
+  - ${HOST_XDG_RUNTIME_DIR}:/tmp/runtime-root:rw
   - ${WORKSPACE_PATH:-.}:/workspace:rw
-  - ${GIT_CONFIG_PATH:-${HOST_HOME:-${HOME}}/.gitconfig}:/root/.gitconfig:ro
-  - ${SSH_PATH:-${HOST_HOME:-${HOME}}/.ssh}:/root/.ssh:ro
+  - ${GIT_CONFIG_PATH:-${HOST_GITCONFIG}}:/root/.gitconfig:ro
+  - ${SSH_PATH:-${HOST_SSH_DIR}}:/root/.ssh:ro
   - ${HOST_CACHE_DIR:-${WORKSPACE_PATH:-.}/.docker_cache}:/cache:rw
   - ${ROS_BUILD_VOL:-ros_build_data}:/workspace/build
   - ${ROS_INSTALL_VOL:-ros_install_data}:/workspace/install

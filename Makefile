@@ -109,7 +109,7 @@ define BUILD_SERVICE
 endef
 
 # 인프라 핵심 변수 export
-export HAS_NVIDIA HAS_TOOLKIT HAS_DRI HOST_ARCH TARGETARCH DISPLAY_TYPE HOST_XDG_RUNTIME_DIR HOST_WAYLAND_DISPLAY HOST_XAUTHORITY HOST_HOME NVIDIA_VISIBLE_DEVICES NVIDIA_DRIVER_CAPABILITIES NVIDIA_GPU_COUNT HOST_CACHE_DIR
+export HAS_NVIDIA HAS_TOOLKIT HAS_DRI HOST_ARCH TARGETARCH DISPLAY_TYPE HOST_XDG_RUNTIME_DIR HOST_WAYLAND_DISPLAY HOST_XAUTHORITY HOST_HOME NVIDIA_VISIBLE_DEVICES NVIDIA_DRIVER_CAPABILITIES NVIDIA_GPU_COUNT HOST_CACHE_DIR HOST_X11_DIR HOST_GITCONFIG HOST_SSH_DIR
 
 .PHONY: help setup check check-host xauth status \
         build-ros build-dev rebuild-ros rebuild-dev \
@@ -208,9 +208,9 @@ xauth:
 		if command -v xauth >/dev/null 2>&1; then \
 			touch $(HOST_XAUTHORITY) 2>/dev/null || true; \
 			xauth nlist $(DISPLAY) | sed -e 's/^..../ffff/' | xauth -f $(HOST_XAUTHORITY) nmerge - 2>/dev/null || true; \
-		fi \
+		fi; \
 	fi
-	@if command -v xhost >/dev/null 2>&1; then \
+	@if [ -n "$(DISPLAY)" ] && command -v xhost >/dev/null 2>&1; then \
 		xhost +local:root > /dev/null 2>&1 || true; \
 	fi
 
@@ -219,8 +219,6 @@ check: check-host
 	@if [ ! -d "$(WORKSPACE_PATH)" ]; then echo "  [오류] WORKSPACE_PATH($(WORKSPACE_PATH))가 존재하지 않는 디렉토리입니다."; exit 1; fi
 	$(call VALIDATE_COMPOSE_NAME)
 	$(call VALIDATE_ROS_ENV)
-	@mkdir -p ~/.ssh && touch ~/.gitconfig
-	@if [ ! -f $(HOST_XAUTHORITY) ]; then touch $(HOST_XAUTHORITY) 2>/dev/null || true; fi
 
 # 빌드 (Build)
 # =============================================================================
