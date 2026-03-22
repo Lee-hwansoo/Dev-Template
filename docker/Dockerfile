@@ -136,7 +136,9 @@ WORKDIR /workspace
 FROM common AS ros-base
 ARG ROS_DISTRO
 ENV ROS_DISTRO=${ROS_DISTRO}
-RUN /tmp/internal_apt_helper.sh setup-ros-repo ${ROS_DISTRO}
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    /tmp/internal_apt_helper.sh setup-ros-repo ${ROS_DISTRO}
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     /tmp/internal_apt_helper.sh install-packages all ${ROS_DISTRO} && \
@@ -153,7 +155,7 @@ RUN SYNC_TARGET_DIR=/tmp/staging /docker_dev/scripts/sync_deps.sh --rosdep && \
 WORKDIR /workspace
 
 # ── Stage 8: Production Builds (Bake) ───────────────────────────────────────
-FROM python-runtime AS builder-dev
+FROM common AS builder-dev
 ARG ROS_DISTRO
 WORKDIR /workspace
 COPY s[r]c/ src/
@@ -162,10 +164,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     /tmp/internal_apt_helper.sh install-packages all ${ROS_DISTRO}
 ENV UV_PROJECT_ENVIRONMENT="/workspace/install/.venv"
-RUN if [ -f uv.lock ]; then uv sync --frozen; \
+RUN --mount=type=cache,target=/cache/uv,sharing=locked \
+    if [ -f uv.lock ]; then uv sync --frozen; \
     elif [ -f /opt/dependencies/requirements.txt ]; then uv pip install -r /opt/dependencies/requirements.txt; fi && \
     . /workspace/install/.venv/bin/activate
-RUN mkdir -p build && cd build && \
+RUN --mount=type=cache,target=/cache/ccache,sharing=locked \
+    mkdir -p build && cd build && \
     cmake ../src -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD} && \
     make -j$(nproc) && make install DESTDIR=/workspace/install
 
@@ -178,7 +182,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     rosdep update --rosdistro ${ROS_DISTRO} && \
     ln -s /opt/dependencies /workspace/dependencies && \
     SYNC_TARGET_DIR=src/thirdparty /docker_dev/scripts/sync_deps.sh --rosdep
-RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+RUN --mount=type=cache,target=/cache/ccache,sharing=locked \
+    . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD} --install-base /workspace/install
 
 # ── Stage 9: Final Runtime Images (Switch) ──────────────────────────────────
@@ -195,7 +200,9 @@ CMD ["bash"]
 
 FROM runtime-common AS ros-runtime
 WORKDIR /workspace
-RUN /tmp/internal_apt_helper.sh setup-ros-repo ${ROS_DISTRO}
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    /tmp/internal_apt_helper.sh setup-ros-repo ${ROS_DISTRO}
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     /tmp/internal_apt_helper.sh install-packages runtime ${ROS_DISTRO} && \
