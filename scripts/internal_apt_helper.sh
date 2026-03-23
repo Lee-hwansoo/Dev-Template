@@ -75,10 +75,17 @@ install_packages() {
     [ ! -f "$ros_file" ] && [ -f "${dep_dir}/apt_ros.txt" ] && ros_file="${dep_dir}/apt_ros.txt"
 
     # Detect target ROS version tag
-    local target_tag="ros2"
-    [ "$distro" == "noetic" ] && target_tag="ros1"
-    local other_tag="ros1"
-    [ "$target_tag" == "ros1" ] && other_tag="ros2"
+    local target_tag="none"
+    local other_tag="ros1|ros2"
+    if [ -n "$distro" ]; then
+        if [ "$distro" == "noetic" ]; then
+            target_tag="ros1"
+            other_tag="ros2"
+        else
+            target_tag="ros2"
+            other_tag="ros1"
+        fi
+    fi
 
     local grep_pattern='^[^#]+'
     [ "$filter" == "runtime" ] && grep_pattern='^[^#]+ # runtime'
@@ -94,7 +101,7 @@ install_packages() {
             # 2. Exclude lines explicitly tagged for the "other" version (e.g. # runtime,ros1)
             # 3. Handle variables (${ROS_DISTRO}) and clean up comments
             grep -E "$pattern" "$file" | \
-            grep -v -E " #.*,${other_tag}| # ${other_tag}" | \
+            grep -v -E " #.*,(${other_tag})| # (${other_tag})" | \
             sed "s/\${ROS_DISTRO}/$distro/g" | \
             sed 's/ #.*//' | xargs || true
         fi
@@ -106,7 +113,7 @@ install_packages() {
     fi
 
     # Extract packages from apt_ros.txt
-    if [ -f "$ros_file" ]; then
+    if [ -n "$distro" ] && [ -f "$ros_file" ]; then
         local ros_pkgs
         ros_pkgs=$(filter_pkg_list "$ros_file" "$grep_pattern")
         pkgs="$pkgs $ros_pkgs"
@@ -115,7 +122,11 @@ install_packages() {
     pkgs=$(echo "$pkgs" | xargs) # Clean whitespace
 
     if [ -n "$pkgs" ]; then
-        log_info "Installing ($filter) packages for $distro ($target_tag): $pkgs"
+        if [ -n "$distro" ]; then
+            log_info "Installing ($filter) packages for $distro ($target_tag): $pkgs"
+        else
+            log_info "Installing ($filter) packages: $pkgs"
+        fi
         if ! apt-get update; then
             log_error "'apt-get update' failed."
             if [ -f /etc/apt/apt.conf.d/99-snapshot ]; then

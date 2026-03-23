@@ -130,7 +130,7 @@ ARG ROS_DISTRO
 ENV COLCON_HOME=/workspace
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    /tmp/internal_apt_helper.sh install-packages all ${ROS_DISTRO}
+    /tmp/internal_apt_helper.sh install-packages all
 WORKDIR /workspace
 
 FROM common AS ros-base
@@ -162,7 +162,7 @@ COPY s[r]c/ src/
 COPY pyproject.toml* uv.lock* ./
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    /tmp/internal_apt_helper.sh install-packages all ${ROS_DISTRO}
+    /tmp/internal_apt_helper.sh install-packages all
 ENV UV_PROJECT_ENVIRONMENT="/workspace/install/.venv"
 RUN --mount=type=cache,target=/cache/uv,sharing=locked \
     if [ -f uv.lock ]; then uv sync --frozen; \
@@ -191,7 +191,7 @@ FROM runtime-common AS dev-runtime
 WORKDIR /workspace
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    /tmp/internal_apt_helper.sh install-packages runtime ${ROS_DISTRO} && \
+    /tmp/internal_apt_helper.sh install-packages runtime && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=builder-dev /workspace/install /workspace/install
 ENV PATH="/workspace/install/.venv/bin:/workspace/install/bin:$PATH" VIRTUAL_ENV="/workspace/install/.venv"
