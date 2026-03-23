@@ -88,7 +88,7 @@ endef
 define EXEC_CONTAINER
 	@CONTAINER=$$(docker ps --filter "name=$1" --format "{{.Names}}" | head -n 1); \
 	if [ -n "$$CONTAINER" ]; then \
-		docker exec -it $$CONTAINER $2; \
+		docker exec -it $$CONTAINER $2 || [ $$? -eq 130 ]; \
 	else \
 		echo -e "  $(ERROR) 실행 중인 $3 컨테이너가 없습니다."; \
 		exit 1; \
@@ -99,7 +99,7 @@ endef
 define EXEC_DETACHED
 	@CONTAINER=$$(docker ps --filter "name=$1" --format "{{.Names}}" | head -n 1); \
 	if [ -n "$$CONTAINER" ]; then \
-		docker exec -d $$CONTAINER $2; \
+		docker exec -it $$CONTAINER $2 || [ $$? -eq 130 ]; \
 	else \
 		echo "  [오류] 실행 중인 $3 컨테이너가 없습니다."; \
 		exit 1; \
