@@ -52,30 +52,20 @@ COPY docker/entrypoint.sh /entrypoint.sh
 COPY scripts/gpu_setup.sh /opt/scripts/gpu_setup.sh
 RUN chmod +x /entrypoint.sh /opt/scripts/gpu_setup.sh
 
-# ── Stage 2: base-tools (Shared Utilities) ───────────────────────────────
-FROM base AS base-tools
+# ── Stage 2: dev-base-tools (Utilities, Compilers & GUI) ──────────────────────
+FROM base AS dev-base-tools
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-    bash-completion ca-certificates curl gnupg2 htop iproute2 jq lsb-release net-tools nvtop software-properties-common tree unzip wget
-
-# ── Stage 3: build-tools (Compilers & Libraries) ───────────────────────────
-FROM base-tools AS build-tools
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends \
-    build-essential ccache cmake g++ gcc gdb git libasio-dev libboost-all-dev libeigen3-dev libtbb-dev libyaml-cpp-dev make ninja-build python3-dev
-
-# ── Stage 4: gui-tools (Graphics & Display) ───────────────────────────────
-FROM build-tools AS gui-tools
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends \
+    # base-tools
+    bash-completion ca-certificates curl gnupg2 htop iproute2 jq lsb-release net-tools nvtop software-properties-common tree unzip wget \
+    # build-tools
+    build-essential ccache cmake g++ gcc gdb git libasio-dev libboost-all-dev libeigen3-dev libtbb-dev libyaml-cpp-dev make ninja-build python3-dev \
+    # gui-tools
     clinfo fontconfig libegl1-mesa-dev libgl1-mesa-dri libgl1-mesa-glx libglfw3-dev libglx-mesa0 libqt5waylandclient5 libvulkan-dev libwayland-client0 libxkbcommon0 mesa-utils mesa-vulkan-drivers qtwayland5 terminator vulkan-tools vulkan-validationlayers x11-apps x11-utils \
     intel-gpu-tools intel-opencl-icd || true
 
-# D2Coding 폰트 (한국어 환경)
-# 의존성 폴더에 폰트가 있으면 복사, 없으면 다운로드 (실패 허용)
+# D2Coding 폰트
 RUN if [ -f /opt/dependencies/D2Coding.zip ]; then \
         unzip -q /opt/dependencies/D2Coding.zip -d /usr/share/fonts/truetype/d2coding; \
     else \
@@ -84,21 +74,15 @@ RUN if [ -f /opt/dependencies/D2Coding.zip ]; then \
     fi; \
     fc-cache -f || true
 
-# ── Stage 5: python-runtime ────────────────────────────────────────────────
-FROM gui-tools AS python-runtime
+# ── Stage 3: dev-core (Python & Core Config) ───────────────────────────────
+FROM dev-base-tools AS dev-core
 ARG UV_VERSION
 ARG UV_PYTHON
-
-# 공식 uv 이미지에서 바이너리 복사 (arm64/amd64 자동 대응)
-COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /uvx /usr/local/bin/
-
-# uv를 사용하여 파이썬 설치
-RUN uv python install ${UV_PYTHON}
-
-# ── Stage 6: common (Dev Core Configuration) ───────────────────────────────
-FROM python-runtime AS common
 ARG CMAKE_CXX_STANDARD
-ARG UV_PYTHON
+
+# uv 설치 및 파이썬 세팅
+COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /uvx /usr/local/bin/
+RUN uv python install ${UV_PYTHON}
 
 ENV PATH="/usr/lib/ccache:/workspace/install/.venv/bin:$PATH" \
     CCACHE_DIR=/cache/ccache \
@@ -123,7 +107,7 @@ ENTRYPOINT ["/entrypoint.sh"]
 CMD ["bash"]
 
 # ── Stage 7: dev targets ──────────────────────────────────────────
-FROM common AS dev
+FROM dev-core AS dev
 ARG ROS_DISTRO
 ENV COLCON_HOME=/workspace
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -131,7 +115,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     /tmp/internal_apt_helper.sh install-packages all
 WORKDIR /workspace
 
-FROM common AS ros-base
+FROM dev-core AS ros-base
 ARG ROS_DISTRO
 ENV ROS_DISTRO=${ROS_DISTRO}
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -153,7 +137,7 @@ RUN SYNC_TARGET_DIR=/tmp/staging /docker_dev/scripts/sync_deps.sh --rosdep && \
 WORKDIR /workspace
 
 # ── Stage 8a: 공유 Python 의존성 레이어 ──────────────────────────────────────
-FROM common AS python-deps
+FROM dev-core AS python-deps
 WORKDIR /workspace
 COPY pyproject.toml* uv.lock* ./
 ENV UV_PROJECT_ENVIRONMENT="/workspace/install/.venv"
