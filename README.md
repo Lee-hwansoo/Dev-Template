@@ -250,7 +250,10 @@ make ros-prod        # 서비스 시작 (또는 docker compose -f docker-compose
 ### 2. Language Layer (C++/Python)
 
 - **C++:** `FetchDependencies.cmake`를 활용한 빌드 타임 의존성 해결.
-- **Python:** 초고속 패키지 매니저 `uv`(`uv.lock`) 기반 결정성 있는 가상환경 구축. (호스트 캐시 `/cache/uv` 활용)
+- **Python:** 초고속 패키지 매니저 `uv` 기반 결정성 있는 가상환경 구축. (호스트 캐시 `/cache/uv` 활용)
+  - **`pyproject.toml` + `uv.lock`** (권장): 프로젝트 의존성을 결정적으로 관리. `uv sync --frozen`으로 재현 가능한 환경 구축.
+  - **`dependencies/requirements.txt`** (호환): uv 미사용 프로젝트를 위한 레거시 호환. 기반/인프라 패키지 명시용.
+  - **병합 사용**: 두 파일이 모두 존재하면 `requirements.txt` → `uv.lock` 순서로 순차 설치됩니다.
 
 ### 3. Workspace Layer (vcstool)
 

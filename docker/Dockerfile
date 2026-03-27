@@ -88,16 +88,12 @@ RUN if [ -f /opt/dependencies/D2Coding.zip ]; then \
 FROM gui-tools AS python-runtime
 ARG UV_VERSION
 ARG UV_PYTHON
-ARG TARGETARCH
 
-RUN case "${TARGETARCH}" in \
-    amd64) UV_ARCH="x86_64-unknown-linux-musl" ;; \
-    arm64) UV_ARCH="aarch64-unknown-linux-musl" ;; \
-    *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
-    esac \
-    && curl -LsSf "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${UV_ARCH}.tar.gz" \
-    | tar -xz -C /usr/local/bin --strip-components=1 "uv-${UV_ARCH}/uv" \
-    && chmod +x /usr/local/bin/uv && uv python install ${UV_PYTHON}
+# 공식 uv 이미지에서 바이너리 복사 (arm64/amd64 자동 대응)
+COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /uvx /usr/local/bin/
+
+# uv를 사용하여 파이썬 설치
+RUN uv python install ${UV_PYTHON}
 
 # ── Stage 6: common (Dev Core Configuration) ───────────────────────────────
 FROM python-runtime AS common
@@ -108,6 +104,8 @@ ENV PATH="/usr/lib/ccache:/workspace/install/.venv/bin:$PATH" \
     CCACHE_DIR=/cache/ccache \
     UV_CACHE_DIR=/cache/uv \
     UV_PYTHON=${UV_PYTHON} \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
     VIRTUAL_ENV=/workspace/install/.venv \
     CMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD}
 
@@ -154,34 +152,49 @@ RUN SYNC_TARGET_DIR=/tmp/staging /docker_dev/scripts/sync_deps.sh --rosdep && \
     rm -rf /tmp/staging
 WORKDIR /workspace
 
-# ── Stage 8: Production Builds (Bake) ───────────────────────────────────────
-FROM common AS builder-dev
-ARG ROS_DISTRO
+# ── Stage 8a: 공유 Python 의존성 레이어 ──────────────────────────────────────
+FROM common AS python-deps
 WORKDIR /workspace
-COPY s[r]c/ src/
 COPY pyproject.toml* uv.lock* ./
+ENV UV_PROJECT_ENVIRONMENT="/workspace/install/.venv"
+RUN --mount=type=cache,target=/cache/uv,sharing=locked \
+    uv venv ${UV_PROJECT_ENVIRONMENT} && \
+    if [ -f /opt/dependencies/requirements.txt ]; then \
+        uv pip install -r /opt/dependencies/requirements.txt; \
+    fi && \
+    if [ -f pyproject.toml ] && [ -f uv.lock ]; then \
+        uv sync --frozen --no-install-project; \
+    fi
+
+# ── Stage 8b: C++/Python 빌드 (builder-dev) ──────────────────────────────────
+FROM python-deps AS builder-dev
+ARG ROS_DISTRO
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     /tmp/internal_apt_helper.sh install-packages all
-ENV UV_PROJECT_ENVIRONMENT="/workspace/install/.venv"
+COPY s[r]c/ src/
 RUN --mount=type=cache,target=/cache/uv,sharing=locked \
-    if [ -f uv.lock ]; then uv sync --frozen; \
-    elif [ -f /opt/dependencies/requirements.txt ]; then uv pip install -r /opt/dependencies/requirements.txt; fi && \
-    . /workspace/install/.venv/bin/activate
+    if [ -f pyproject.toml ] && [ -f uv.lock ]; then uv sync --frozen; fi
 RUN --mount=type=cache,target=/cache/ccache,sharing=locked \
     mkdir -p build && cd build && \
     cmake ../src -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD} && \
     make -j$(nproc) && make install DESTDIR=/workspace/install
 
+# ── Stage 8c: ROS 빌드 (builder-ros) ─────────────────────────────────────────
 FROM ros-base AS builder-ros
 WORKDIR /workspace
+COPY --from=python-deps /workspace/install/.venv /workspace/install/.venv
+COPY pyproject.toml* uv.lock* ./
 COPY s[r]c/ src/
+ENV UV_PROJECT_ENVIRONMENT="/workspace/install/.venv"
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     /tmp/internal_apt_helper.sh install-packages all ${ROS_DISTRO} && \
     rosdep update --rosdistro ${ROS_DISTRO} && \
     ln -s /opt/dependencies /workspace/dependencies && \
     SYNC_TARGET_DIR=src/thirdparty /docker_dev/scripts/sync_deps.sh --rosdep
+RUN --mount=type=cache,target=/cache/uv,sharing=locked \
+    if [ -f pyproject.toml ] && [ -f uv.lock ]; then uv sync --frozen; fi
 RUN --mount=type=cache,target=/cache/ccache,sharing=locked \
     . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD} --install-base /workspace/install
