@@ -98,7 +98,7 @@ RUN mkdir -p /cache/ccache /cache/uv /workspace/install
 COPY config/  /docker_dev/config/
 COPY scripts/ /docker_dev/scripts/
 RUN chmod +x /docker_dev/scripts/*.sh && \
-    cat /docker_dev/config/bashrc_common.sh >> /root/.bashrc && \
+    cat /docker_dev/config/bash_init.sh >> /root/.bashrc && \
     mkdir -p /root/.config/terminator && cp /docker_dev/config/terminator_config /root/.config/terminator/config 2>/dev/null || true
 
 COPY docker/entrypoint.sh /entrypoint.sh
@@ -130,7 +130,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 FROM ros-base AS ros
 ENV COLCON_HOME=/workspace
 RUN mkdir -p /workspace/src && \
-    cat /docker_dev/config/bashrc_ros.sh >> /root/.bashrc && \
+RUN mkdir -p /workspace/src && \
     ln -sf /docker_dev/config/colcon.meta /workspace/colcon.meta
 RUN SYNC_TARGET_DIR=/tmp/staging /docker_dev/scripts/sync_deps.sh --rosdep && \
     rm -rf /tmp/staging
