@@ -94,6 +94,7 @@ alias la='ls -A'
 alias ccache-stat='ccache -s'
 alias ccache-clear='ccache -C'
 alias sync_deps='bash /docker_dev/scripts/sync_deps.sh'
+alias check_deps='bash /docker_dev/scripts/check_deps.sh'
 
 # =============================================================================
 # Hardware Diagnostics
@@ -109,7 +110,7 @@ alias use_amd='source /docker_dev/scripts/gpu_setup.sh amd && __gpu_status_impl'
 alias use_nvidia='source /docker_dev/scripts/gpu_setup.sh nvidia && __gpu_status_impl'
 alias use_cpu='source /docker_dev/scripts/gpu_setup.sh cpu && __gpu_status_impl'
 
-# =========================``====================================================
+# =============================================================================
 # Help / Documentation
 # =============================================================================
 function __print_help() {
@@ -140,6 +141,7 @@ function __print_help() {
     echo -e "  ${BLUE}[Utils]${NC}"
     echo -e "    ${GREEN}ll${NC} / ${GREEN}la${NC}           : Detailed ls (all / long format)"
     echo -e "    ${GREEN}sync_deps${NC}        : Sync external repos from .repos file"
+    echo -e "    ${GREEN}check_deps${NC}       : Check missing runtime libraries in install/"
     echo -e "    ${GREEN}ccache-stat${NC}       : Show compiler cache statistics"
     echo -e "    ${GREEN}h${NC} / ${GREEN}help${NC}         : Show this help guide"
     echo -e ""

@@ -18,6 +18,12 @@ LOG_PREFIX="[Sanity Check]"
 
 log_info "Scanning for missing dependencies in $TARGET_DIR..."
 
+if [ ! -d "$TARGET_DIR" ]; then
+    log_error "Target directory '$TARGET_DIR' does not exist."
+    log_info "Make sure you have built your project (e.g., 'cb' or 'make install') before checking dependencies."
+    exit 1
+fi
+
 # Find executable files and shared libraries (.so) - use process substitution to preserve MISSING_COUNT
 while IFS= read -r -d '' file; do
     # Check if it's an ELF file (only run ldd on binary files)

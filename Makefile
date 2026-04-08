@@ -35,6 +35,7 @@ export
 COMPOSE := docker compose
 COMPOSE_DEV := -f docker-compose.dev.yml
 COMPOSE_PROD := -f docker-compose.prod.yml
+TERMINAL ?= terminator
 
 # Macros (Deduplication & SSOT)
 # Integrated GPU Mode Detection Logic
@@ -299,13 +300,13 @@ ros-shell: check
 	$(call EXEC_CONTAINER,$(ROS_FILTER),bash,ROS)
 
 ros-term: check xauth
-	$(call EXEC_DETACHED,$(ROS_FILTER),terminator,ROS)
+	$(call EXEC_DETACHED,$(ROS_FILTER),$(TERMINAL),ROS)
 
 dev-shell: check
 	$(call EXEC_CONTAINER,$(DEV_FILTER),bash,Development)
 
 dev-term: check xauth
-	$(call EXEC_DETACHED,$(DEV_FILTER),terminator,Development)
+	$(call EXEC_DETACHED,$(DEV_FILTER),$(TERMINAL),Development)
 
 # Scaling
 scale-basic: check

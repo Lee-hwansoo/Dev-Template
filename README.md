@@ -55,6 +55,21 @@ Every project adheres to this layout, regardless of the underlying language or f
 - **`install/`**: The **deployment artifacts** directory where final executables, libraries, and Python virtual environments (`.venv`) are stored.
   - *Note: The Python virtual environment is intentionally placed inside `install/` so it can be executed independently without the source code upon deployment. For IDE compatibility, a `.venv` symlink is automatically created in the project root.*
 
+```mermaid
+graph LR
+    subgraph "Dev Mode (make dev / ros)"
+        SRC["Host: src/<br/>(Bind Mount :rw)"] -.->|Live Sync| WS_SRC["/workspace/src"]
+        NV_BUILD[("Named Volume<br/>build_data")] === WS_BUILD["/workspace/build"]
+        NV_INSTALL[("Named Volume<br/>install_data")] === WS_INSTALL["/workspace/install"]
+    end
+
+    subgraph "Prod Mode (make *prod)"
+        BAKED["Compiled Artifacts<br/>(COPY --from=builder)"] === PROD_INSTALL["/workspace/install"]
+        NO_SRC["Source Code Excluded"] -.-> PROD_SRC["/workspace/src"]
+        style NO_SRC fill:#ffcccc,color:#333,stroke:#f00,stroke-dasharray: 5 5
+    end
+```
+
 ---
 
 ## 🚀 Quick Start Guide
@@ -163,6 +178,7 @@ cb                # ROS: Execute colcon build (RelWithDebInfo default)
 | **`mkenv`** | **Create Python venv** | **Auto-create directory** and attach a root symlink for the `install/.venv` path |
 | **`cb`** | **ROS Build** | Build `src/` source code and install it to the `install/` directory |
 | **`sync_deps`** | Sync Dependencies | Synchronize external repositories based on `.repos` and merge them into the `src/thirdparty` workspace |
+| **`check_deps`** | Sanity Check | Verify missing shared libraries (`*.so`) inside `install/` |
 
 ### 💡 Common Aliases
 
@@ -285,6 +301,25 @@ This template adheres to a clear core principle for managing dependencies:
 - **Production Deployment Environment (Prod)**: To guarantee deployment stability, all Python packages and ROS/C++ dependencies are **100% baked-in** to the image without requiring any manual intervention during the Docker build sequence.
 
 Under this separation principle, we provide systematic dependency management methods for each ecosystem below.
+
+```mermaid
+graph LR
+    subgraph "System (APT)"
+        APT["apt.txt / apt_ros.txt"] --> |BuildKit Cache| DOCKER["Auto-install on Build<br/>(Dockerfile)"]
+    end
+
+    subgraph "Python (uv)"
+        PYPROJ["pyproject.toml"] --> |uv sync| DOCKER
+    end
+
+    subgraph "C++ (CMake)"
+        FETCH["FetchDependencies.cmake"] --> |colcon build| TARGET_B["Temp Build Space<br/>(build/)"]
+    end
+
+    subgraph "ROS (vcs)"
+        REPOS["dependencies.repos"] --> |Run sync_deps| TARGET_S["Local Source Merge<br/>(src/thirdparty/)"]
+    end
+```
 
 ### 1. Python Layer (`uv` + `pyproject.toml`)
 

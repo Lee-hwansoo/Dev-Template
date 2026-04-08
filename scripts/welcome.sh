@@ -30,6 +30,7 @@ echo -e "    ${GREEN}gpu_setup${NC}     : Auto-configure GPU mode (nvidia/igpu/c
 echo -e "    ${GREEN}cb / cbm / cbr${NC}: colcon build (standard / metas / release)"
 echo -e "    ${GREEN}mkenv / activate${NC}: Create & Activate python venv"
 echo -e "    ${GREEN}sync_deps${NC}     : Sync external repos from .repos file"
+echo -e "    ${GREEN}check_deps${NC}    : Verify missing runtime libraries in install/"
 echo -e ""
 echo -e "  ${BLUE}Quick Shortcuts:${NC}"
 echo -e "    ${GREEN}rt / rn / rl${NC}  : ros2 topic / node / launch"

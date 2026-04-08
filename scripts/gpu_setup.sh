@@ -286,9 +286,3 @@ case "${1:-auto}" in
         echo "Usage: source gpu_setup.sh {auto|intel|amd|nvidia|igpu|cpu|status}"
         ;;
 esac
-
-# Recover ROS2 environment (prevent PATH breaking after GPU setup)
-ROS_SETUP="/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
-if [ -f "$ROS_SETUP" ]; then
-    source "$ROS_SETUP" 2>/dev/null || true
-fi

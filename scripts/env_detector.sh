@@ -8,6 +8,10 @@
 # KEY=VALUE format for Makefile integration.
 # =============================================================================
 
+# Load logging utility
+source "$(dirname "${BASH_SOURCE[0]}")/utils_logging.sh" 2>/dev/null || true
+LOG_PREFIX="[Env Detector]"
+
 # 1. Identify GPU hardware and container toolkit compatibility
 HAS_NVIDIA="false"
 HAS_TOOLKIT="false"
@@ -17,8 +21,12 @@ if command -v nvidia-smi >/dev/null 2>&1; then
     HAS_NVIDIA="true"
 fi
 
-if docker info 2>/dev/null | grep -iq "Runtimes: .*nvidia"; then
-    HAS_TOOLKIT="true"
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    if docker info 2>/dev/null | grep -iq "Runtimes: .*nvidia"; then
+        HAS_TOOLKIT="true"
+    fi
+else
+    log_warn "Docker daemon is not running or not accessible. GPU toolkit detection skipped."
 fi
 
 # Detect /dev/dri existence (Used for Intel/AMD resource allocation and auto-mount selection)
@@ -105,7 +113,7 @@ fi
 for _path_var in HOST_HOME HOST_CACHE_DIR HOST_X11_DIR HOST_SSH_DIR HOST_GITCONFIG HOST_XAUTHORITY; do
     _val=$(eval echo '$'"$_path_var")
     if echo "$_val" | grep -q ' '; then
-        echo "# WARNING: $_path_var contains spaces ('$_val'). This may cause Makefile eval issues." >&2
+        log_warn "$_path_var contains spaces ('$_val'). This may cause Makefile eval issues."
     fi
 done
 

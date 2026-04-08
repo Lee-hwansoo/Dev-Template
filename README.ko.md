@@ -55,6 +55,21 @@ graph TD
 - **`install/`**: 최종 실행 파일, 라이브러리, Python 가상환경(`.venv`)이 모이는 **배포 아티팩트** 폴더
   - *Note: Python 가상환경을 `install/` 내부에 두어 배포 시 소스 없이도 독립적인 실행이 가능하도록 설계되었습니다. IDE 호환성을 위해 프로젝트 루트에 `.venv` 심볼릭 링크가 생성됩니다.*
 
+```mermaid
+graph LR
+    subgraph "Dev Mode (make dev / ros)"
+        SRC["호스트: src/<br/>(Bind Mount :rw)"] -.->|실시간 동기화| WS_SRC["/workspace/src"]
+        NV_BUILD[("Named Volume<br/>build_data")] === WS_BUILD["/workspace/build"]
+        NV_INSTALL[("Named Volume<br/>install_data")] === WS_INSTALL["/workspace/install"]
+    end
+
+    subgraph "Prod Mode (make *prod)"
+        BAKED["컴파일된 아티팩트<br/>(COPY --from=builder)"] === PROD_INSTALL["/workspace/install"]
+        NO_SRC["소스코드 제외 (격리)"] -.-> PROD_SRC["/workspace/src"]
+        style NO_SRC fill:#ffcccc,color:#333,stroke:#f00,stroke-dasharray: 5 5
+    end
+```
+
 ---
 
 ## 🚀 빠른 시작 가이드 (Quick Start)
@@ -163,6 +178,7 @@ cb                # ROS: colcon build 수행 (RelWithDebInfo 기본)
 | **`mkenv`** | **Python 가상환경 생성** | `install/.venv` 경로 및 **디렉토리 자동 생성**, 루트 심볼릭 링크 생성 |
 | **`cb`** | **ROS 빌드** | `src/` 소스를 빌드하여 `install/`에 설치 |
 | **`sync_deps`** | 의존성 동기화 | `.repos` 기반 소스 다운로드 및 `src/thirdparty` 병합 |
+| **`check_deps`** | 런타임 의존성 검증 | `install/` 내 누락된 공유 라이브러리(`*.so`) 검사 |
 
 ### 💡 유용한 약어 (Common Aliases)
 
@@ -285,6 +301,25 @@ make ros-prod        # 서비스 시작 (또는 docker compose -f docker-compose
 - **운영 배포 환경 (Prod)**: 사용자의 어떠한 수동 조작도 없이, Dockerfile 빌드 과정 중에 Python 패키지와 ROS/C++ 의존성이 **이미지 내부에 100% 완벽하게 설치(Bake-in)** 되어 영구적으로 구워집니다.
 
 이러한 분리 원칙 아래, 각 생태계별로 아래와 같은 체계적인 의존성 관리법을 제공합니다.
+
+```mermaid
+graph LR
+    subgraph "System (APT)"
+        APT["apt.txt / apt_ros.txt"] --> |BuildKit Cache| DOCKER["빌드 시 자동 설치<br/>(Dockerfile)"]
+    end
+
+    subgraph "Python (uv)"
+        PYPROJ["pyproject.toml"] --> |uv sync| DOCKER
+    end
+
+    subgraph "C++ (CMake)"
+        FETCH["FetchDependencies.cmake"] --> |colcon build| TARGET_B["임시 빌드 공간<br/>(build/)"]
+    end
+
+    subgraph "ROS (vcs)"
+        REPOS["dependencies.repos"] --> |sync_deps 실행| TARGET_S["로컬 소스 병합<br/>(src/thirdparty/)"]
+    end
+```
 
 ### 1. Python Layer (`uv` + `pyproject.toml`)
 

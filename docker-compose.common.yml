@@ -56,6 +56,14 @@ x-ros-healthcheck: &ros-healthcheck
   retries: 3
   start_period: 30s
 
+# ── Dev Healthcheck Configuration (Lightweight Shell Liveness) ──────────────
+x-dev-healthcheck: &dev-healthcheck
+  test: ["CMD-SHELL", "echo 'alive' || exit 1"]
+  interval: 30s
+  timeout: 5s
+  retries: 3
+  start_period: 10s
+
 # ── Service Templates (Abstract Bases) ───────────────────────────────────────
 services:
   # Core Configuration Base (Shared across all services)
@@ -95,6 +103,7 @@ services:
     extends: base-common
     environment:
       <<: *common-env
+    healthcheck: *dev-healthcheck
 
   # Integrated GPU (iGPU) Acceleration (Intel/AMD)
   base-igpu:

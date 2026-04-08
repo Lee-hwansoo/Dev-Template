@@ -67,7 +67,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
     # base-tools
-    bash-completion ca-certificates curl gnupg2 htop iproute2 jq lsb-release net-tools nvtop software-properties-common tree unzip wget \
+    bash-completion ca-certificates curl file gnupg2 htop iproute2 jq lsb-release net-tools nvtop software-properties-common tree unzip wget \
     # build-tools
     build-essential ccache cmake g++ gcc gdb git libasio-dev libboost-all-dev libeigen3-dev libtbb-dev libyaml-cpp-dev make ninja-build python3-dev \
     # gui-tools
@@ -176,7 +176,8 @@ RUN --mount=type=cache,target=/cache/uv,sharing=locked \
 RUN --mount=type=cache,target=/cache/ccache,sharing=locked \
     mkdir -p build && cd build && \
     cmake ../src -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/workspace/install -DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD} ${CMAKE_EXTRA_ARGS} && \
-    make -j$(nproc) && make install
+    make -j$(nproc) && make install && \
+    bash /docker_dev/scripts/check_deps.sh /workspace/install
 
 # ── Stage: builder-ros (ROS Workspace Orchestration) ─────────────────────────
 FROM ros-base AS builder-ros
@@ -198,7 +199,8 @@ RUN --mount=type=cache,target=/cache/uv,sharing=locked \
     if [ -f pyproject.toml ] && [ -f uv.lock ]; then uv sync --frozen ${UV_SYNC_FLAGS}; fi
 RUN --mount=type=cache,target=/cache/ccache,sharing=locked \
     . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    colcon build ${COLCON_EXTRA_FLAGS} --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD} ${CMAKE_EXTRA_ARGS} --install-base /workspace/install
+    colcon build ${COLCON_EXTRA_FLAGS} --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD} ${CMAKE_EXTRA_ARGS} --install-base /workspace/install && \
+    bash /docker_dev/scripts/check_deps.sh /workspace/install
 
 # ── Final Production Runtime Images (Switch Strategy) ────────────────────────
 FROM runtime-common AS dev-runtime
