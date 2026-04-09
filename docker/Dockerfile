@@ -1,5 +1,5 @@
 # =============================================================================
-# Dev-Template/docker/Dockerfile
+# docker/Dockerfile
 # Multi-stage Integrated Dockerfile (Dev & Prod)
 # =============================================================================
 

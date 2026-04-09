@@ -1,4 +1,4 @@
-# 🚀 All-in-One Docker Dev Environment Template
+# All-in-One Docker DevKit
 
 [English](README.md) | [한국어](README.ko.md)
 
@@ -381,7 +381,7 @@ Building massive external C++/ROS libraries (Eigen3, GTSAM, Librealsense2, etc.)
 
 ## 📄 License and Usage Guidelines (License & Usage)
 
-The boilerplate code and configuration files in this **Dev-Template** repository are distributed under the **[MIT-0 (MIT No Attribution)](LICENSE)** license.
+The boilerplate code and configuration files in this **DevKit** repository are distributed under the **[MIT-0 (MIT No Attribution)](LICENSE)** license.
 
 - **No Attribution Required**: There is absolutely no need to specify the original source or author of this template in your code. Freely utilize it completely unrestricted for any purpose including commercial, internal private networks, or personal open source.
 - **Freely Replaceable**: When using this template for a new project, you can safely delete the root `LICENSE` file or comfortably overwrite it with a license that matches your project's needs.

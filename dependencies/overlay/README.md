@@ -1,6 +1,6 @@
 # 🎭 Package Overlay
 
-This directory is designated for overriding (overlaying) configurations and files of external ROS packages downloaded via `vcstool`. 
+This directory is designated for overriding (overlaying) configurations and files of external ROS packages downloaded via `vcstool`.
 
 It is particularly useful for resolving build order issues or excluding specific sub-packages from the build process without modifying the original source repositories.
 

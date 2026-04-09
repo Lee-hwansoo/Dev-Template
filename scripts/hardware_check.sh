@@ -53,9 +53,7 @@ _hw_skip()     { $BRIEF_MODE || echo "  ○ $1"; }
 # -----------------------------------------------------------------------------
 
 if ! $BRIEF_MODE; then
-    echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║          ROS2 Docker Dev — Hardware Diagnostics              ║${NC}"
-    echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
+    print_devkit_banner DIAG
     echo ""
 fi
 

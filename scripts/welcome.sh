@@ -18,9 +18,7 @@ if [ -z "${NC:-}" ]; then
     YELLOW='\033[1;33m'; NC='\033[0m'
 fi
 
-echo -e "${CYAN}======================================================================${NC}"
-echo -e "                              ${GREEN}Welcome${NC}"
-echo -e "${CYAN}======================================================================${NC}"
+print_devkit_banner WELCOME
 echo -e "  Project: ${BLUE}${COMPOSE_PROJECT_NAME}${NC} | ROS: ${YELLOW}${ROS_DISTRO:-None}${NC} | GPU: ${YELLOW}${GPU_MODE:-auto}${NC}"
 echo -e ""
 echo -e "  ${BLUE}Core Helpers:${NC}"
@@ -40,4 +38,3 @@ echo -e "    ${GREEN}h / help${NC}       : Show full Alias & Shortcut Guide"
 echo -e ""
 echo -e ""
 echo -e "  Workspace: ${CYAN}/workspace${NC} (mapped from host)"
-echo -e "${CYAN}======================================================================${NC}"

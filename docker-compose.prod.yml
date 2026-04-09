@@ -1,5 +1,5 @@
 # =============================================================================
-# Dev-Template/docker-compose.prod.yml
+# docker-compose.prod.yml
 # Compose file for Production Environment Deployment
 # =============================================================================
 include:

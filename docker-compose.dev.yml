@@ -1,5 +1,5 @@
 # =============================================================================
-# Dev-Template/docker-compose.dev.yml
+# docker-compose.dev.yml
 # Development (Dev) Environment Configuration — GUI integration and Source Code Bind Mount
 # =============================================================================
 include:

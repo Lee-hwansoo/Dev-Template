@@ -208,7 +208,7 @@ setup_auto() {
 # Status
 # =============================================================================
 __gpu_status_impl() {
-    log_info "=== GPU Diagnostic Status ==="
+    print_devkit_banner SETUP
     log_info "GPU_MODE env: ${GPU_MODE:-not set}"
 
     if has_nvidia; then

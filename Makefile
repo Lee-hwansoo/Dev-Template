@@ -1,5 +1,5 @@
 # =============================================================================
-# Dev-Template/Makefile
+# Makefile
 # Unified Workflow Orchestration (KISS-based Command Integration)
 # =============================================================================
 
@@ -141,9 +141,14 @@ export HAS_NVIDIA HAS_TOOLKIT HAS_DRI HOST_ARCH TARGETARCH DISPLAY_TYPE HOST_XDG
 # Default & Help
 # =============================================================================
 help:
-	@echo "======================================================================"
-	@echo "            All-in-One Docker Dev Environment Template                "
-	@echo "======================================================================"
+	@echo -e "$(CYAN)=================================================$(NC)"
+	@echo -e "  $(CYAN)██████╗ ███████╗██╗   ██╗██╗  ██╗██╗████████╗$(NC)"
+	@echo -e "  $(CYAN)██╔══██╗██╔════╝██║   ██║██║ ██╔╝██║╚══██╔══╝$(NC)"
+	@echo -e "  $(CYAN)██║  ██║█████╗  ██║   ██║█████╔╝ ██║   ██║   $(NC)"
+	@echo -e "  $(CYAN)██║  ██║██╔══╝  ╚██╗ ██╔╝██╔═██╗ ██║   ██║   $(NC)"
+	@echo -e "  $(CYAN)██████╔╝███████╗ ╚████╔╝ ██║  ██╗██║   ██║   $(NC)"
+	@echo -e "  $(CYAN)╚═════╝ ╚══════╝  ╚═══╝  ╚═╝  ╚═╝╚═╝   ╚═╝   $(NC)"
+	@echo -e "$(CYAN)=================================================$(NC)"
 	@echo ""
 	@echo "  [ Initial Setup & Status Check ]"
 	@echo "    make setup          : Initialize .env and configure host prerequisites"
