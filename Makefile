@@ -58,6 +58,15 @@ define RUN_SERVICE
 	$(COMPOSE) $1 --profile $$TARGET_SVC up -d $$TARGET_SVC
 endef
 
+# $1: COMPOSE_FILES, $2: SERVICE_PREFIX, $3: MSG
+define STOP_SERVICE
+	@$(DETECT_MODE) \
+	PROF=$$CHOSEN_MODE; \
+	TARGET_SVC=$2-$$CHOSEN_MODE; \
+	echo -e "  $(INFO) [$$CHOSEN_MODE] Stopping $3 environment (Service: $$TARGET_SVC)..."; \
+	$(COMPOSE) $1 --profile $$TARGET_SVC stop $$TARGET_SVC
+endef
+
 # $1: ENV_VAR_NAME
 define CHECK_ENV
 	@if [ -z "$($1)" ]; then \
@@ -116,6 +125,24 @@ define BUILD_SERVICE
 	@echo -e "\n  $(INFO) [Hint] $5"
 endef
 
+# $1: EXTRA_ARGS (e.g. -v for volumes)
+define TEARDOWN_SERVICES
+	$(COMPOSE) $(COMPOSE_DEV) --profile "*" down $1 --remove-orphans
+	@if [ -f docker-compose.prod.yml ]; then \
+		$(COMPOSE) $(COMPOSE_PROD) --profile "*" down $1 --remove-orphans 2>/dev/null || true; \
+	fi
+endef
+
+# $1: MOUNT_DIR (Absolute Path), $2: Targets to delete
+define SUDO_FREE_RM
+	echo -e "  $(INFO) Performing sudo-free deletion: $2"; \
+	docker run --rm -v "$1:/mnt" alpine sh -c "cd /mnt && rm -rf $2" 2>/dev/null || true; \
+	if [ "$(SKIP_ALPINE_RM)" != "1" ]; then \
+		echo -e "  $(INFO) Cleaning up the temporary alpine image used for sudo-free deletion..."; \
+		docker rmi alpine:latest 2>/dev/null || true; \
+	fi
+endef
+
 # Core Infrastructure Variables Export
 export HAS_NVIDIA HAS_TOOLKIT HAS_DRI HOST_ARCH TARGETARCH DISPLAY_TYPE HOST_XDG_RUNTIME_DIR HOST_WAYLAND_DISPLAY HOST_XAUTHORITY HOST_HOME NVIDIA_VISIBLE_DEVICES NVIDIA_DRIVER_CAPABILITIES NVIDIA_GPU_COUNT HOST_CACHE_DIR HOST_X11_DIR HOST_GITCONFIG HOST_SSH_DIR
 
@@ -126,9 +153,9 @@ endef
 
 .PHONY: help setup check check-host xauth status \
         build-ros build-dev rebuild-ros rebuild-dev \
-        ros ros-restart dev dev-restart ros-shell dev-shell ros-term dev-term \
+        ros ros-stop ros-restart dev dev-stop dev-restart ros-shell dev-shell ros-term dev-term \
 		build-ros-prod build-dev-prod rebuild-ros-prod rebuild-dev-prod \
-        ros-prod dev-prod \
+        ros-prod ros-prod-stop dev-prod dev-prod-stop \
 		save-ros save-dev load-ros load-dev \
         stats top logs down clean clean-cache clean-all docker-clean env-check
 
@@ -144,6 +171,7 @@ help:
 	@echo ""
 	@echo "  [ Development Environment (ROS) ]"
 	@echo "    make ros            : Run ROS dev container (CPU/iGPU/NVIDIA auto-detected)"
+	@echo "    make ros-stop       : Stop ROS dev container"
 	@echo "    make ros-restart    : Safely restart ROS service"
 	@echo "    make ros-shell      : Enter shell of the running ROS container"
 	@echo "    make ros-term       : Execute ROS shell in a new Terminator window"
@@ -154,6 +182,7 @@ help:
 	@echo ""
 	@echo "  [ Development Environment (Pure Dev) ]"
 	@echo "    make dev            : Run pure dev container (CPU/iGPU/NVIDIA auto-detected)"
+	@echo "    make dev-stop       : Stop pure dev container"
 	@echo "    make dev-restart    : Safely restart pure dev service"
 	@echo "    make dev-shell      : Enter shell of the running pure dev container"
 	@echo "    make dev-term       : Execute pure dev shell in a new Terminator window"
@@ -164,9 +193,11 @@ help:
 	@echo ""
 	@echo "  [ Production Deployment ] — Bake & Switch Strategy"
 	@echo "    make ros-prod       : Run the ROS production service"
+	@echo "    make ros-prod-stop  : Stop the ROS production service"
 	@echo "    make save-ros       : Extract the ROS production image to a compressed file"
 	@echo "    make load-ros       : Restore the ROS image from the compressed file"
 	@echo "    make dev-prod       : Run the pure dev production service"
+	@echo "    make dev-prod-stop  : Stop the pure dev production service"
 	@echo "    make save-dev       : Extract the pure dev production image to a compressed file"
 	@echo "    make load-dev       : Restore the pure dev image from the compressed file"
 	@echo ""
@@ -272,9 +303,15 @@ dev: check xauth
 	$(call RUN_SERVICE,$(COMPOSE_DEV),basic,Pure Development)
 	@echo -e "\n  $(INFO) [Hint] Container started! Use 'make dev-shell' or 'make dev-term' to attach to the container."
 
-# Restart Services Individually
-ros-restart: down ros
-dev-restart: down dev
+# Stop and Restart Services Individually
+ros-stop:
+	$(call STOP_SERVICE,$(COMPOSE_DEV),ros,ROS Development)
+
+dev-stop:
+	$(call STOP_SERVICE,$(COMPOSE_DEV),basic,Pure Development)
+
+ros-restart: ros-stop ros
+dev-restart: dev-stop dev
 
 # Filter Definitions
 ROS_FILTER := ^$(COMPOSE_PROJECT_NAME)[-_]ros-(cpu|igpu|nvidia)
@@ -301,10 +338,16 @@ ros-prod: check xauth
 	$(call RUN_SERVICE,$(COMPOSE_PROD),ros,ROS Production)
 	@$(MAKE) logs
 
+ros-prod-stop:
+	$(call STOP_SERVICE,$(COMPOSE_PROD),ros,ROS Production)
+
 dev-prod: check xauth
 	$(call CHECK_ENV,APP_COMMAND)
 	$(call RUN_SERVICE,$(COMPOSE_PROD),basic,Pure Development Production)
 	@$(MAKE) logs
+
+dev-prod-stop:
+	$(call STOP_SERVICE,$(COMPOSE_PROD),basic,Pure Development Production)
 
 # Image Extraction and Restoration Strategy
 IMAGE_SUFFIX := $(if $(filter humble,$(ROS_DISTRO)),humble,$(if $(filter noetic,$(ROS_DISTRO)),noetic,latest))
@@ -430,24 +473,6 @@ logs:
 		echo -e "  $(INFO) [Prod] Streaming production logs..."; \
 		$(COMPOSE) $(COMPOSE_PROD) logs -f --tail 100; \
 	fi
-
-# $1: EXTRA_ARGS (e.g. -v for volumes)
-define TEARDOWN_SERVICES
-	$(COMPOSE) $(COMPOSE_DEV) --profile "*" down $1 --remove-orphans
-	@if [ -f docker-compose.prod.yml ]; then \
-		$(COMPOSE) $(COMPOSE_PROD) --profile "*" down $1 --remove-orphans 2>/dev/null || true; \
-	fi
-endef
-
-# $1: MOUNT_DIR (Absolute Path), $2: Targets to delete
-define SUDO_FREE_RM
-	echo -e "  $(INFO) Performing sudo-free deletion: $2"; \
-	docker run --rm -v "$1:/mnt" alpine sh -c "cd /mnt && rm -rf $2" 2>/dev/null || true; \
-	if [ "$(SKIP_ALPINE_RM)" != "1" ]; then \
-		echo -e "  $(INFO) Cleaning up the temporary alpine image used for sudo-free deletion..."; \
-		docker rmi alpine:latest 2>/dev/null || true; \
-	fi
-endef
 
 down:
 	$(call TEARDOWN_SERVICES)

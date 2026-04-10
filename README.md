@@ -242,10 +242,10 @@ make dev            # Start pure C++/Python container (Auto-detects GPU)
 
 The system automatically selects the optimal hardware mode for your workstation.
 
-| Environment | Run Command (Auto GPU Detect) | Restart | Enter Shell (Default Window) | Open New Window (GUI) |
-| :--- | :--- | :--- | :--- | :--- |
-| **ROS Env** | **`make ros`** | **`make ros-restart`** | **`make ros-shell`** | **`make ros-term`** |
-| **Pure Dev** | **`make dev`** | **`make dev-restart`** | **`make dev-shell`** | **`make dev-term`** |
+| Environment | Run (Auto GPU Detect) | Stop | Restart | Enter Shell | Open New Window (GUI) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **ROS Env** | **`make ros`** | **`make ros-stop`** | **`make ros-restart`** | **`make ros-shell`** | **`make ros-term`** |
+| **Pure Dev** | **`make dev`** | **`make dev-stop`** | **`make dev-restart`** | **`make dev-shell`** | **`make dev-term`** |
 
 > **Tip:** You can use `make status` to verify if the current system accurately recognizes an NVIDIA GPU and the Container Toolkit, and to confirm the active architecture (AMD64/ARM64).
 
@@ -362,7 +362,9 @@ Before baking the production image, executing **`make clean`** is strictly recom
 | Category | Execute Command | Action |
 | :--- | :--- | :--- |
 | **ROS Deployment** | **`make ros-prod`** | Spawns a dedicated service based on optimized ROS artifacts |
+| | **`make ros-prod-stop`** | Stop the ROS production service |
 | **Pure Deployment** | **`make dev-prod`** | Spawns a lightweight service strictly for C++/Python artifacts |
+| | **`make dev-prod-stop`** | Stop the pure dev production service |
 | **Extract Image** | **`make save-ros`** / **`save-dev`** | Wraps the deployment image as an isolated compressed archive (`.tar.gz`) |
 | **Restore Image** | **`make load-ros`** / **`load-dev`** | Ingests an image from an isolated compressed archive back into the registry |
 
