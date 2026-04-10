@@ -40,6 +40,7 @@
 - **Multi-Arch Build Support**: Runs with native performance of the underlying CPU across both x86 (Intel/AMD) and ARM64 (Jetson, Apple Silicon) environments without translation overhead using a single Dockerfile.
 - **Consistent Permission System (Root Unity)**: Uses the `root` user in both development and deployment environments to prevent tricky permission conflicts when mounting host volumes.
 - **Zero-Pollution Cleanup (Sudo-Free Architecture)**: Spawns an ultra-lightweight disposable container to perform deletion tasks without requiring `sudo` privileges when cleaning host storage (`make clean`). The container and image are automatically removed immediately after the task, leaving no trace on your local environment.
+- **Sidecar Architecture**: Maintain a lightweight development image while instantly "attaching" a high-performance environment on-demand.
 - **CI/CD Robustness**: Includes a `FORCE=1` flag that bypasses interactive prompts, combined with auto-detection for the platform's `CI=true` environment variable, ensuring flawless execution without stalling in CI/CD pipelines (e.g., GitHub Actions, GitLab CI).
 
 ---
@@ -48,7 +49,7 @@
 
 DevKit is designed to be more than just a virtualization tool; it serves as a **comprehensive architecture template** that manages the entire lifecycle of your project.
 
-While many existing tools focus primarily on container isolation or support only a single framework, DevKit fully integrates **ROS & General C++/Python Development, Multi-GPU pass-through, and Production Deployment pipelines** into a cohesive system. This architecture natively enforces a standardized, best-practice workspace structure regardless of the underlying framework (ROS, pure C++, Python). This standardization dramatically lowers team onboarding costs and guarantees consistent reproducibility from local development directly to production environments.
+While many existing tools focus primarily on container isolation or support only a single framework, DevKit fully integrates **ROS & General C++/Python Development, Multi-GPU pass-through, and Production Deployment pipelines** into a cohesive system. Notably, it pursues a **modular architecture** that decouples project-specific requirements (e.g., simulators, databases) into sidecar containers, maintaining the purity of the core development environment while maximizing flexibility for hardware transitions.
 
 > ※ Bake & Switch: A strategy where the validated development layer is 'baked' into a production image retaining only runtime dependencies, which is then immediately 'switched' into the production environment
 
