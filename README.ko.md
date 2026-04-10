@@ -1,14 +1,27 @@
-# All-in-One Docker DevKit
+<!-- markdownlint-disable MD041 -->
+<!-- markdownlint-disable MD033 -->
 
-[English](README.md) | [한국어](README.ko.md)
+<p align="center">
+  <img src="docs/images/logo.png" width="220" alt="DevKit Logo">
+</p>
 
-[![ROS1](https://img.shields.io/badge/ROS-Noetic-blue?logo=ros)](https://www.ros.org/)
-[![ROS2](https://img.shields.io/badge/ROS2-Humble-red?logo=ros)](https://docs.ros.org/en/humble/index.html)
-[![Python](https://img.shields.io/badge/Python-3.10-3776AB?logo=python)](https://www.python.org/)
-[![C++](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=c%2B%2B)](https://isocpp.org/)
-[![Docker](https://img.shields.io/badge/Docker-Enabled-2496ED?logo=docker)](https://www.docker.com/)
+<h1 align="center">All-in-One Docker DevKit</h1>
 
-본 저장소는 호스트 시스템을 오염시키지 않고 **C++, Python(uv), ROS 1 / ROS 2** 개발을 수행할 수 있도록 설계된 **독립 개발 환경 템플릿**입니다. 복잡한 설정 없이 어떤 프로젝트에서든 즉시 개발을 시작하세요.
+<p align="center">
+  <a href="README.md">English</a> | <a href="README.ko.md">한국어</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/ROS-Noetic-blue?logo=ros" alt="ROS1">
+  <img src="https://img.shields.io/badge/ROS2-Humble-red?logo=ros" alt="ROS2">
+  <img src="https://img.shields.io/badge/Python-3.10-3776AB?logo=python" alt="Python">
+  <img src="https://img.shields.io/badge/C%2B%2B-17-00599C?logo=c%2B%2B" alt="C++">
+  <img src="https://img.shields.io/badge/Docker-Enabled-2496ED?logo=docker" alt="Docker">
+</p>
+
+<p align="center">
+  본 저장소는 호스트 시스템을 오염시키지 않고 <b>C++, Python(uv), ROS 1 / ROS 2</b> 개발을 수행할 수 있도록 설계된 <b>독립 개발 환경 템플릿</b>입니다. 복잡한 설정 없이 어떤 프로젝트에서든 즉시 개발을 시작하세요.
+</p>
 
 ## 💡 핵심 가치 (Why this Template?)
 
