@@ -24,10 +24,102 @@
 - **APT Snapshot 기반 완벽한 재현성**: `APT_SNAPSHOT_DATE`를 통해 특정 시점의 패키지 버전을 고정하여 100% 재현성을 보장합니다. 호스트 터미널에서 `date -u +%Y%m%dT%H%M%SZ`를 실행해 얻은 UTC 날짜를 `.env`에 입력하면 그 시점으로 환경이 영구 동결됩니다.
 - **런타임 의존성 가디언 (Sanity Check)**: 배포 이미지 빌드 시 `ldd`를 활용하여 실행 파일 및 라이브러리의 의존성 누락을 자동 검사, 실행 시점의 'Shared library not found' 에러를 원천 차단합니다.
 - **초경량/고보안 배포 (Bake & Switch)**: 배포용 이미지 빌드 시 소스 코드를 제외하고 `install/` 아티팩트만 포함하여 보안성과 효율성을 동시에 잡았습니다.
-- **네이티브 Multi-Arch 지원**: 단일 Dockerfile로 인텔 PC와 ARM 기반(Jetson, M1/M2) 환경을 모두 지원합니다.
+- **Multi-Arch 빌드 지원**: 단일 Dockerfile로 x86(Intel/AMD) 및 ARM64(Jetson, Apple Silicon) 환경 모두에서 오버헤드 없이 해당 CPU의 네이티브 성능으로 구동됩니다.
 - **일관된 권한 체계 (Root Unity)**: 개발과 배포 환경 모두 `root` 유저를 사용하여 호스트 볼륨 마운트 시의 권한 충돌을 방지했습니다.
 - **완벽한 Zero-Pollution (Sudo-Free 아키텍처)**: 호스트 스토리지 정리(`make clean`) 시 `sudo` 권한을 요구하지 않도록 초경량 1회용 컨테이너를 스폰하여 무권한 삭제(Sudo-Free)를 수행합니다. 작업 직후 컨테이너와 이미지가 스스로 자폭하여 로컬 환경에 어떠한 찌꺼기도 남기지 않습니다.
 - **CI/CD 강건성 (비대화형 파이프라인 지원)**: 대화형 프롬프트를 자동으로 우회하는 `FORCE=1` 플래그 및 플랫폼의 `CI=true` 환경변수 자동 감지 기능이 내장되어 있어, GitHub Actions나 GitLab CI 같은 자동화 서버 환경에서도 멈춤 없이 완벽하게 동작합니다.
+
+---
+
+## 🎯 아키텍처 철학 및 기술 포지셔닝
+
+DevKit은 단순한 가상화 환경 구축 도구(Tool)를 넘어, 프로젝트의 전체 생애 주기를 관리하는 **종합 아키텍처 템플릿(Architecture Template)**을 지향합니다.
+
+기존의 개발 도구들이 컨테이너 환경의 격리나 단일 프레임워크 지원에 집중되어 있는 반면, DevKit은 **ROS 및 범용 C++/Python 코어 개발 환경, 멀티 GPU 네이티브 패스스루, 프로덕션 배포 파이프라인**을 단일 시스템으로 통합하여 제공합니다. 이를 통해 프레임워크(ROS, 순수 C++, Python)에 구애받지 않고 일관된 베스트 프랙티스 워크스페이스 구조를 조직 내에 강제할 수 있으며, 개발 환경부터 운영 환경까지 하나의 흐름으로 이어지는 일관성을 보장합니다.
+
+> ※ Bake & Switch: 개발 환경에서 검증된 레이어를 기반으로, 실행에만 필요한 런타임 종속성만 남긴 채 프로덕션 이미지를 굽고 현장에 즉시 배포하는 전략
+
+| 시스템 | ROS 특화 | GPU 자동감지 | 멀티-아키텍처(x86/ARM) | 재현성 (Reproducibility) | 운영 배포 (Production) | 진입 장벽 |
+| --- | --- | --- | --- | --- | --- | --- |
+| **DevKit** | O (순수 C++/Python 포함) | O (NVIDIA/Intel/AMD) | O (OS Native) | Pinned (APT 스냅샷) | O (Bake & Switch) | 낮음 |
+| VS Code Dev Containers | X (범용 중심) | X | O (보편적 지원) | 보통 | X | 낮음 |
+| Rocker | O | O (NVIDIA/Intel) | O (Docker 기반) | X | X | 낮음 |
+| NVIDIA Isaac ROS | O | NVIDIA 전용 | X (Jetson/x86 한정) | Image-pinned | O | 중간 |
+| ADE (Apex.AI) | O (Autoware 중심) | 수동 설정 | O (보편적 지원) | 보통 | X | 중간 |
+| RoboStack (Conda) | O | X (패키지에 의존) | O (OS 의존적) | 보통 (Conda 의존) | X | 낮음 |
+| Distrobox / Toolbx | X | O (호스트 자원 공유) | O (호스트 커널 공유) | X (호스트 종속적) | X | 낮음 |
+| Singularity (Apptainer) | X | O (NVIDIA/AMD 옵션) | O (보편적 지원) | 높음 (단일 이미지 파일) | O (HPC 중심) | 높음 |
+| Nix / NixOS Flakes | 어려움 | 수동 설정 | O (완벽한 크로스 빌드) | 극강 (OS Level Pinned) | O | 매우 높음 |
+| Earthly | X | 수동 설정 | O (보편적 지원) | 보통 (빌드 격리) | X (빌더 중심) | 중간 |
+
+> **참고:** Bazel은 압도적인 빌드 캐싱을 제공하나 컨테이너 기반 개발환경보다는 순수 빌드 도구에 가까워 위 표에서는 제외하였으며, 하단 상세 비교에서 특징을 확인하실 수 있습니다.
+
+<!-- markdownlint-disable MD033 -->
+<details>
+<summary><b>🔍 각 시스템별 장단점 상세 비교 (클릭하여 펼치기)</b></summary>
+
+### 1. VS Code Dev Containers (Microsoft)
+
+- **유사점**: `devcontainer.json`으로 컨테이너 기반 격리 환경 제공
+- **우위**: VS Code / GitHub Codespaces와 네이티브 통합, 커뮤니티 템플릿 풍부
+- **한계**: GPU 자동 감지 부재, ROS 특화 워크플로우 부재, 배포 이미지 생성 전략 부재
+
+### 2. Rocker (Open Robotics)
+
+- **유사점**: ROS 개발을 위한 컨테이너에 NVIDIA/Intel GPU, X11/Wayland 패스스루 지원
+- **우위**: ROS 커뮤니티의 성숙하고 널리 사용되는 표준 도구, 플러그인 확장성
+- **한계**: 워크스페이스 구조 강제성 없음, APT 스냅샷 등 엄격한 재현성 보장 부족, 운영 이미지 빌드(Bake) 파이프라인 부재
+
+### 3. NVIDIA Isaac ROS
+
+- **유사점**: ROS 2 + GPU 개발환경 컨테이너화
+- **우위**: NVIDIA 하드웨어에 극도로 최적화된 성능, cuVS/CUDA 라이브러리 네이티브 통합
+- **한계**: NVIDIA 생태계 종속 (AMD/Intel 미지원), 오픈소스 커스터마이징의 한계
+
+### 4. Bazel (Google)
+
+- **유사점**: 완벽하게 통제되는 의존성과 빌드 환경을 통한 재현성(Reproducibility) 추구
+- **우위**: 거대한 모노레포에서의 압도적인 캐싱 최적화, 완벽하게 격리된 밀폐형(Hermetic) 빌드
+- **한계**: ROS / GPU / 파이썬 모던 스택(uv 등)과 연동 시 극심한 고통 수반, 기존 CMake/colcon 생태계를 `BUILD` 파일로 다시 짜야 하는 천문학적인 유지보수 비용과 러닝 커브 발생 (개발/디버깅 환경 자체를 제공하는 컨테이너 환경이라기보단 빌드 도구에 가까움)
+
+### 5. Nix / NixOS Flakes
+
+- **유사점**: 패키지 버전 고정을 통한 완전한 재현성
+- **우위**: Docker 없이도 운영체제 레벨의 재현성 보장, 극강의 의존성 결정론
+- **한계**: 함수형 패키지 관리에 대한 가파른 학습 곡선, ROS/GPU 환경 구성의 복잡함, 높은 팀 온보딩 비용
+
+### 6. Earthly
+
+- **유사점**: Makefile + Dockerfile 개념을 통합한 빌드 자동화
+- **우위**: CI/CD 대규모 자동화 파이프라인 통합 및 병렬 캐싱 전략 우수
+- **한계**: 대화형 로컬 개발 환경(셸 진입, 디스플레이/GPU 패스스루 등)보다는 '빌드 자동화 도구'에 집중되어 있음
+
+### 7. ADE (Agile Development Environment by Apex.AI)
+
+- **유사점**: ROS(주로 Autoware) 생태계에 특화된 컨테이너 기반 개발 환경 도구
+- **우위**: Base, System, User 등 다중 Docker 이미지의 볼륨을 겹쳐서(Overlay) 배포하는 데 최적화됨
+- **한계**: 다중 이미지 레이어 설계가 가벼운 단일 프로젝트 단위에서는 오버헤드가 될 수 있으며, 프로덕션 배포 파이프라인(Bake)보다는 로컬 개발 편의에 집중되어 있음
+
+### 8. RoboStack (Conda)
+
+- **유사점**: ROS 1/2 환경을 로컬 시스템에 쉽게 설치할 수 있도록 지원
+- **우위**: Docker 같은 격리된 컨테이너 없이, macOS나 Windows에서도 `conda` 환경만으로 ROS를 가볍게 구동 가능
+- **한계**: 시스템 레벨의 격리(Isolation)가 이루어지지 않아 OS 패키지 충돌 위험이 존재하며, 컨테이너 기반의 완벽한 운영 배포(Production) 파이프라인이 부재함
+
+### 9. Distrobox / Toolbx
+
+- **유사점**: 호스트 OS 위에 리눅스 개발 환경을 격리된 컨테이너로 제공
+- **우위**: 컨테이너가 호스트의 홈 디렉토리, X11/Wayland, 오디오, USB 등을 `root` 없이 마법처럼 전부 공유하여 네이티브 머신처럼 매끄럽게 동작함
+- **한계**: 호스트와 너무 강하게 결합되어 있어 진정한 의미의 '순수 격리 및 재현성'을 잃을 수 있으며, 프로젝트 단위의 아티팩트 분리나 ROS 특화 편의성을 제공하지 않음
+
+### 10. Singularity / Apptainer
+
+- **유사점**: Docker를 대체할 수 있는 고성능 격리 컨테이너 솔루션
+- **우위**: Root 권한이 필요 없는(Rootless) 구조 덕분에 대학원 연구실, HPC 클러스터 등 보안이 엄격한 환경에서 널리 쓰임
+- **한계**: 생태계가 과학 컴퓨팅 및 슈퍼컴퓨터에 집중되어 있어 데스크톱 수준의 개발 편의성(GUI 패스스루 등) 확보가 까다로우며, 일반적인 ROS/웹 개발자에게는 낯설고 진입 장벽이 높음
+
+</details>
+<!-- markdownlint-enable MD033 -->
 
 ---
 

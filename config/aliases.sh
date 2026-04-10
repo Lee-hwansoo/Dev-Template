@@ -8,6 +8,11 @@
 # ensuring compatibility with non-ROS dev targets.
 # =============================================================================
 
+# Load logging utility for shared color variables & branding
+SOURCE_LOG="/docker_dev/scripts/utils_logging.sh"
+[ ! -f "$SOURCE_LOG" ] && SOURCE_LOG="$(dirname "${BASH_SOURCE[0]}")/../scripts/utils_logging.sh"
+[ -f "$SOURCE_LOG" ] && source "$SOURCE_LOG"
+
 # =============================================================================
 # ROS (ROS1 & ROS2 Common)
 # =============================================================================
@@ -114,12 +119,7 @@ alias use_cpu='source /docker_dev/scripts/gpu_setup.sh cpu && __gpu_status_impl'
 # Help / Documentation
 # =============================================================================
 function __print_help() {
-    # Ensure ANSI colors are defined for standalone shell usage (if utils_logging.sh wasn't sourced)
-    [ -z "${NC}" ] && CYAN='\033[0;36m' && BLUE='\033[0;34m' && GREEN='\033[0;32m' && YELLOW='\033[1;33m' && NC='\033[0m'
-
-    echo -e "${CYAN}======================================================================${NC}"
-    echo -e "                  ${GREEN}Docker Dev Alias & Shortcut Guide${NC}                  "
-    echo -e "${CYAN}======================================================================${NC}"
+    print_banner GUIDE
     echo -e ""
     echo -e "  ${BLUE}[ROS & Build]${NC}"
     echo -e "    ${GREEN}cb${NC} / ${GREEN}cbm${NC} / ${GREEN}cbr${NC}  : colcon build (standard / metas / release)"
@@ -144,8 +144,6 @@ function __print_help() {
     echo -e "    ${GREEN}check_deps${NC}       : Check missing runtime libraries in install/"
     echo -e "    ${GREEN}ccache-stat${NC}       : Show compiler cache statistics"
     echo -e "    ${GREEN}h${NC} / ${GREEN}help${NC}         : Show this help guide"
-    echo -e ""
-    echo -e "${CYAN}======================================================================${NC}"
 }
 alias h='__print_help'
 alias help='__print_help'

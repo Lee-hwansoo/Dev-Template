@@ -128,6 +128,11 @@ endef
 # Core Infrastructure Variables Export
 export HAS_NVIDIA HAS_TOOLKIT HAS_DRI HOST_ARCH TARGETARCH DISPLAY_TYPE HOST_XDG_RUNTIME_DIR HOST_WAYLAND_DISPLAY HOST_XAUTHORITY HOST_HOME NVIDIA_VISIBLE_DEVICES NVIDIA_DRIVER_CAPABILITIES NVIDIA_GPU_COUNT HOST_CACHE_DIR HOST_X11_DIR HOST_GITCONFIG HOST_SSH_DIR
 
+# Centralized UI Sub-Header Macro
+define PRINT_SECTION
+	@bash -c "source scripts/utils_logging.sh && print_section \"$1\""
+endef
+
 .PHONY: help setup check check-host xauth status \
         build-ros build-dev rebuild-ros rebuild-dev \
         ros ros-restart dev dev-restart ros-shell dev-shell ros-term dev-term \
@@ -141,14 +146,7 @@ export HAS_NVIDIA HAS_TOOLKIT HAS_DRI HOST_ARCH TARGETARCH DISPLAY_TYPE HOST_XDG
 # Default & Help
 # =============================================================================
 help:
-	@echo -e "$(CYAN)=================================================$(NC)"
-	@echo -e "  $(CYAN)██████╗ ███████╗██╗   ██╗██╗  ██╗██╗████████╗$(NC)"
-	@echo -e "  $(CYAN)██╔══██╗██╔════╝██║   ██║██║ ██╔╝██║╚══██╔══╝$(NC)"
-	@echo -e "  $(CYAN)██║  ██║█████╗  ██║   ██║█████╔╝ ██║   ██║   $(NC)"
-	@echo -e "  $(CYAN)██║  ██║██╔══╝  ╚██╗ ██╔╝██╔═██╗ ██║   ██║   $(NC)"
-	@echo -e "  $(CYAN)██████╔╝███████╗ ╚████╔╝ ██║  ██╗██║   ██║   $(NC)"
-	@echo -e "  $(CYAN)╚═════╝ ╚══════╝  ╚═══╝  ╚═╝  ╚═╝╚═╝   ╚═╝   $(NC)"
-	@echo -e "$(CYAN)=================================================$(NC)"
+	@bash -c "source scripts/utils_logging.sh && print_banner WELCOME"
 	@echo ""
 	@echo "  [ Initial Setup & Status Check ]"
 	@echo "    make setup          : Initialize .env and configure host prerequisites"
@@ -196,7 +194,6 @@ help:
 	@echo "  [ Scaling ]"
 	@echo "    make scale-basic N=2: Scale pure dev services to N instances"
 	@echo "    make scale-ros N=2  : Scale ROS dev services to N instances"
-	@echo "======================================================================"
 
 # =============================================================================
 # Initial Setup and Status Check
@@ -211,22 +208,18 @@ setup:
 	@$(MAKE) xauth
 
 status: check
-	@echo "  [Project Configuration Summary]"
-	@echo "  ---------------------------------------------------"
+	$(call PRINT_SECTION,Project Configuration Summary)
 	@echo "  Project Name:      $(COMPOSE_PROJECT_NAME)"
 	@echo "  ROS Version:       $(ROS_DISTRO)"
 	@echo "  Architecture:      $(HOST_ARCH) (Target: $(TARGETARCH))"
 	@echo "  Display:           $(DISPLAY) ($(DISPLAY_TYPE))"
 	@echo "  GPU Mode (Set):    $(GPU_MODE)"
-	@echo "  ---------------------------------------------------"
-	@echo "  [Running Containers]"
-	@docker ps --filter "name=$(COMPOSE_PROJECT_NAME)" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
-	@echo "  ---------------------------------------------------"
-	@echo "  [Created Docker Volumes]"
-	@docker volume ls --filter "name=$(COMPOSE_PROJECT_NAME)" --format "table {{.Name}}\t{{.Driver}}"
-	@echo "  ---------------------------------------------------"
+	$(call PRINT_SECTION,Running Containers)
+	@docker ps --filter "name=$(COMPOSE_PROJECT_NAME)" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" | sed 's/^/  /'
+	$(call PRINT_SECTION,Created Docker Volumes)
+	@docker volume ls --filter "name=$(COMPOSE_PROJECT_NAME)" --format "table {{.Name}}\t{{.Driver}}" | sed 's/^/  /'
 	@if [ "$(HAS_NVIDIA)" = "true" ]; then \
-		echo "  [NVIDIA GPU Details]"; \
+		bash -c "source scripts/utils_logging.sh && print_section 'NVIDIA GPU Details'"; \
 		nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader,nounits | sed 's/^/  /'; \
 	fi
 
@@ -374,14 +367,15 @@ load-dev:
 stats:
 	@echo -e "  $(INFO) Initiating real-time resource monitoring (Ctrl+C to terminate)..."
 	@watch -t -n 1 "bash -c ' \
-		echo -e \"--- [All Containers Status (CPU/Mem/PIDs)] ---\n\"; \
-		docker stats --no-stream --format \"table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.PIDs}}\"; \
+		source scripts/utils_logging.sh; \
+		print_section \"All Containers Status (CPU/Mem/PIDs)\"; echo \"\"; \
+		docker stats --no-stream --format \"table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.PIDs}}\" | sed \"s/^/  /\"; \
 		if [ \"$(HAS_NVIDIA)\" = \"true\" ]; then \
-			echo -e \"\n--- [NVIDIA GPU Details] ---\n\"; \
+			echo \"\"; print_section \"NVIDIA GPU Details\"; echo \"\"; \
 			nvidia-smi --query-gpu=index,name,utilization.gpu,utilization.memory,memory.used,memory.total --format=csv,noheader,nounits | sed \"s/^/  GPU /\"; \
 		fi; \
 		if [ \"$(HAS_DRI)\" = \"true\" ]; then \
-			echo -e \"\n--- [Intel/AMD (DRI) Load Status] ---\n\"; \
+			echo \"\"; print_section \"Intel/AMD (DRI) Load Status\"; echo \"\"; \
 			for dev in /sys/class/drm/renderD*; do \
 				[ -d \"\$$dev\" ] || continue; \
 				idx=\$${dev##*renderD}; \

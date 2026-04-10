@@ -24,17 +24,14 @@ if [ ! -d "$TARGET_DIR" ]; then
     exit 1
 fi
 
-# Find executable files and shared libraries (.so) - use process substitution to preserve MISSING_COUNT
-while IFS= read -r -d '' file; do
-    # Check if it's an ELF file (only run ldd on binary files)
-    if file "$file" | grep -qE 'ELF|shared object'; then
-        MISSING=$(ldd "$file" 2>/dev/null | grep "not found")
-        if [ -n "$MISSING" ]; then
-            log_error "Missing dependencies for: $file\n$(echo "$MISSING" | sed 's/^/  /')"
-            MISSING_COUNT=$((MISSING_COUNT + 1))
-        fi
+# Find executable files and shared libraries (.so) - Batch processed for speed
+while IFS= read -r ELF_FILE; do
+    MISSING=$(ldd "$ELF_FILE" 2>/dev/null | grep "not found" || true)
+    if [ -n "$MISSING" ]; then
+        log_error "Missing dependencies for: $ELF_FILE\n$(echo "$MISSING" | sed 's/^/  /')"
+        MISSING_COUNT=$((MISSING_COUNT + 1))
     fi
-done < <(find "$TARGET_DIR" -type f \( -executable -o -name "*.so*" \) ! -name "*.py" -print0)
+done < <(find "$TARGET_DIR" -type f \( -executable -o -name "*.so*" \) ! -name "*.py" -exec file {} + 2>/dev/null | grep -E 'ELF.*(executable|shared object)' | cut -d: -f1)
 
 if [ $MISSING_COUNT -gt 0 ]; then
     log_error "$MISSING_COUNT files have missing dependencies."

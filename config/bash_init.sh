@@ -68,4 +68,11 @@ else
     # ROS 2 (Humble) Specifics
     export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
     export ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+
+    # Auto-configure CycloneDDS defaults using the external config file (Unicast Fallback for Bridge Networks)
+    if [ "$RMW_IMPLEMENTATION" = "rmw_cyclonedds_cpp" ] && [ -z "$CYCLONEDDS_URI" ]; then
+        if [ -f /docker_dev/config/cyclonedds.xml ]; then
+            export CYCLONEDDS_URI=file:///docker_dev/config/cyclonedds.xml
+        fi
+    fi
 fi

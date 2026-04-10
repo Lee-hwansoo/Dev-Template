@@ -112,6 +112,14 @@ setup_nvidia() {
 }
 
 setup_intel() {
+    if [ -d /sys/module/xe ]; then
+        reset_gpu_env
+        export LIBGL_ALWAYS_SOFTWARE=0
+        write_gpu_env
+        log_ok "Intel GPU configured (xe driver for Arc)"
+        return
+    fi
+
     if [ "${MESA_LOADER_DRIVER_OVERRIDE:-}" = "iris" ]; then return; fi
     reset_gpu_env
     export LIBGL_ALWAYS_SOFTWARE=0
@@ -127,6 +135,20 @@ setup_amd() {
     export MESA_LOADER_DRIVER_OVERRIDE=radeonsi
     write_gpu_env
     log_ok "AMD GPU configured (Mesa/radeonsi driver)"
+}
+
+setup_tegra() {
+    reset_gpu_env
+    export LIBGL_ALWAYS_SOFTWARE=0
+    write_gpu_env
+    log_ok "NVIDIA Tegra GPU configured (Jetson/Embedded)"
+}
+
+setup_rocm() {
+    reset_gpu_env
+    export LIBGL_ALWAYS_SOFTWARE=0
+    write_gpu_env
+    log_ok "AMD ROCm environment configured"
 }
 
 setup_software() {
@@ -174,6 +196,14 @@ setup_auto() {
         setup_amd
         log_ok "Auto-detected: AMD GPU"
         detected=true
+    elif has_tegra; then
+        setup_tegra
+        log_ok "Auto-detected: NVIDIA Tegra GPU"
+        detected=true
+    elif has_rocm; then
+        setup_rocm
+        log_ok "Auto-detected: AMD ROCm (Compute)"
+        detected=true
     elif has_any_dri; then
         reset_gpu_env
         export LIBGL_ALWAYS_SOFTWARE=0
@@ -182,9 +212,9 @@ setup_auto() {
         detected=true
     fi
 
-    # Verification: Validates that the selected hardware renderer is active (Display required)
-    if [ "$detected" = true ] && [ "$ds" != "None" ]; then
-        if command -v glxinfo &>/dev/null; then
+    # Verification: Validates that the selected hardware renderer is active
+    if [ "$detected" = true ]; then
+        if [ "$ds" != "None" ] && command -v glxinfo &>/dev/null; then
             local renderer
             renderer=$(glxinfo 2>/dev/null | grep "OpenGL renderer" | cut -d: -f2 | xargs || true)
             if [[ "$renderer" == *"llvmpipe"* ]] || [ -z "$renderer" ]; then
@@ -192,9 +222,22 @@ setup_auto() {
                 log_warn "Check host X11 permissions (xhost +local:root) or NVIDIA toolkit."
                 setup_software
             fi
+        elif command -v vulkaninfo &>/dev/null; then
+            local vk_dev=$(vulkaninfo --summary 2>/dev/null | grep "deviceName" | head -1 || true)
+            if [ -z "$vk_dev" ]; then
+                log_warn "!!! Vulkan device not found. Headless verification failed !!!"
+                setup_software
+            fi
+        elif command -v vainfo &>/dev/null; then
+            if ! vainfo --display drm 2>/dev/null | grep -qi "Driver version"; then
+                log_warn "!!! VA-API DRM device not found. Headless verification failed !!!"
+                setup_software
+            fi
         else
-            log_warn "glxinfo not found. Skipping hardware renderer validation."
-            log_warn "To enable validation, add 'mesa-utils' to dependencies/apt.txt."
+            if [ "$ds" != "None" ]; then
+                log_warn "Validation tools (glxinfo/vulkaninfo/vainfo) not found."
+                log_warn "To enable validation, add 'mesa-utils' or 'vulkan-tools' to apt.txt."
+            fi
         fi
     fi
 
@@ -208,7 +251,7 @@ setup_auto() {
 # Status
 # =============================================================================
 __gpu_status_impl() {
-    print_devkit_banner SETUP
+    print_banner SETUP
     log_info "GPU_MODE env: ${GPU_MODE:-not set}"
 
     if has_nvidia; then

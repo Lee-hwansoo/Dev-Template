@@ -18,7 +18,7 @@ if [ -z "${NC:-}" ]; then
     YELLOW='\033[1;33m'; NC='\033[0m'
 fi
 
-print_devkit_banner WELCOME
+print_banner WELCOME
 echo -e "  Project: ${BLUE}${COMPOSE_PROJECT_NAME}${NC} | ROS: ${YELLOW}${ROS_DISTRO:-None}${NC} | GPU: ${YELLOW}${GPU_MODE:-auto}${NC}"
 echo -e ""
 echo -e "  ${BLUE}Core Helpers:${NC}"

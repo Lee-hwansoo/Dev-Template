@@ -104,7 +104,8 @@ ENV PATH="/usr/lib/ccache:/workspace/install/.venv/bin:$PATH" \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     VIRTUAL_ENV=/workspace/install/.venv \
-    CMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD}
+    CMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD} \
+    BASH_ENV=/root/.bashrc
 
 RUN mkdir -p /cache/ccache /cache/uv /workspace/install
 

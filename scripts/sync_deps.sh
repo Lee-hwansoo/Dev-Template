@@ -40,6 +40,10 @@ elif [ -f "$REPOS_FILE" ]; then
     log_info "Running vcs import to $TARGET_DIR ..."
     vcs import "$TARGET_DIR" < "$REPOS_FILE" || log_warn "vcs import completed with some warnings."
 
+    # Purge any previous overlays so the git working tree is clean for pulling
+    log_info "Cleaning up previous overlays in git repositories to prevent merge conflicts..."
+    find "$TARGET_DIR" -type d -name ".git" -prune -execdir git reset --hard HEAD \; -execdir git clean -fd \; &>/dev/null || true
+
     # Update existing repositories after checking for newly added ones
     log_info "Performing vcs pull to update existing repositories..."
     vcs pull "$TARGET_DIR" || log_warn "vcs pull completed with some warnings."

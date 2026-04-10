@@ -80,9 +80,9 @@ export RED GREEN YELLOW BLUE CYAN PURPLE NC
 # DevKit Branding & Banners
 # =============================================================================
 
-# print_devkit_banner [type]
-#   type: WELCOME (Large), DIAG (Diagnostics), SETUP (Maintenance), COMPACT (Small)
-print_devkit_banner() {
+# print_banner [type]
+#   type: WELCOME (Large), DIAG (Diagnostics), SETUP (Maintenance)
+print_banner() {
     local type="${1:-WELCOME}"
     local T1='\033[38;2;45;212;191m' # Teal
 
@@ -117,6 +117,16 @@ print_devkit_banner() {
             echo -e "  ${T1}╚══════╝╚══════╝   ╚═╝    ╚═══╝   ╚═╝     ${NC}"
             echo -e "${T1}==============================================${NC}"
             ;;
+        GUIDE)
+            echo -e "${T1}====================================${NC}"
+            echo -e "  ${T1}██╗  ██╗███████╗██╗     ██████╗ ${NC}"
+            echo -e "  ${T1}██║  ██║██╔════╝██║     ██╔══██╗${NC}"
+            echo -e "  ${T1}███████║█████╗  ██║     ██████╔╝${NC}"
+            echo -e "  ${T1}██╔══██║██╔══╝  ██║     ██╔═══╝ ${NC}"
+            echo -e "  ${T1}██║  ██║███████╗███████╗██║     ${NC}"
+            echo -e "  ${T1}╚═╝  ╚═╝╚══════╝╚══════╝╚═╝     ${NC}"
+            echo -e "${T1}====================================${NC}"
+            ;;
         *)
             local label="DevKit"
             local full_text="${label} | ${type}"
@@ -128,4 +138,17 @@ print_devkit_banner() {
             echo -e "${T1}=================================${NC}"
             ;;
     esac
+}
+
+# print_section [title]
+print_section() {
+    local title="$1"
+    local prefix="--- [ $title ] "
+    local total_len=51
+    local pad_len=$(( total_len - ${#prefix} ))
+    local padding=""
+    if [ $pad_len -gt 0 ]; then
+        padding=$(printf '%*s' "$pad_len" "" | tr ' ' '-')
+    fi
+    echo -e "  ${CYAN}${prefix}${padding}${NC}"
 }

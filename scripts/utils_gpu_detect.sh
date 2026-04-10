@@ -17,9 +17,9 @@ has_intel_dri() {
     [ -d /dev/dri ] && grep -rl "0x8086" /sys/class/drm/*/device/vendor 2>/dev/null | grep -q .
 }
 
-# AMD GPU: DRI device with vendor ID 0x1002
+# AMD GPU: DRI device with vendor ID 0x1002 (Discrete) or 0x1022 (APU/SoC)
 has_amd_dri() {
-    [ -d /dev/dri ] && grep -rl "0x1002" /sys/class/drm/*/device/vendor 2>/dev/null | grep -q .
+    [ -d /dev/dri ] && grep -rl "0x1002\|0x1022" /sys/class/drm/*/device/vendor 2>/dev/null | grep -q .
 }
 
 # Generic DRI: any render node present

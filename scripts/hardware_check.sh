@@ -53,8 +53,7 @@ _hw_skip()     { $BRIEF_MODE || echo "  ○ $1"; }
 # -----------------------------------------------------------------------------
 
 if ! $BRIEF_MODE; then
-    print_devkit_banner DIAG
-    echo ""
+    print_banner DIAG
 fi
 
 # =============================================================================
@@ -478,7 +477,6 @@ if $BRIEF_MODE; then
 fi
 
 echo ""
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 if [ "$DIAG_ERRORS" -gt 0 ]; then
     echo -e "${RED}Diagnostics complete: ${DIAG_ERRORS} error(s), ${DIAG_WARNINGS} warning(s)${NC}"
 elif [ "$DIAG_WARNINGS" -gt 0 ]; then
@@ -498,4 +496,3 @@ echo "  use_intel/amd    — Force Intel / AMD Mesa rendering"
 echo "  mkenv / activate — Create & Activate Python venv"
 echo "  cb / cbm / cbr   — colcon build (standard / metas / release)"
 echo "  ccache-stat      — Show compiler cache statistics"
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
