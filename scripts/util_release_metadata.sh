@@ -32,7 +32,42 @@ fi
 PYTHON_VERSION="$("$PYTHON_BIN" -c 'import platform; print(platform.python_version())' 2>/dev/null || true)"
 
 mkdir -p -- "$(dirname "$OUTPUT_FILE")"
-export OUTPUT_FILE PYTHON_VERSION
+MANIFEST_DIR="$(dirname "$OUTPUT_FILE")"
+
+# =============================================================================
+# Build manifests: record what was ACTUALLY resolved.
+# -----------------------------------------------------------------------------
+# Some inputs cannot be pinned upstream — packages.ros.org publishes no snapshot
+# mirror, and `rosdep` resolves at build time. Recording the exact versions that
+# landed in the image makes such a build auditable and re-pinnable after the
+# fact: diff two manifests to see what moved, or paste a line back into
+# dependencies/apt.txt as `package=version` to freeze it.
+# =============================================================================
+APT_MANIFEST="${MANIFEST_DIR}/devkit-apt-manifest.txt"
+PIP_MANIFEST="${MANIFEST_DIR}/devkit-pip-manifest.txt"
+APT_COUNT=0; PIP_COUNT=0
+
+if command -v dpkg-query >/dev/null 2>&1; then
+    dpkg-query -W -f='${Package}=${Version}\n' 2>/dev/null | LC_ALL=C sort > "$APT_MANIFEST" || true
+    APT_COUNT="$(wc -l < "$APT_MANIFEST" 2>/dev/null || echo 0)"
+fi
+
+VENV_PY="${WS_VENV:-${WORKSPACE_PATH:-/workspace}/install/.venv}/bin/python3"
+if [ -x "$VENV_PY" ]; then
+    "$VENV_PY" -m pip freeze 2>/dev/null | LC_ALL=C sort > "$PIP_MANIFEST" || true
+elif command -v uv >/dev/null 2>&1; then
+    uv pip freeze 2>/dev/null | LC_ALL=C sort > "$PIP_MANIFEST" || true
+fi
+[ -f "$PIP_MANIFEST" ] && PIP_COUNT="$(wc -l < "$PIP_MANIFEST" 2>/dev/null || echo 0)"
+
+# One digest over both manifests: a single value that answers "is this the same
+# dependency set as the build we validated?".
+MANIFEST_SHA=""
+if command -v sha256sum >/dev/null 2>&1; then
+    MANIFEST_SHA="$(cat "$APT_MANIFEST" "$PIP_MANIFEST" 2>/dev/null | sha256sum | cut -d' ' -f1 || true)"
+fi
+
+export OUTPUT_FILE PYTHON_VERSION APT_COUNT PIP_COUNT MANIFEST_SHA
 "$PYTHON_BIN" - <<'PY'
 import datetime
 import json
@@ -76,6 +111,17 @@ metadata = {
     "opencv_cuda": os.environ.get("OPENCV_CUDA", "auto"),
     "git_commit": os.environ.get("GIT_COMMIT", "unknown"),
     "build_date": resolve_build_date(),
+    # Reproducibility inputs, recorded so a build can be audited or re-pinned.
+    "base_image": os.environ.get("BASE_IMAGE", "unknown"),
+    "apt_snapshot": os.environ.get("APT_SNAPSHOT_DATE", "latest"),
+    "source_date_epoch": os.environ.get("SOURCE_DATE_EPOCH", ""),
+    "build_type": os.environ.get("DEVKIT_BUILD_TYPE", "dev"),
+    "manifest": {
+        "apt_packages": int(os.environ.get("APT_COUNT") or 0),
+        "pip_packages": int(os.environ.get("PIP_COUNT") or 0),
+        "sha256": os.environ.get("MANIFEST_SHA", ""),
+        "files": ["devkit-apt-manifest.txt", "devkit-pip-manifest.txt"],
+    },
 }
 
 with open(os.environ["OUTPUT_FILE"], "w", encoding="utf-8") as handle:
