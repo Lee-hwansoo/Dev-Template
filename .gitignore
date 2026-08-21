@@ -5,6 +5,7 @@
 
 # --- Build Artifacts ---------------------------------
 build/
+devel/
 install/
 log/
 logs/
@@ -73,3 +74,4 @@ Thumbs.db
 *.zip
 *.tar.gz
 *.tar.xz
+.env.tmp

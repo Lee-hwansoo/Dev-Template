@@ -77,7 +77,7 @@ make bake-prod ENV=dev
 # Full CUDA 스택 포함 프로덕션 SIF 생성 (NVIDIA CUDA 라이브러리 풀패키지)
 PROD_FULL_CUDA=1 make bake-prod ENV=ros
 ```
-> 생성된 SIF 파일예시: `myproject_ros_prod_latest.sif`
+> 생성된 SIF 파일예시: `myproject-ros-prod.sif`
 
 > **의존성 동기화 실패 정책 (fail-open 스위치)**: 워크스페이스 의존성 동기화(`sync_deps` / `setup_sync_deps.sh`)는
 > **기본적으로 실패 시 즉시 중단**됩니다 — 의존성이 누락된 이미지가 원격 클러스터에 배포되는 것을 막기 위함입니다.
@@ -93,7 +93,7 @@ PROD_FULL_CUDA=1 make bake-prod ENV=ros
 
 ```bash
 # SIF 이미지를 원격 서버의 외부 이미지 스토리지 경로로 전송
-scp myproject_ros_prod_latest.sif user@hpc.your-domain.com:/scratch/user/images/
+scp myproject-ros-prod.sif user@hpc.your-domain.com:/scratch/user/images/
 ```
 
 ---
@@ -108,13 +108,13 @@ ssh user@hpc.your-domain.com
 cd ~/projects/DevKit
 
 # 1) 간단한 일회성 명령 실행 (RUN_ARGS 활용)
-SIF_FILE=/scratch/user/images/myproject_ros_prod_latest.sif make run-sif SIF_MODE=prod ENV=ros RUN_ARGS='python3 train.py'
+SIF_FILE=/scratch/user/images/myproject-ros-prod.sif make run-sif SIF_MODE=prod ENV=ros RUN_ARGS='python3 train.py'
 
 # 2) 환경변수 기반 명령 지정 (APP_COMMAND 활용)
-SIF_FILE=/scratch/user/images/myproject_ros_prod_latest.sif APP_COMMAND="python3 train.py" make run-sif SIF_MODE=prod ENV=ros
+SIF_FILE=/scratch/user/images/myproject-ros-prod.sif APP_COMMAND="python3 train.py" make run-sif SIF_MODE=prod ENV=ros
 
 # 3) Direct apptainer 명령으로 실행 시
-apptainer run --nv /scratch/user/images/myproject_ros_prod_latest.sif python3 train.py
+apptainer run --nv /scratch/user/images/myproject-ros-prod.sif python3 train.py
 ```
 
 ---
@@ -127,15 +127,15 @@ apptainer run --nv /scratch/user/images/myproject_ros_prod_latest.sif python3 tr
 cd ~/projects/DevKit
 
 # 1) RUN_ARGS 축약형 구문으로 SLURM 작업 제출 (추천)
-SIF_FILE=/scratch/user/images/myproject_ros_prod_latest.sif \
+SIF_FILE=/scratch/user/images/myproject-ros-prod.sif \
 DEVKIT_SLURM_PARTITION=gpu \
 DEVKIT_SLURM_GRES=gpu:1 \
-DEVKIT_SLURM_CPUS=8 \
+DEVKIT_SLURM_CPUS_PER_TASK=8 \
 DEVKIT_SLURM_TIME=12:00:00 \
 make run-sif SIF_MODE=slurm ENV=ros RUN_ARGS='python3 train.py --epochs 100'
 
 # 2) APP_COMMAND 명시형 구문
-SIF_FILE=/scratch/user/images/myproject_ros_prod_latest.sif \
+SIF_FILE=/scratch/user/images/myproject-ros-prod.sif \
 DEVKIT_SLURM_PARTITION=gpu \
 DEVKIT_SLURM_GRES=gpu:1 \
 APP_COMMAND="python3 train.py --epochs 100" \
@@ -183,19 +183,28 @@ tail -f logs/*_12345.out
 | **`SIF_FILE`** | *(자동 감지)* | **원격 서버 내 SIF 이미지 파일 절대/상대 경로** (예: `/scratch/user/images/myproject.sif`) |
 | **`SIF_MODE`** | `dev` | SIF 실행 대상 선택 (`dev`: 개발 셸, `prod`: 단독 실행, `slurm`: SLURM 배치 제출) |
 | **`RUN_ARGS`** | *(없음)* | 컨테이너 내부 실행 명령 축약 인자 (예: `RUN_ARGS='python3 train.py'`) |
-| **`APP_COMMAND`** | `python3 -V` | SIF 컨테이너 내부에서 실행할 수행 명령 (`RUN_ARGS` 지정 시 `RUN_ARGS` 우선) |
-| **`DEVKIT_SLURM_PARTITION`** | `local` | 작업을 제출할 SLURM 파티션(큐) 이름 (`--partition`) |
+| **`APP_COMMAND`** | *(없음)* | SIF 컨테이너 내부에서 실행할 수행 명령 (`RUN_ARGS` 지정 시 `RUN_ARGS` 우선). 둘 다 없으면 SIF의 기본 runscript 실행 |
+| **`DEVKIT_SLURM_PARTITION`** | `gpu` | 작업을 제출할 SLURM 파티션(큐) 이름 (`--partition`) |
 | **`DEVKIT_SLURM_GRES`** | `gpu:1` | 요청할 GPU 제네릭 리소스 (`--gres`, 예: `gpu:a100:1` 또는 `gpu:2`) |
-| **`DEVKIT_SLURM_CPUS_PER_TASK`** | `4` | 태스크당 CPU 코어 수 (`--cpus-per-task`) |
+| **`DEVKIT_SLURM_CPUS_PER_TASK`** | `8` | 태스크당 CPU 코어 수 (`--cpus-per-task`) |
 | **`DEVKIT_SLURM_NODES`** / **`DEVKIT_SLURM_NTASKS`** | `1` / `1` | 노드 수 / 태스크 수 (`--nodes` / `--ntasks`) |
-| **`DEVKIT_SLURM_MEM`** | `32G` | 작업 메모리 (`--mem`, 예: `64G`) — 항상 지정됨(기본값은 `scripts/slurm_run.sh`의 `#SBATCH --mem`) |
-| **`DEVKIT_SLURM_TIME`** | `00:30:00` | 최대 작업 허용 시간 (`--time`, `HH:MM:SS`) |
+| **`DEVKIT_SLURM_MEM`** | `32G` | 작업 메모리 (`--mem`, 예: `64G`) |
+| **`DEVKIT_SLURM_TIME`** | `02:00:00` | 최대 작업 허용 시간 (`--time`, `HH:MM:SS`) |
 | **`DEVKIT_SLURM_JOB_NAME`** | `devkit` | 작업 이름 (`--job-name`; 로그 파일명 `%x`에 사용) |
+| **`DEVKIT_SLURM_OUTPUT`** / **`_ERROR`** | `logs/%x_%j.out` / `.err` | 표준 출력/에러 로그 경로 (`--output` / `--error`) |
+| **`DEVKIT_SLURM_COMMENT`** | `submitter:devkit` | 작업 주석 (`--comment`, 회계/추적용) |
 | **`DEVKIT_SLURM_EXTRA_ARGS`** | *(없음)* | 위 목록에 없는 임의의 `sbatch` 플래그를 그대로 통과 (예: `--account=lab --qos=high --exclusive`) |
+| **`SLURM_DATA_ROOT`** / **`CONTAINER_DATA_ROOT`** | *(없음)* / `/workspace/data` | 읽기 전용 데이터셋 바인드: 호스트 경로 → 컨테이너 마운트 지점 |
+| **`SLURM_RUN_ROOT`** / **`CONTAINER_RUN_ROOT`** | *(없음)* / `/runs` | 쓰기 가능 산출물 바인드: 호스트 경로 → 컨테이너 마운트 지점 |
 
-> **적용 우선순위**: 환경변수 > `scripts/slurm_run.sh`의 `#SBATCH` 지시자 > 기본값. `DEVKIT_SLURM_EXTRA_ARGS`는 관리 대상
-> 인자 **뒤에** 추가되어 필요 시 이를 덮어쓸 수 있습니다. 단, 공백이 포함된 값은 지원하지 않으므로(단어 분할) 그런 경우
-> `scripts/slurm_run.sh`의 `#SBATCH` 지시자를 직접 사용하세요.
+> **기본값의 출처**: 위 기본값은 모두 `scripts/slurm_run.sh` 상단의 `#SBATCH` 지시자입니다. 클러스터 표준값을 고정하려면
+> 환경변수 대신 그 파일을 수정하세요.
+>
+> **적용 우선순위**: `DEVKIT_SLURM_*` 환경변수 > `scripts/slurm_run.sh`의 `#SBATCH` 지시자.
+> `scripts/apptainer_run.sh`가 환경변수를 `sbatch` **명령행 플래그**로 변환해 전달하며, 명령행 플래그는 스크립트 내
+> `#SBATCH` 지시자를 덮어씁니다. 지정하지 않은 변수는 `#SBATCH` 기본값을 그대로 유지합니다.
+> `DEVKIT_SLURM_EXTRA_ARGS`는 관리 대상 인자 **뒤에** 추가되어 필요 시 이를 덮어쓸 수 있습니다. 단, 공백이 포함된
+> 값은 지원하지 않으므로(단어 분할) 그런 경우 `#SBATCH` 지시자를 직접 사용하세요.
 
 > **예시 (보여주신 설정을 env만으로 재현)**:
 > ```bash
@@ -214,7 +223,7 @@ HPC 서버의 외부 공유 스토리지 폴더를 SIF 내부로 바인드 연�
 ```bash
 # /scratch 및 /global 공유 폴더를 SIF 내부 동일 경로로 마운트 실행
 APPTAINER_BIND="/scratch:/scratch,/global:/global" \
-SIF_FILE=/scratch/user/images/myproject_ros_prod_latest.sif \
+SIF_FILE=/scratch/user/images/myproject-ros-prod.sif \
 make run-sif SIF_MODE=prod ENV=ros RUN_ARGS='python3 train.py'
 ```
 
@@ -225,7 +234,7 @@ make run-sif SIF_MODE=prod ENV=ros RUN_ARGS='python3 train.py'
 ### Q1. `SIF not found: /path/to/sif` 오류가 발생합니다.
 - `SIF_FILE` 경로에 지정한 절대 경로가 올바른지 파일 존재 여부를 확인하세요:
   ```bash
-  ls -la /scratch/user/images/myproject_ros_prod_latest.sif
+  ls -la /scratch/user/images/myproject-ros-prod.sif
   ```
 
 ### Q2. `apptainer: command not found` 또는 `sbatch: command not found` 오류가 발생합니다.

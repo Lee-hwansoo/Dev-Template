@@ -226,7 +226,7 @@
     {
       "label": "✅ DevKit: Verify (Script-only)",
       "type": "shell",
-      "command": "bash -lc 'ws_scripts=\"$WS_SCRIPTS\"; [ -n \"$ws_scripts\" ] || ws_scripts=/workspace/scripts; VERIFY_DOCKER=0 bash \"$ws_scripts/verify_repo.sh\"'",
+      "command": "bash -lc 'ws_scripts=\"$WS_SCRIPTS\"; [ -n \"$ws_scripts\" ] || ws_scripts=/workspace/scripts; bash \"$ws_scripts/verify_repo.sh\"'",
       "options": {
         "cwd": "${env:WS_ROOT}"
       },
