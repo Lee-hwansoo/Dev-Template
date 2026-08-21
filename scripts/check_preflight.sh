@@ -10,15 +10,18 @@
 # "docker: 'compose' is not a command" or "unknown flag: --mount".
 #
 # Exit codes: 0 = ok (warnings allowed), 1 = blocking prerequisite missing.
-# GPU/NVIDIA specifics are intentionally left to `make check-host` to avoid
+# GPU/NVIDIA specifics are intentionally left to `make check` to avoid
 # duplicating that logic here.
 # =============================================================================
 
 set -uo pipefail
 
-source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || source "/tmp/util_paths.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || { echo "  [ERROR] Cannot load config/util_paths.sh (broken checkout?)" >&2; exit 1; }  # host-only: never fall back to world-writable /tmp
 devkit_require "util_logging.sh"
 LOG_PREFIX="[Preflight]"
+
+# Strip colour when piped/redirected or NO_COLOR is set (see util_logging.sh).
+declare -F devkit_auto_color >/dev/null 2>&1 && devkit_auto_color
 
 errors=0
 warnings=0

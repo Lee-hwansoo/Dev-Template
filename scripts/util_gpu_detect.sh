@@ -91,6 +91,22 @@ has_any_dri() {
     [ -d /dev/dri ] && has_glob_match "/dev/dri/renderD*"
 }
 
+# get_drm_driver: kernel DRM driver name(s), e.g. i915 amdgpu nvidia panfrost
+# freedreno v3d etnaviv msm. This is vendor-agnostic on purpose — SoC GPUs are
+# registered as *platform* devices and therefore have no PCI `device/vendor`
+# file, so has_drm_vendor() cannot see them at all. The driver name always works.
+get_drm_driver() {
+    local uevent names=""
+    for uevent in /sys/class/drm/*/device/uevent; do
+        [ -f "$uevent" ] || continue
+        while IFS='=' read -r key value; do
+            [ "$key" = "DRIVER" ] || continue
+            case " $names " in *" $value "*) ;; *) names="${names:+$names }$value" ;; esac
+        done < "$uevent"
+    done
+    printf '%s' "$names"
+}
+
 # NVIDIA Jetson / Tegra embedded GPU (no nvidiactl)
 has_tegra() {
     has_glob_match "/dev/nvhost-*"
@@ -103,40 +119,109 @@ has_rocm() {
 
 # WSL2 Paravirtualized Graphics (D3D12 / DirectX)
 has_dxg() {
-    local proc_version
-
-    # Check for device node and ensure we are on a Microsoft kernel to avoid false positives
     [ -e /dev/dxg ] || return 1
-    proc_version="$(cat /proc/version 2>/dev/null || true)"
-    case "${proc_version,,}" in
-        *microsoft*) return 0 ;;
-        *) return 1 ;;
-    esac
+    grep -qi microsoft /proc/version 2>/dev/null
 }
 
 # =============================================================================
-# GPU Configuration Prescriptions (Centralized Knowledge)
+# Rendering Stack Probes (OpenGL / GLX / EGL / Vulkan / D3D12)
+# -----------------------------------------------------------------------------
+# Each probe prints `key=value` lines and stays silent when its tool or display
+# is unavailable, so callers can consume them without branching on tool presence.
+#
+# All probes are timeout-guarded: glxinfo/eglinfo/vulkaninfo block indefinitely
+# against a DISPLAY that is set but unreachable, which would hang `hwcheck`.
 # =============================================================================
-# Returns recommended environment variables for specific hardware scenarios.
-# Usage: get_gpu_prescription <scenario> [indent_string]
-get_gpu_prescription() {
-    local scenario="$1"
-    local indent="${2:-}"
+GPU_PROBE_TIMEOUT="${GPU_PROBE_TIMEOUT:-3}"
 
-    case "$scenario" in
-        nvidia_wsl)
-            echo "${indent}export MESA_LOADER_DRIVER_OVERRIDE=d3d12"
-            echo "${indent}export GALLIUM_DRIVER=d3d12"
-            echo "${indent}export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA"
-            ;;
-        igpu_wsl)
-            echo "${indent}export MESA_LOADER_DRIVER_OVERRIDE=d3d12"
-            echo "${indent}export GALLIUM_DRIVER=d3d12"
-            ;;
-        nvidia_optimize_wsl)
-            echo "${indent}export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA"
-            ;;
+__gpu_probe_run() {
+    local tool="$1"; shift
+    command -v "$tool" >/dev/null 2>&1 || return 1
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$GPU_PROBE_TIMEOUT" "$tool" "$@" 2>/dev/null
+        # 124 = timed out. Callers must not retry: a second attempt costs the
+        # same wall-clock again and cannot succeed where the first one hung.
+        return $?
+    fi
+    "$tool" "$@" 2>/dev/null
+}
+
+# display_reachable: cheap precondition for every GL/EGL probe. A DISPLAY that
+# points at a missing socket makes glxinfo/eglinfo burn the full timeout for a
+# guaranteed failure — skip them outright instead.
+display_reachable() {
+    [ -n "${WAYLAND_DISPLAY:-}" ] && [ -S "${XDG_RUNTIME_DIR:-}/${WAYLAND_DISPLAY}" ] && return 0
+    [ -n "${DISPLAY:-}" ] || return 1
+    case "$DISPLAY" in
+        :*) local n="${DISPLAY#:}"; n="${n%%.*}"; [ -S "/tmp/.X11-unix/X${n}" ] ;;
+        *)  return 0 ;;   # remote/TCP display: cannot check locally, let it try
     esac
+}
+
+# probe_gl → gl_vendor, gl_renderer, gl_version, gl_mesa, gl_accelerated,
+#            gl_direct, gl_vram, gl_max_core  (from a single `glxinfo -B` call)
+probe_gl() {
+    local out
+    display_reachable || return 1
+    # Gate on output, never on exit status: these tools routinely exit non-zero
+    # after printing perfectly usable data (e.g. one platform of several failed).
+    out="$(__gpu_probe_run glxinfo -B || true)"
+    [ -n "$out" ] || return 1
+    awk -F': *' '
+        /^OpenGL vendor string/           { print "gl_vendor="   $2 }
+        /^OpenGL renderer string/         { print "gl_renderer=" $2 }
+        /^OpenGL core profile version/    { print "gl_version="  $2 }
+        /^direct rendering/               { print "gl_direct="   $2 }
+        /^ *Accelerated:/                 { print "gl_accelerated=" $2 }
+        /^ *Video memory:/                { print "gl_vram="     $2 }
+        /^ *Version:/                     { print "gl_mesa="     $2 }
+        /^ *Max core profile version:/    { print "gl_max_core=" $2 }
+    ' <<< "$out"
+}
+
+# probe_egl → egl_vendor, egl_version, egl_apis, egl_renderer (X11 platform)
+probe_egl() {
+    local out rc=0
+    display_reachable || return 1
+    out="$(__gpu_probe_run eglinfo -B)" || rc=$?
+    # Retry the legacy invocation only when -B failed fast (unsupported flag),
+    # never after a timeout (rc 124) — that would double the stall.
+    if [ -z "$out" ] && [ "$rc" != "124" ]; then out="$(__gpu_probe_run eglinfo || true)"; fi
+    [ -n "$out" ] || return 1
+    awk -F': *' '
+        /platform:/ { plat = $0 }
+        plat ~ /X11|Wayland/ {
+            if ($0 ~ /^EGL vendor string/)              print "egl_vendor="   $2
+            if ($0 ~ /^EGL version string/)             print "egl_version="  $2
+            if ($0 ~ /^EGL client APIs/)                print "egl_apis="     $2
+            if ($0 ~ /^OpenGL core profile renderer/)   print "egl_renderer=" $2
+        }
+    ' <<< "$out" | awk '!seen[substr($0,1,index($0,"=")-1)]++'
+}
+
+# probe_vulkan → vk_device, vk_type, vk_api, vk_driver
+probe_vulkan() {
+    local out
+    out="$(__gpu_probe_run vulkaninfo --summary || true)"
+    [ -n "$out" ] || return 1
+    awk -F'= *' '
+        /deviceName/  && !d { print "vk_device=" $2; d = 1 }
+        /deviceType/  && !t { sub(/PHYSICAL_DEVICE_TYPE_/, "", $2); print "vk_type=" $2; t = 1 }
+        /apiVersion/  && !a { print "vk_api="    $2; a = 1 }
+        /driverName/  && !n { print "vk_driver=" $2; n = 1 }
+    ' <<< "$out"
+}
+
+# probe_gl_libs → resolved paths of the loader libraries that actually matter.
+# A GL/Vulkan stack usually breaks because the loader resolves to the wrong
+# library (host driver missing from the image, or /usr/lib/wsl not on the path).
+probe_gl_libs() {
+    command -v ldconfig >/dev/null 2>&1 || return 1
+    ldconfig -p 2>/dev/null | awk '
+        /libGL\.so\.1|libEGL\.so\.1|libvulkan\.so\.1|libGLX\.so\.0|libcuda\.so\.1/ {
+            name = $1; path = $NF
+            if (!seen[name]++) printf "%s=%s\n", name, path
+        }'
 }
 
 # =============================================================================
@@ -192,23 +277,3 @@ get_cuda_metadata() {
     esac
 }
 
-# =============================================================================
-# Low-level Hardware Verification (Fallback Logic)
-# =============================================================================
-# Resolves GPU vendor name via sysfs to handle cases where glxinfo is missing.
-get_gpu_vendor_sysfs() {
-    local vendor_id
-    # Try common DRI device paths
-    if [ -d /sys/class/drm ]; then
-        for vendor_file in /sys/class/drm/card*/device/vendor; do
-            [ -f "$vendor_file" ] || continue
-            vendor_id=$(trim_ws "$(cat "$vendor_file" 2>/dev/null || true)")
-            case "$vendor_id" in
-                0x8086) echo "Intel" ; return ;;
-                0x10de) echo "NVIDIA"; return ;;
-                0x1002|0x1022) echo "AMD" ; return ;;
-            esac
-        done
-    fi
-    echo "Unknown"
-}

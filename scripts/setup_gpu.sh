@@ -1,603 +1,358 @@
 #!/bin/bash
 # =============================================================================
 # scripts/setup_gpu.sh
-# Automatic detection and setup switching for GPU hardware acceleration environment
+# GPU acceleration environment configuration (NVIDIA, Intel, AMD, WSL2, CPU)
+# Usage: source setup_gpu.sh [auto|nvidia|tegra|igpu|intel|amd|cpu|status|opencv_args]
 #
-# Supported devices: NVIDIA, Intel, AMD, CPU (Software)
-# Features:
-#   - Automatic fallback for Wayland/X11 displays
-#   - Optimized setup for NVIDIA hybrid graphics (PRIME)
-#   - Automatic fallback to software rendering (llvmpipe) upon acceleration failure
+# Side effect: writes ${HOME}/.gpu_env.sh so that shells which did NOT go
+# through the entrypoint (`docker exec`, `make shell`, `make term`, VS Code)
+# inherit the exact same GPU environment. config/init_bash.sh sources it.
 # =============================================================================
 
-source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || source "/tmp/util_paths.sh"
-devkit_require "util_logging.sh"
-LOG_PREFIX="[GPU]"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || echo ".")"
+source "${SCRIPT_DIR}/../config/util_paths.sh" 2>/dev/null || true
+devkit_require "util_logging.sh"    2>/dev/null || true
+devkit_require "util_gpu_detect.sh" 2>/dev/null || true
 
-setup_gpu_usage() {
-    cat <<'EOF'
-Usage: source setup_gpu.sh {auto|intel|amd|nvidia|igpu|cpu|status|opencv_args}
+# Strip colour when piped/redirected or NO_COLOR is set (see util_logging.sh).
+# Only for the read-only `status` view: the other modes are sourced into the
+# caller's shell, where redirecting its stdout would be a surprising side effect.
+[ "${1:-}" = "status" ] && declare -F devkit_auto_color >/dev/null 2>&1 && devkit_auto_color
 
-Configure or inspect GPU/rendering environment variables.
-
-Modes:
-  auto          Detect and apply the best available GPU mode.
-  intel|amd     Force vendor-specific integrated GPU settings.
-  nvidia        Force NVIDIA/PRIME settings.
-  igpu          Select Intel/AMD/generic DRI when available.
-  cpu|software  Force software rendering.
-  status        Print diagnostics.
-  opencv_args   Print CMake flags for OpenCV CUDA support.
-  -h, --help    Show this help.
-EOF
-}
-
-setup_gpu_finish() {
-    local code="${1:-0}"
-    if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-        exit "$code"
-    fi
-    return "$code"
-}
-
-# Load shared GPU detection helpers (SSOT for GPU detection functions)
-if ! devkit_require "util_gpu_detect.sh"; then
-    echo "${LOG_PREFIX:-[GPU]} FATAL: util_gpu_detect.sh not found. GPU detection unavailable." >&2
-    setup_gpu_finish 1
-fi
-
-
-# =============================================================================
-# Global Constants & Environment Management
-# =============================================================================
-# List of environment variables managed by this script (centralized management)
+# Every variable this script owns. Listed once: reset, persist and diagnostics
+# all iterate this array, so adding a knob never needs a second edit.
 GPU_ENV_VARS=(
-    MESA_LOADER_DRIVER_OVERRIDE
-    GALLIUM_DRIVER
-    LIBGL_ALWAYS_SOFTWARE
-    __NV_PRIME_RENDER_OFFLOAD
-    __GLX_VENDOR_LIBRARY_NAME
-    __EGL_VENDOR_LIBRARY_FILENAMES
-    VK_ICD_FILENAMES
-    __VK_LAYER_NV_optimus
-    MESA_D3D12_DEFAULT_ADAPTER_NAME
+    LIBGL_ALWAYS_SOFTWARE LIBGL_ALWAYS_INDIRECT
+    MESA_LOADER_DRIVER_OVERRIDE MESA_D3D12_DEFAULT_ADAPTER_NAME GALLIUM_DRIVER
+    __NV_PRIME_RENDER_OFFLOAD __GLX_VENDOR_LIBRARY_NAME __VK_LAYER_NV_optimus
+    __EGL_VENDOR_LIBRARY_FILENAMES VK_ICD_FILENAMES
+    GBM_BACKEND QT_QPA_PLATFORM GDK_BACKEND
     QT_XCB_FORCE_SOFTWARE_OPENGL
-    LIBGL_ALWAYS_INDIRECT
 )
 
-# =============================================================================
-# Detection Helpers
-# =============================================================================
-# GPU vendor detection functions (has_nvidia, has_intel_dri, has_amd_dri,
-# has_any_dri, has_tegra, has_rocm) are provided by util_gpu_detect.sh above.
+GPU_ENV_FILE="${GPU_ENV_FILE:-${HOME}/.gpu_env.sh}"
 
-# Detects the active display server (Wayland vs X11) with fallback logic
-detect_display_server() {
-    if [ -n "${DISPLAY_TYPE:-}" ]; then
-        echo "${DISPLAY_TYPE}"
-        return
-    fi
+# Directories this script prepends to LD_LIBRARY_PATH. Tracked separately so the
+# persisted file can re-prepend exactly these, never a whole-path snapshot.
+GPU_LIB_DIRS=()
 
-    if [ -n "$WAYLAND_DISPLAY" ]; then
-        if [ "$XDG_SESSION_TYPE" = "x11" ] || [ -n "$DISPLAY" ]; then
-            echo "XWayland"
-        else
-            echo "Wayland"
-        fi
-    elif [ -n "$DISPLAY" ]; then
-        echo "X11"
-    else
-        echo "None"
-    fi
-}
+__gpu_reset()  { unset "${GPU_ENV_VARS[@]}"; }
 
-# Safely prepend a directory to LD_LIBRARY_PATH without duplication
-path_prepend() {
+__gpu_path_prepend() {
     local dir="$1"
-    if [ -d "$dir" ] && [[ ":$LD_LIBRARY_PATH:" != *":$dir:"* ]]; then
-        export LD_LIBRARY_PATH="$dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    fi
+    [ -d "$dir" ] || return 0
+    case ":${LD_LIBRARY_PATH:-}:" in
+        *":$dir:"*) ;;
+        *) export LD_LIBRARY_PATH="$dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
+    esac
+    GPU_LIB_DIRS+=("$dir")
 }
 
-# Check if a specific GPU setup is already active (idempotency helper)
-is_setup_active() {
-    local target_vendor="$1"
-    local active_vendor="${__GLX_VENDOR_LIBRARY_NAME:-}"
-
-    # If the vendor matches exactly, it's active
-    [[ "$active_vendor" == "$target_vendor" ]] && return 0
-
-    # WSL2 Special Case: Mesa is the vendor, but we target NVIDIA via D3D12
-    if [[ "$target_vendor" == "nvidia" ]] && has_dxg; then
-        [[ "$active_vendor" == "mesa" ]] && [[ "${MESA_D3D12_DEFAULT_ADAPTER_NAME:-}" == "NVIDIA" ]] && return 0
-    fi
-
-    # Check for Vulkan ICD as a secondary indicator for NVIDIA
-    if [[ "$target_vendor" == "nvidia" ]] && [[ -n "${VK_ICD_FILENAMES:-}" ]] && [[ "$VK_ICD_FILENAMES" == *"nvidia"* ]]; then
-        return 0
-    fi
-
-    return 1
-}
-
-# =============================================================================
-# Reset
-# =============================================================================
-reset_gpu_env() {
-    for var in "${GPU_ENV_VARS[@]}"; do
-        unset "$var"
-    done
-}
-
-# =============================================================================
-# GPU Setup Functions
-# =============================================================================
-write_gpu_env() {
-    # Persists GPU-specific environment variables for use in future shell sessions
-    local env_file="${GPU_ENV_FILE:-${HOME}/.gpu_env.sh}"
-    local env_dir
-    env_dir="$(dirname "$env_file")"
-
-    if [ ! -d "$env_dir" ] || [ ! -w "$env_dir" ]; then
-        log_warn "GPU environment persistence skipped; directory is not writable: $env_dir"
-        return 0
-    fi
-
-    # Determine uv extra (PyTorch selection) based on detectable hardware
-    local uv_extra="cpu"
-    if [ "${LIBGL_ALWAYS_SOFTWARE:-0}" = "0" ]; then
-        if [ "${__GLX_VENDOR_LIBRARY_NAME:-}" = "nvidia" ] || has_nvidia || has_tegra; then
-            uv_extra="gpu"
-        fi
-    fi
-
+# Persist the resolved environment for non-entrypoint shells.
+__gpu_persist() {
+    local var
+    [ -w "$(dirname "$GPU_ENV_FILE")" ] 2>/dev/null || return 0
     {
-        echo "# __GPU_ENV_START"
+        echo "# Generated by scripts/setup_gpu.sh — do not edit (regenerate with: gpu <mode>)"
         for var in "${GPU_ENV_VARS[@]}"; do
-            # Only export if the variable is set
-            if [ -n "${!var:-}" ]; then
-                # Use printf %q to safely escape values (e.g. spaces in adapter names)
-                printf "export %s=%q\n" "$var" "${!var}"
-            elif [ "$var" = "LIBGL_ALWAYS_SOFTWARE" ]; then
-                # Default to 0 for this specific variable
-                echo "export LIBGL_ALWAYS_SOFTWARE=0"
-            fi
+            [ -n "${!var:-}" ] && printf 'export %s=%q\n' "$var" "${!var}"
         done
-        [ -n "${LD_LIBRARY_PATH:-}" ] && printf "export LD_LIBRARY_PATH=%q\n" "$LD_LIBRARY_PATH"
-        echo "export UV_EXTRA=${uv_extra}"
-        echo "# __GPU_ENV_END"
-    } > "$env_file"
+        # Prepend, never assign. This file is generated during boot — BEFORE ROS
+        # is sourced — so persisting a whole LD_LIBRARY_PATH snapshot wipes
+        # /opt/ros/<distro>/lib for every shell that re-reads it, and `import
+        # rclpy` then dies on a missing librcl_action.so.
+        local dir
+        for dir in ${GPU_LIB_DIRS[@]+"${GPU_LIB_DIRS[@]}"}; do
+            printf 'case ":${LD_LIBRARY_PATH}:" in *":%s:"*) ;; *) export LD_LIBRARY_PATH="%s${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;; esac\n' "$dir" "$dir"
+        done
+        # Optional dependency group for `uvs` (pyproject [project.optional-dependencies])
+        printf 'export UV_EXTRA=%s\n' "${GPU_UV_EXTRA:-cpu}"
+    } > "$GPU_ENV_FILE" 2>/dev/null || true
 }
 
-setup_wsl2_d3d12() {
-    # Optional adapter hint (Intel|AMD|NVIDIA): lets an explicit `gpu <vendor>`
-    # request select that GPU on a multi-GPU WSL2 host via the D3D12 adapter name.
-    local requested_adapter="${1:-}"
-    log_info "WSL2 environment detected. Using Mesa D3D12 (Dozen) for graphics acceleration."
-    reset_gpu_env
-    export LIBGL_ALWAYS_SOFTWARE=0
-    # Crucial for Mesa to find host libraries (dxcore, d3d12core) on WSL2
-    path_prepend "/usr/lib/wsl/lib"
-    export __GLX_VENDOR_LIBRARY_NAME="mesa"
-    export MESA_LOADER_DRIVER_OVERRIDE="d3d12"
-    export GALLIUM_DRIVER="d3d12"
-    export LIBGL_ALWAYS_INDIRECT=0
-
-    # Adapter selection: an explicit vendor request wins; otherwise prefer NVIDIA
-    # when present (the previous default behavior).
-    if [ -n "$requested_adapter" ]; then
-        export MESA_D3D12_DEFAULT_ADAPTER_NAME="$requested_adapter"
-    elif has_nvidia; then
-        export MESA_D3D12_DEFAULT_ADAPTER_NAME="NVIDIA"
-    fi
-
-    write_gpu_env
-    log_ok "WSL2 D3D12 graphics bridge configured${MESA_D3D12_DEFAULT_ADAPTER_NAME:+ (adapter: ${MESA_D3D12_DEFAULT_ADAPTER_NAME})}"
-}
-
-apply_gpu_setup() {
-    local target_setup_func="$1"
-
-    if [ "$target_setup_func" = "setup_software" ]; then
-        setup_software
-        return
-    fi
-
-    # Architecture Intercept Logic
-    if has_dxg; then
-        # If we have an NVIDIA GPU and the Container Toolkit is installed,
-        # prioritize the Native NVIDIA path for better performance and CUDA support.
-        if has_nvidia && [ "${HAS_TOOLKIT:-false}" = "true" ]; then
-            log_ok "WSL2 with NVIDIA Toolkit detected. Using native NVIDIA acceleration path."
-            setup_nvidia
-            return
-        fi
-
-        # On WSL2 every GPU renders through the Mesa D3D12 (Dozen) bridge, so an
-        # explicit `gpu intel|amd|nvidia` request is routed through D3D12 — not
-        # silently ignored — and mapped to the matching D3D12 adapter name.
-        local wsl_adapter=""
-        case "$target_setup_func" in
-            setup_nvidia) wsl_adapter="NVIDIA" ;;
-            setup_intel)  wsl_adapter="Intel" ;;
-            setup_amd)    wsl_adapter="AMD" ;;
-        esac
-        if [ -n "$wsl_adapter" ]; then
-            log_info "WSL2: routing '${wsl_adapter}' request through the Mesa D3D12 bridge (selecting the ${wsl_adapter} adapter)."
-        elif [ "$target_setup_func" != "setup_wsl2_d3d12" ]; then
-            log_info "WSL2 environment detected (No Toolkit or Generic). Using Mesa D3D12 bridge."
-        fi
-        setup_wsl2_d3d12 "$wsl_adapter"
-        return
-    fi
-
-    # Native environment
-    if declare -f "$target_setup_func" > /dev/null; then
-        "$target_setup_func"
-    else
-        log_error "Unknown GPU setup logic requested: $target_setup_func"
-        setup_software
-    fi
-}
-
-setup_nvidia() {
-    # Avoid redundant configuration if NVIDIA environment is already active
-    if is_setup_active "nvidia"; then
-        if [ "${__NV_PRIME_RENDER_OFFLOAD:-}" = "1" ]; then
-            log_info "NVIDIA environment already active. Skipping redundant setup."
-            return
-        fi
-    fi
-
-    reset_gpu_env
+__gpu_nvidia_native() {
     export LIBGL_ALWAYS_SOFTWARE=0
     export __NV_PRIME_RENDER_OFFLOAD=1
     export __VK_LAYER_NV_optimus=NVIDIA_only
+    export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
+    GPU_UV_EXTRA="gpu"
 
-    if has_dxg; then
-        # WSL2 Hybrid: Use Mesa D3D12 bridge for OpenGL, but target NVIDIA adapter.
-        log_info "WSL2 detected: Configuring NVIDIA-backed Mesa D3D12 bridge."
-        export __GLX_VENDOR_LIBRARY_NAME="mesa"
-        export MESA_LOADER_DRIVER_OVERRIDE="d3d12"
-        export GALLIUM_DRIVER="d3d12"
-        export MESA_D3D12_DEFAULT_ADAPTER_NAME="NVIDIA"
+    if has_dxg 2>/dev/null; then
+        # WSL2 hybrid: CUDA/compute reaches the GPU natively, but OpenGL ALWAYS
+        # goes through the Mesa D3D12 (Dozen) bridge. Without the adapter hint
+        # Mesa picks the first D3D12 adapter — on a hybrid laptop that is the
+        # integrated GPU, so GL silently renders on the wrong device.
+        export __GLX_VENDOR_LIBRARY_NAME=mesa
+        export MESA_LOADER_DRIVER_OVERRIDE=d3d12
+        export GALLIUM_DRIVER=d3d12
+        export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
         export LIBGL_ALWAYS_INDIRECT=0
-        path_prepend "/usr/lib/wsl/lib"
-    else
-        # Native Linux: Use standard NVIDIA GLX/EGL/Vulkan drivers.
-        log_info "Native Linux detected: Configuring direct NVIDIA acceleration path."
-        export __GLX_VENDOR_LIBRARY_NAME="nvidia"
-
-        # Explicitly point to NVIDIA ICD files to prevent Mesa from hijacking
-        # Search for ICD files in prioritized standard locations
-        local icd_paths=(
-            "/usr/share/vulkan/icd.d/nvidia_icd.json"
-            "/etc/vulkan/icd.d/nvidia_icd.json"
-            "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
-        )
-        for path in "${icd_paths[@]}"; do
-            if [ -f "$path" ]; then
-                if [[ "$path" == *"vulkan"* ]]; then
-                    [ -z "${VK_ICD_FILENAMES:-}" ] && export VK_ICD_FILENAMES="$path"
-                elif [[ "$path" == *"egl_vendor"* ]]; then
-                    [ -z "${__EGL_VENDOR_LIBRARY_FILENAMES:-}" ] && export __EGL_VENDOR_LIBRARY_FILENAMES="$path"
-                fi
-            fi
-        done
+        __gpu_path_prepend "/usr/lib/wsl/lib"
+        echo -e "  \033[32m[GPU]\033[0m NVIDIA active — CUDA native, OpenGL via D3D12 bridge (adapter: NVIDIA)"
+        return 0
     fi
 
-    local ds=$(detect_display_server)
-    log_info "Detected Display Server: $ds"
-
-    # NVIDIA Settings exclusive to Wayland/XWayland
-    if [[ "$ds" == *"Wayland"* ]]; then
-        [ -z "${QT_QPA_PLATFORM:-}" ] && export QT_QPA_PLATFORM="wayland;xcb"
-        [ -z "${GDK_BACKEND:-}" ] && export GDK_BACKEND="wayland,x11"
-        # Only set GBM_BACKEND if we are NOT on WSL2 (WSL2 doesn't use GBM for container display)
-        if ! has_dxg; then
-            export GBM_BACKEND="nvidia-drm"
-        fi
-        export __GL_GSYNC_ALLOWED=0
-        export __GL_VRR_ALLOWED=0
-        log_ok "NVIDIA Wayland optimizations applied"
+    export __GLX_VENDOR_LIBRARY_NAME=nvidia
+    # Pin the NVIDIA Vulkan ICD when present, or Mesa's ICDs win the loader race
+    # and vulkaninfo reports llvmpipe on a perfectly good GPU.
+    local icd
+    for icd in /usr/share/vulkan/icd.d/nvidia_icd.json /etc/vulkan/icd.d/nvidia_icd.json; do
+        if [ -f "$icd" ]; then export VK_ICD_FILENAMES="$icd"; break; fi
+    done
+    # NVIDIA + Wayland needs the vendor GBM backend or EGL apps fall back to
+    # software — but only when nvidia-drm KMS is actually modeset (forcing it
+    # without makes gbm_create_device fail outright, worse than the fallback).
+    if [ -n "${WAYLAND_DISPLAY:-}" ] \
+       && [ "$(cat /sys/module/nvidia_drm/parameters/modeset 2>/dev/null)" = "Y" ]; then
+        export GBM_BACKEND=nvidia-drm
+        export QT_QPA_PLATFORM="wayland;xcb"
+        export GDK_BACKEND="wayland,x11"
     fi
-
-    write_gpu_env
-    log_ok "NVIDIA GPU configured (OpenGL + Vulkan + EGL)"
+    echo -e "  \033[32m[GPU]\033[0m NVIDIA hardware acceleration active (OpenGL + Vulkan + EGL)"
 }
 
-setup_mesa_driver() {
-    local driver="$1"
-    local label="$2"
-    [ -n "$driver" ] && [ "${MESA_LOADER_DRIVER_OVERRIDE:-}" = "$driver" ] && return
-    reset_gpu_env
+# WSL2 renders every vendor through the Mesa D3D12 (Dozen) bridge.
+# /usr/lib/wsl/lib holds the host libd3d12/libcuda stubs and MUST be on the
+# loader path or GL falls back to llvmpipe.
+__gpu_wsl_d3d12() {
+    local adapter="${1:-}"
     export LIBGL_ALWAYS_SOFTWARE=0
-    [ -n "$driver" ] && export MESA_LOADER_DRIVER_OVERRIDE="$driver"
-    [ -n "$driver" ] && export GALLIUM_DRIVER="$driver"
-    write_gpu_env
-    log_ok "$label"
+    export LIBGL_ALWAYS_INDIRECT=0
+    export __GLX_VENDOR_LIBRARY_NAME=mesa
+    export MESA_LOADER_DRIVER_OVERRIDE=d3d12
+    export GALLIUM_DRIVER=d3d12
+    [ -z "$adapter" ] && has_nvidia 2>/dev/null && adapter="NVIDIA"
+    [ -n "$adapter" ] && export MESA_D3D12_DEFAULT_ADAPTER_NAME="$adapter"
+    __gpu_path_prepend "/usr/lib/wsl/lib"
+    has_nvidia 2>/dev/null && GPU_UV_EXTRA="gpu"
+    echo -e "  \033[32m[GPU]\033[0m WSL2 Mesa/D3D12 bridge active${adapter:+ (adapter: ${adapter})}"
 }
 
-setup_intel() {
-    if [ -d /sys/module/xe ]; then
-        setup_mesa_driver "" "Intel GPU configured (xe driver for Arc)"
-        return
+__gpu_mesa() {
+    local driver="$1" label="$2"
+    export LIBGL_ALWAYS_SOFTWARE=0
+    if [ -n "$driver" ]; then
+        export MESA_LOADER_DRIVER_OVERRIDE="$driver"
+        export GALLIUM_DRIVER="$driver"
     fi
-
-    setup_mesa_driver "iris" "Intel GPU configured (Mesa/iris driver)"
+    echo -e "  \033[32m[GPU]\033[0m ${label}"
 }
 
-setup_amd() {
-    setup_mesa_driver "radeonsi" "AMD GPU configured (Mesa/radeonsi driver)"
-}
-
-setup_tegra() {
-    reset_gpu_env
+# NVIDIA Jetson / Tegra: the integrated GPU is driven by the vendor L4T stack
+# already present in the image; no GLX/Mesa override must be applied or the
+# nvgpu path is bypassed and rendering silently falls back to llvmpipe.
+__gpu_tegra() {
     export LIBGL_ALWAYS_SOFTWARE=0
-    write_gpu_env
-    log_ok "NVIDIA Tegra GPU configured (Jetson/Embedded)"
+    __gpu_path_prepend "/usr/lib/aarch64-linux-gnu/tegra"
+    __gpu_path_prepend "/usr/lib/aarch64-linux-gnu/tegra-egl"
+    GPU_UV_EXTRA="gpu"
+    echo -e "  \033[32m[GPU]\033[0m NVIDIA Tegra/Jetson integrated GPU active (L4T stack)"
 }
 
-setup_rocm() {
-    reset_gpu_env
-    export LIBGL_ALWAYS_SOFTWARE=0
-    write_gpu_env
-    log_ok "AMD ROCm environment configured"
-}
-
-setup_software() {
-    if [ "${LIBGL_ALWAYS_SOFTWARE:-0}" = "1" ] && [ "${GALLIUM_DRIVER:-}" = "llvmpipe" ]; then return; fi
-    reset_gpu_env
+__gpu_software() {
     export LIBGL_ALWAYS_SOFTWARE=1
-    export GALLIUM_DRIVER="llvmpipe"
+    export GALLIUM_DRIVER=llvmpipe
     export QT_XCB_FORCE_SOFTWARE_OPENGL=1
-    write_gpu_env
-    log_warn "Software rendering (CPU/llvmpipe) configured"
+    echo -e "  \033[33m[GPU]\033[0m CPU software rendering (llvmpipe)"
+    # Apple Silicon / Intel macOS: Docker Desktop runs a Linux VM with no GPU
+    # passthrough, so this is a platform ceiling rather than a misconfiguration.
+    if [ "${IS_MACOS:-false}" = "true" ] || [ "${DEVKIT_HOST_IS_MACOS:-false}" = "true" ]; then
+        echo -e "  \033[36m[Hint]\033[0m macOS containers have no Metal/MPS access — this is expected."
+        echo -e "  \033[36m[Hint]\033[0m For Apple Silicon GPU (MPS), run PyTorch natively on the host, not in this container."
+    fi
 }
 
-# =============================================================================
-# Automated environment-based GPU setup selection
-# =============================================================================
-# Strategy Registry: Mapping hardware detection to setup functions
-# Priority is determined by the order in this list
-declare -A GPU_STRATEGIES=(
-    ["dxg"]="setup_wsl2_d3d12"
-    ["nvidia"]="setup_nvidia"
-    ["intel_dri"]="setup_intel"
-    ["amd_dri"]="setup_amd"
-    ["tegra"]="setup_tegra"
-    ["rocm"]="setup_rocm"
-    ["any_dri"]="setup_igpu"
-)
-GPU_STRATEGY_ORDER=("dxg" "nvidia" "intel_dri" "amd_dri" "tegra" "rocm" "any_dri")
-
-setup_auto() {
-    # If LIBGL_ALWAYS_SOFTWARE is 1 from environment, log it but don't return early if GPU_MODE is not cpu
-    if [ "${LIBGL_ALWAYS_SOFTWARE:-0}" = "1" ]; then
-        if [ "${1:-auto}" != "cpu" ] && [ "${1:-auto}" != "software" ]; then
-            log_info "LIBGL_ALWAYS_SOFTWARE=1 detected. Attempting to override for hardware acceleration..."
-            export LIBGL_ALWAYS_SOFTWARE=0
-        else
-            log_info "LIBGL_ALWAYS_SOFTWARE=1 detected. Respecting software rendering request."
-            setup_software
-            return
-        fi
-    fi
-
-    local detected=false
-    local ds=$(detect_display_server)
-
-    # Strategy Pattern: Iterate through prioritized hardware detectors
-    for key in "${GPU_STRATEGY_ORDER[@]}"; do
-        local detector="has_$key"
-        if $detector; then
-            # Special handling for hybrid graphics on Wayland
-            # Default to Intel for stability, BUT respect user preference if GPU_MODE is nvidia
-            if [ "$key" = "nvidia" ] && has_intel_dri && [[ "$ds" == *"Wayland"* ]]; then
-                if [ "${GPU_MODE:-auto}" = "nvidia" ]; then
-                    log_info "Hybrid on Wayland: GPU_MODE=nvidia detected. Prioritizing NVIDIA performance."
-                    apply_gpu_setup setup_nvidia
-                else
-                    log_warn "Hybrid on Wayland: Defaulting to Intel for stability. Use GPU_MODE=nvidia to override."
-                    apply_gpu_setup setup_intel
-                fi
-            else
-                apply_gpu_setup "${GPU_STRATEGIES[$key]}"
-            fi
-            detected=true
-            break
-        fi
-    done
-
-    # Verification: Validates that the selected hardware renderer is active
-    if [ "$detected" = true ]; then
-        if [ "$ds" != "None" ] && command -v glxinfo &>/dev/null; then
-            local renderer
-            renderer=$(trim_ws "$(glxinfo 2>/dev/null | grep -Ei "OpenGL renderer" | sed -E 's/.*:\s*(.*)/\1/' || true)")
-            if [[ "$renderer" =~ (llvmpipe|softpipe|swrast) ]] || [ -z "$renderer" ]; then
-                if has_dxg; then
-                    log_warn "Renderer is SOFTWARE ($renderer). This is common on WSL2 when host acceleration is not fully enabled."
-                    log_warn "Proceeding with D3D12 configuration. GPU may still be used via D3D12/Dozen."
-                else
-                    log_warn "!!! GPU detected but renderer is SOFTWARE ($renderer) !!!"
-                    log_warn "Check host X11 permissions (xhost +SI:localuser:root) or NVIDIA toolkit."
-                    setup_software
-                fi
-            fi
-        elif command -v vulkaninfo &>/dev/null; then
-            local vk_dev=$(vulkaninfo --summary 2>/dev/null | grep "deviceName" | head -1 || true)
-            if [ -z "$vk_dev" ]; then
-                # Advisory only: a missing Vulkan device does NOT prove software GL
-                # (could be an absent ICD, or a vendor without a Vulkan loader entry).
-                # Do not clobber a just-configured hardware path.
-                log_warn "Vulkan device not reported by vulkaninfo. If GPU apps misbehave, run 'gpu status'."
-            fi
-        elif command -v vainfo &>/dev/null; then
-            if ! vainfo --display drm 2>/dev/null | grep -qi "Driver version"; then
-                # Advisory only: NVIDIA legitimately ships no VA-API driver, so a
-                # vainfo miss must not downgrade the configured renderer to software.
-                log_warn "VA-API driver not reported by vainfo (normal on NVIDIA). If GPU apps misbehave, run 'gpu status'."
-            fi
-        else
-            if [ "$ds" != "None" ]; then
-                log_warn "Validation tools (glxinfo/vulkaninfo/vainfo) not found."
-                # Low-level fallback for senior architect standard
-                local sys_vendor=$(get_gpu_vendor_sysfs)
-                if [ "$sys_vendor" != "Unknown" ]; then
-                    log_ok "Fallback Verification: Found $sys_vendor GPU via sysfs."
-                else
-                    log_warn "To enable full validation, add 'mesa-utils' or 'vulkan-tools' to apt.txt."
-                fi
-            fi
-        fi
-    fi
-
-    if [ "$detected" = false ]; then
-        setup_software
-        log_warn "Auto-detected: No GPU device. Using software rendering."
-    fi
-
-    # Final summary for NVIDIA environments
-    if has_nvidia; then
-        local cuda_v=$(get_cuda_metadata cuda_ver)
-        [ -n "$cuda_v" ] && log_info "Active Toolkit: CUDA $cuda_v"
-    fi
-    return 0
-}
-
-# =============================================================================
-# OpenCV CMake Arguments (GPU-aware)
-# =============================================================================
-# Returns CMake flags to enable CUDA acceleration for OpenCV if NVIDIA hardware
-# is detected, otherwise disables CUDA. Extracted as a function so `local` is valid.
+# __opencv_cmake_args: CMake flags for projects that build OpenCV (or
+# OpenCV-dependent code) from source — `cmake $(gpu opencv_args) ...`.
+# OPENCV_CUDA=off forces the CPU build even on a CUDA-capable host; auto (the
+# default) enables CUDA only when the runtime AND nvcc are both present, because
+# -DWITH_CUDA=ON without a compiler fails deep inside the OpenCV build.
 __opencv_cmake_args() {
-    if [ "${OPENCV_CUDA:-auto}" = "off" ]; then
+    if [ "${OPENCV_CUDA:-auto}" = "off" ] || ! can_build_cuda 2>/dev/null; then
         echo "-DWITH_CUDA=OFF"
-        return
+        return 0
     fi
-
-    if can_build_cuda; then
-        local args="-DWITH_CUDA=ON -DWITH_CUDNN=ON -DOPENCV_DNN_CUDA=ON"
-        args+=" -DENABLE_FAST_MATH=ON -DCUDA_FAST_MATH=ON -DWITH_CUBLAS=ON"
-        if command -v nvidia-smi >/dev/null 2>&1; then
-            local caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | sort -u | paste -sd ";" -)
-            [ -n "$caps" ] && args+=" -DCUDA_ARCH_BIN=${caps}+PTX"
-        fi
-        echo "$args"
-    else
-        echo "-DWITH_CUDA=OFF"
-    fi
+    local args="-DWITH_CUDA=ON -DWITH_CUDNN=ON -DOPENCV_DNN_CUDA=ON"
+    args+=" -DENABLE_FAST_MATH=ON -DCUDA_FAST_MATH=ON -DWITH_CUBLAS=ON"
+    # Build for the architectures actually present (+PTX for forward compat):
+    # the default arch list compiles every generation and costs hours.
+    local caps
+    caps="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | sort -u | paste -sd ';' - || true)"
+    [ -n "$caps" ] && args+=" -DCUDA_ARCH_BIN=${caps}+PTX"
+    echo "$args"
 }
 
-# =============================================================================
-# Status
-# =============================================================================
-__gpu_status_impl() {
-    print_banner SETUP
-    log_info "GPU_MODE env: ${GPU_MODE:-not set}"
-    log_info "OPENCV_CUDA policy: ${OPENCV_CUDA:-auto}"
+__gpu_req_mode="${1:-auto}"
 
-    if has_nvidia; then
-        log_ok "NVIDIA: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
+case "$__gpu_req_mode" in
+    -h|--help)
+        echo "Usage: source setup_gpu.sh [auto|nvidia|tegra|igpu|intel|amd|cpu|status|opencv_args]"
+        return 0 2>/dev/null || exit 0
+        ;;
+    opencv_args)
+        __opencv_cmake_args
+        return 0 2>/dev/null || exit 0
+        ;;
+    status)
+        __gpu_row()  { printf '    %-14s %s\n' "$1" "$2"; }
+        __gpu_var()  { printf '    %-31s %s\n' "$1" "$2"; }
+        __gpu_head() { echo -e "\n  \033[1;36m$1\033[0m"; }
+        # Load `key=value` probe output into the shell without eval.
+        __gpu_load() { local l; while IFS= read -r l; do [ -n "$l" ] && printf -v "__p_${l%%=*}" '%s' "${l#*=}"; done; }
 
-        local cuda_v=$(get_cuda_metadata cuda_ver)
-        [ -n "$cuda_v" ] && log_ok "CUDA:   $cuda_v"
+        echo -e "\n  \033[38;2;45;212;191mGPU & Rendering Stack\033[0m"
 
-        local cudnn_v=$(get_cuda_metadata cudnn_ver)
-        [ -n "$cudnn_v" ] && log_ok "cuDNN:  $cudnn_v"
-    fi
-    if has_intel_dri; then
-        log_ok "Intel GPU: $(list_glob_basenames "/dev/dri/renderD*")"
-    fi
-    if has_amd_dri; then
-        log_ok "AMD GPU: $(list_glob_basenames "/dev/dri/renderD*")"
-    fi
+        # ── Hardware ────────────────────────────────────────────────────────
+        __gpu_head "[Hardware]"
+        if has_nvidia 2>/dev/null; then
+            __gpu_row "NVIDIA" "$(nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>/dev/null | head -1 || nvidia-smi -L 2>/dev/null | head -1)"
+            __cuda="$(get_cuda_metadata cuda_ver 2>/dev/null || true)"
+            __cudnn="$(get_cuda_metadata cudnn_ver 2>/dev/null || true)"
+            [ -n "${__cuda:-}"  ] && __gpu_row "CUDA" "$__cuda${__cudnn:+  (cuDNN $__cudnn)}"
+        fi
+        has_intel_dri 2>/dev/null && __gpu_row "Intel" "DRI vendor 0x8086"
+        has_amd_dri   2>/dev/null && __gpu_row "AMD"   "DRI vendor 0x1002/0x1022"
+        has_rocm      2>/dev/null && __gpu_row "ROCm"  "runtime present"
+        has_tegra     2>/dev/null && __gpu_row "Tegra" "$(list_glob_basenames '/dev/nvhost-*')"
+        __drm_drv="$(get_drm_driver 2>/dev/null || true)"
+        [ -n "$__drm_drv" ] && __gpu_row "DRM driver" "$__drm_drv"
+        __dri_nodes="$(list_glob_basenames '/dev/dri/renderD*' 2>/dev/null || true)"
+        __gpu_row "DRI nodes" "${__dri_nodes:-none}"
+        if has_dxg 2>/dev/null; then
+            __gpu_row "WSL2 D3D12" "/dev/dxg present$([ -d /usr/lib/wsl/lib ] && echo '  (/usr/lib/wsl/lib mounted)' || echo '  \033[33m(/usr/lib/wsl/lib MISSING)\033[0m')"
+        fi
+        [ -z "${__dri_nodes:-}" ] && ! has_nvidia 2>/dev/null && ! has_dxg 2>/dev/null \
+            && echo -e "    \033[33mNo GPU device nodes — software rendering only.\033[0m"
 
-    local renderer
-    local GLX_OUT
-    if command -v glxinfo &>/dev/null; then
-        GLX_OUT=$(glxinfo 2>/dev/null || true)
-        # Robustly extract renderer and vendor using regex to handle different glxinfo labels
-        RENDERER=$(trim_ws "$(echo "$GLX_OUT" | grep -Ei "OpenGL renderer" | sed -E 's/.*:\s*(.*)/\1/' || true)")
-        VENDOR=$(trim_ws "$(echo "$GLX_OUT" | grep -Ei "OpenGL vendor" | sed -E 's/.*:\s*(.*)/\1/' || true)")
-
-        if [ -n "$RENDERER" ]; then
-            if echo "$RENDERER" | grep -qi "llvmpipe"; then
-                log_warn "Renderer: $RENDERER (Software Rendering)"
-            else
-                log_ok "Renderer: $RENDERER"
-            fi
-            [ -n "$VENDOR" ] && log_info "Vendor:   $VENDOR"
+        # ── Display ─────────────────────────────────────────────────────────
+        __gpu_head "[Display]"
+        if [ -n "${DISPLAY:-}" ]; then
+            __x_num="${DISPLAY#:}"; __x_num="${__x_num%%.*}"
+            __gpu_row "X11" "DISPLAY=${DISPLAY}  socket=$([ -S "/tmp/.X11-unix/X${__x_num}" ] && echo ok || echo MISSING)"
+            __xa="${XAUTHORITY:-$HOME/.Xauthority}"
+            __gpu_row "Xauthority" "${__xa}  $([ -s "$__xa" ] && echo ok || echo 'empty/missing → run: make xauth')"
         else
-            # Try fallback to glxinfo -B (brief mode)
-            RENDERER=$(trim_ws "$(glxinfo -B 2>/dev/null | grep -Ei "OpenGL renderer" | sed -E 's/.*:\s*(.*)/\1/' || true)")
-            if [ -n "$RENDERER" ]; then
-                log_ok "Renderer: $RENDERER (Detected via Brief Mode)"
-            else
-                log_warn "Renderer: Unable to detect via glxinfo. Acceleration state uncertain."
-            fi
+            __gpu_row "X11" "DISPLAY not set"
         fi
-    else
-        log_warn "Renderer: glxinfo not installed (mesa-utils)."
-    fi
+        if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+            __gpu_row "Wayland" "${WAYLAND_DISPLAY}  socket=$([ -S "${XDG_RUNTIME_DIR:-}/${WAYLAND_DISPLAY}" ] && echo ok || echo MISSING)"
+        fi
+        __gpu_row "XDG runtime" "${XDG_RUNTIME_DIR:-not set}"
 
-    log_info "=== Environment Variables ==="
-    log_info "DISPLAY=${DISPLAY:-not set}"
-    for var in "${GPU_ENV_VARS[@]}"; do
-        log_info "$var=${!var:-not set}"
-    done
-
-    log_info "=== Library Diagnostics ==="
-    if command -v ldconfig &>/dev/null; then
-        local gl_libs=$(ldconfig -p | grep -Ei "libGL\.so|libEGL\.so|nvidia-tls" | head -n 5)
-        if [ -n "$gl_libs" ]; then
-            echo "$gl_libs" | while read -r line; do log_info "  $line"; done
+        # ── OpenGL / GLX ────────────────────────────────────────────────────
+        __gpu_head "[OpenGL / GLX]"
+        __gpu_load < <(probe_gl)
+        if [ -n "${__p_gl_renderer:-}" ]; then
+            case "${__p_gl_renderer,,}" in
+                *llvmpipe*|*softpipe*|*swrast*)
+                    __gpu_row "renderer" "$(printf '\033[33m%s  (SOFTWARE rendering)\033[0m' "$__p_gl_renderer")" ;;
+                *)  __gpu_row "renderer" "$(printf '\033[32m%s\033[0m' "$__p_gl_renderer")" ;;
+            esac
+            __gpu_row "vendor"   "${__p_gl_vendor:-?}"
+            __gpu_row "version"  "${__p_gl_version:-?}"
+            __gpu_row "mesa"     "${__p_gl_mesa:-n/a}"
+            __gpu_row "direct"   "${__p_gl_direct:-?}   accelerated: ${__p_gl_accelerated:-?}   VRAM: ${__p_gl_vram:-?}"
+        elif command -v glxinfo >/dev/null 2>&1; then
+            __gpu_row "glxinfo" "no output (DISPLAY unreachable? check xhost / make xauth)"
         else
-            log_warn "  No critical GL libraries found in ldconfig cache."
+            __gpu_row "glxinfo" "not installed (apt: mesa-utils)"
         fi
-    fi
 
-    log_info "=== Build Capability ==="
-    if can_build_cuda; then
-        log_ok "CUDA build: available (nvcc: $(command -v nvcc))"
-    else
-        log_info "CUDA build: unavailable (NVIDIA runtime and nvcc are both required)"
-    fi
-    log_info "OpenCV CMake args: $(__opencv_cmake_args)"
-}
+        # ── EGL ─────────────────────────────────────────────────────────────
+        __gpu_head "[EGL]"
+        __gpu_load < <(probe_egl)
+        if [ -n "${__p_egl_vendor:-}" ]; then
+            __gpu_row "vendor"   "${__p_egl_vendor}  (EGL ${__p_egl_version:-?})"
+            __gpu_row "renderer" "${__p_egl_renderer:-?}"
+            __gpu_row "APIs"     "${__p_egl_apis:-?}"
+        else
+            __gpu_row "eglinfo" "$(command -v eglinfo >/dev/null 2>&1 && echo 'no usable platform (headless?)' || echo 'not installed (apt: mesa-utils)')"
+        fi
 
-# =============================================================================
-# Integrated GPU (iGPU) Setup (Excludes NVIDIA)
-# =============================================================================
-setup_igpu() {
-    # Auto-determine Intel/AMD based on DRI device (Excluding NVIDIA)
-    if has_intel_dri; then
-        apply_gpu_setup setup_intel
-    elif has_amd_dri; then
-        apply_gpu_setup setup_amd
-    elif has_any_dri; then
-        setup_mesa_driver "" "Generic DRI GPU configured"
-    else
-        setup_software
-        log_warn "igpu mode requested but no DRI device found. Falling back to software."
-    fi
-}
+        # ── Vulkan ──────────────────────────────────────────────────────────
+        __gpu_head "[Vulkan]"
+        __gpu_load < <(probe_vulkan)
+        if [ -n "${__p_vk_device:-}" ]; then
+            __gpu_row "device" "${__p_vk_device}  (${__p_vk_type:-?})"
+            __gpu_row "API"    "${__p_vk_api:-?}   driver: ${__p_vk_driver:-?}"
+        else
+            __gpu_row "vulkaninfo" "$(command -v vulkaninfo >/dev/null 2>&1 && echo 'no device (missing ICD? check mesa-vulkan-drivers / nvidia ICD)' || echo 'not installed (apt: vulkan-tools)')"
+        fi
 
-# =============================================================================
-# Main Entry
-# =============================================================================
-case "${1:-auto}" in
-    intel)              apply_gpu_setup setup_intel ;;
-    amd)                apply_gpu_setup setup_amd ;;
-    nvidia)             apply_gpu_setup setup_nvidia ;;
-    igpu)               apply_gpu_setup setup_igpu ;;
-    cpu|software)       setup_software ;;
-    status)             __gpu_status_impl ;;
-    opencv_args)        __opencv_cmake_args ;;
-    auto|"")            setup_auto ;;
-    -h|--help)          setup_gpu_usage; setup_gpu_finish 0 ;;
-    *)
-        setup_gpu_usage >&2
-        setup_gpu_finish 2
+        # ── Loader / libraries ──────────────────────────────────────────────
+        __gpu_head "[Loader]"
+        __libs="$(probe_gl_libs 2>/dev/null || true)"
+        if [ -n "$__libs" ]; then
+            while IFS='=' read -r __n __pth; do [ -n "$__n" ] && __gpu_row "$__n" "$__pth"; done <<< "$__libs"
+        else
+            __gpu_row "ldconfig" "unavailable"
+        fi
+
+        # ── Active configuration ────────────────────────────────────────────
+        __gpu_head "[Active configuration]"
+        __gpu_row "GPU_MODE" "${GPU_MODE:-auto}"
+        __gpu_row "OPENCV_CUDA" "${OPENCV_CUDA:-auto}  →  $(__opencv_cmake_args)"
+        for __v in "${GPU_ENV_VARS[@]}"; do
+            [ -n "${!__v:-}" ] && __gpu_var "$__v" "${!__v}"
+        done
+        [ -n "${LD_LIBRARY_PATH:-}" ] && __gpu_row "LD_LIBRARY_PATH" "$LD_LIBRARY_PATH"
+        __gpu_row "persisted" "${GPU_ENV_FILE}$([ -f "$GPU_ENV_FILE" ] && echo '  (ok)' || echo '  (not written — run: gpu auto)')"
+        echo ""
+        return 0 2>/dev/null || exit 0
         ;;
 esac
+
+__gpu_reset
+GPU_UV_EXTRA="cpu"
+
+# Resolve 'auto' against the detected hardware.
+# Tegra is checked before the DRI vendors: a Jetson exposes /dev/nvhost-* and an
+# nvgpu DRI node but no /dev/nvidiactl, so a plain NVIDIA/DRI probe misses it and
+# would silently drop an embedded GPU board to software rendering.
+if [ "$__gpu_req_mode" = "auto" ]; then
+    if has_nvidia 2>/dev/null;      then __gpu_req_mode="nvidia"
+    elif has_tegra 2>/dev/null;     then __gpu_req_mode="tegra"
+    elif has_rocm 2>/dev/null;      then __gpu_req_mode="amd"
+    elif has_intel_dri 2>/dev/null; then __gpu_req_mode="intel"
+    elif has_amd_dri 2>/dev/null;   then __gpu_req_mode="amd"
+    elif has_dxg 2>/dev/null;       then __gpu_req_mode="igpu"
+    # Vendor-agnostic fallback. Mali (panfrost), Adreno (freedreno), VideoCore
+    # (v3d), Vivante (etnaviv) and every other SoC GPU is a *platform* device
+    # with no PCI vendor ID, so the vendor probes above cannot see it. If a render
+    # node exists, hand it to Mesa with no driver override and let Mesa pick —
+    # forcing llvmpipe here would waste a perfectly good GPU.
+    elif has_any_dri 2>/dev/null;   then __gpu_req_mode="igpu"
+    else                                 __gpu_req_mode="cpu"
+    fi
+fi
+
+case "$__gpu_req_mode" in
+    nvidia|tegra|intel|amd|igpu|cpu) ;;
+    *)  echo -e "  \033[31m[GPU]\033[0m Unknown mode '${__gpu_req_mode}' (valid: auto nvidia tegra intel amd igpu cpu)." >&2
+        # `return` when sourced (gpu() helper), `exit` when executed — a typo
+        # must fail loudly, not silently reconfigure the shell to llvmpipe.
+        return 2 2>/dev/null || exit 2 ;;
+esac
+
+if [ "$__gpu_req_mode" = "cpu" ]; then
+    __gpu_software
+elif has_dxg 2>/dev/null && ! { [ "$__gpu_req_mode" = "nvidia" ] && [ "${HAS_TOOLKIT:-false}" = "true" ]; }; then
+    # WSL2: everything but a toolkit-backed NVIDIA runtime goes through D3D12.
+    case "$__gpu_req_mode" in
+        nvidia) __gpu_wsl_d3d12 "NVIDIA" ;;
+        intel)  __gpu_wsl_d3d12 "Intel"  ;;
+        amd)    __gpu_wsl_d3d12 "AMD"    ;;
+        *)      __gpu_wsl_d3d12 ""       ;;
+    esac
+else
+    case "$__gpu_req_mode" in
+        nvidia) __gpu_nvidia_native ;;
+        tegra)  __gpu_tegra ;;
+        intel)  if [ -d /sys/module/xe ]; then __gpu_mesa ""      "Intel GPU active (xe driver)"
+                else                           __gpu_mesa "iris"  "Intel GPU active (Mesa/iris)"; fi ;;
+        amd)    __gpu_mesa "radeonsi" "AMD GPU active (Mesa/radeonsi)" ;;
+        igpu)   __gpu_mesa ""         "Integrated/SoC GPU active via Mesa$(d=$(get_drm_driver 2>/dev/null || true); [ -n "$d" ] && echo " (DRM driver: $d)")" ;;
+    esac
+fi
+
+__gpu_persist
