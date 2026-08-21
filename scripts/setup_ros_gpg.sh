@@ -6,7 +6,7 @@
 
 set -eo pipefail
 
-source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || source "/tmp/util_paths.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || { echo "  [ERROR] Cannot load config/util_paths.sh (broken checkout?)" >&2; exit 1; }  # host-only: never fall back to world-writable /tmp
 devkit_require "util_logging.sh"
 LOG_PREFIX="[GPG Update]"
 
@@ -81,7 +81,7 @@ fi
 # We use the key fingerprint as primary (typically same as .asc)
 LATEST_FP="$FP_KEY"
 
-CURRENT_FP=$(grep "local ROS_GPG_FINGERPRINT=" "$TARGET_FILE" | cut -d'"' -f2 || true)
+CURRENT_FP=$(grep "^ROS_GPG_FINGERPRINT=" "$TARGET_FILE" | cut -d'"' -f2 || true)
 
 if [ -z "$CURRENT_FP" ]; then
     log_error "Could not find current fingerprint in $TARGET_FILE"
@@ -115,7 +115,7 @@ fi
 
 log_info "Updating $TARGET_FILE..."
 tmp_target=$(mktemp /tmp/ros_gpg_update.XXXXXX)
-sed "s/local ROS_GPG_FINGERPRINT=\"$CURRENT_FP\"/local ROS_GPG_FINGERPRINT=\"$LATEST_FP\"/" "$TARGET_FILE" > "$tmp_target"
+sed "s/^ROS_GPG_FINGERPRINT=\"$CURRENT_FP\"/ROS_GPG_FINGERPRINT=\"$LATEST_FP\"/" "$TARGET_FILE" > "$tmp_target"
 cat "$tmp_target" > "$TARGET_FILE"
 rm -f "$tmp_target"
 

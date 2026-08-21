@@ -4,11 +4,15 @@
 # =============================================================================
 
 # ── Global Build Arguments (Single Source of Truth) ──────────────────────────
+# Deliberate: base images are TAG-pinned, not digest-pinned. Reproducibility is
+# carried by APT_SNAPSHOT_DATE + SOURCE_DATE_EPOCH + GPG pins (verify [reproducibility]);
+# digests would break multi-arch convenience and rot silently. Pin BASE_IMAGE
+# to a digest in .env if your compliance regime requires it.
 ARG BASE_IMAGE=ubuntu:22.04
 ARG WORKSPACE_PATH=/workspace
 ARG ROS_DISTRO=humble
 ARG APT_SNAPSHOT_DATE=latest
-ARG STRICT_GPG_CHECK=false
+ARG STRICT_GPG_CHECK=true
 ARG UV_VERSION=0.10.10
 ARG UV_PYTHON=3.10
 ARG CMAKE_C_STANDARD=11
@@ -23,7 +27,6 @@ ARG CMAKE_EXTRA_ARGS=""
 ARG COLCON_EXTRA_FLAGS=""
 ARG HAS_NVIDIA=false
 ARG FULL_CUDA=false
-ARG OPENCV_CUDA=auto
 ARG CUDA_VERSION=""
 ARG CUDNN_VERSION=""
 ARG IMAGE_TAG=latest
@@ -44,6 +47,9 @@ ARG ROS_DISTRO
 ARG APT_SNAPSHOT_DATE
 ARG HAS_NVIDIA
 ARG CUDA_VERSION
+# Without this re-declaration the pre-FROM default is invisible here and the
+# CUDA GPG pin's documented STRICT_GPG_CHECK=false escape hatch does nothing.
+ARG STRICT_GPG_CHECK
 ENV LANG=${LANG} \
     LC_ALL=${LANG} \
     TZ=${TZ} \
@@ -53,11 +59,8 @@ ENV LANG=${LANG} \
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    --mount=type=bind,source=config/util_paths.sh,target=/tmp/util_paths.sh \
     --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
-    --mount=type=bind,source=scripts/util_logging.sh,target=/tmp/util_logging.sh \
     --mount=type=bind,source=dependencies/,target=${WORKSPACE_PATH}/dependencies/ \
-    export SOURCE_LOG=/tmp/util_logging.sh && \
     bash /tmp/util_apt_helper.sh init-apt && \
     bash /tmp/util_apt_helper.sh configure-snapshot "${APT_SNAPSHOT_DATE}" && \
     if [ "$HAS_NVIDIA" = "true" ] && [ -n "$CUDA_VERSION" ]; then \
@@ -74,12 +77,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     locale-gen "${LANG}" && update-locale LANG="${LANG}"; \
     fi && \
     ln -snf /usr/share/zoneinfo/${TZ:-UTC} /etc/localtime && echo ${TZ:-UTC} > /etc/timezone
-ENV LANG=${LANG} \
-    LC_ALL=${LANG} \
-    TZ=${TZ} \
-    DEBIAN_FRONTEND=${DEBIAN_FRONTEND} \
-    WORKSPACE_PATH=${WORKSPACE_PATH} \
-    ROS_DISTRO=${ROS_DISTRO}
 
 # ── Stage: build-core (Production-capable build toolchain) ───────────────────
 FROM base AS build-core
@@ -112,7 +109,7 @@ ENV PATH="/usr/lib/ccache:${WORKSPACE_PATH}/install/.venv/bin:$PATH" \
     CMAKE_C_STANDARD=${CMAKE_C_STANDARD} \
     CMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD} \
     SYS_PYTHON_EXE=${SYS_PYTHON_EXE} \
-    BASH_ENV=/root/.bashrc
+    BASH_ENV=/etc/devkit/shell-env.sh
 
 RUN mkdir -p ${CCACHE_DIR} ${UV_CACHE_DIR} ${WORKSPACE_PATH}/install
 
@@ -135,6 +132,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     unzip -q ${WORKSPACE_PATH}/dependencies/D2Coding.zip -d /usr/share/fonts/truetype/d2coding; \
     else \
     curl -sfL --retry 3 --retry-delay 2 https://github.com/naver/d2codingfont/releases/download/VER1.3.2/D2Coding-Ver1.3.2-20180524.zip -o /tmp/d2coding.zip && \
+    echo "0f1c9192eac7d56329dddc620f9f1666b707e9c8ed38fe1f988d0ae3e30b24e6  /tmp/d2coding.zip" | sha256sum -c --quiet && \
     unzip -q /tmp/d2coding.zip -d /usr/share/fonts/truetype/d2coding && rm -f /tmp/d2coding.zip; \
     fi; \
     fc-cache -f && \
@@ -179,14 +177,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 FROM dev-base-tools AS dev-core
 ARG WORKSPACE_PATH
 ARG CONTAINER_USER=user
-ENV BASH_ENV=/home/${CONTAINER_USER}/.bashrc
+ENV BASH_ENV=/etc/devkit/shell-env.sh
 
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY config/  ${WORKSPACE_PATH}/config/
 COPY scripts/ ${WORKSPACE_PATH}/scripts/
 RUN chmod +x /entrypoint.sh ${WORKSPACE_PATH}/scripts/*.sh ${WORKSPACE_PATH}/config/*.sh && \
-    cat ${WORKSPACE_PATH}/config/init_bash.sh >> /root/.bashrc && \
-    cat ${WORKSPACE_PATH}/config/init_bash.sh >> /home/${CONTAINER_USER}/.bashrc && \
+    printf '\n# DevKit: single environment definition (see config/init_bash.sh)\n[ -r /etc/devkit/shell-env.sh ] && . /etc/devkit/shell-env.sh\n' \
+        | tee -a /root/.bashrc >> /home/${CONTAINER_USER}/.bashrc && \
     mkdir -p /root/.config/terminator /home/${CONTAINER_USER}/.config/terminator && \
     if [ -f ${WORKSPACE_PATH}/config/terminator_config ]; then \
     cp ${WORKSPACE_PATH}/config/terminator_config /root/.config/terminator/config && \
@@ -203,12 +201,12 @@ ARG ROS_DISTRO
 ENV COLCON_HOME=${WORKSPACE_PATH}
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    --mount=type=bind,source=config/util_paths.sh,target=/tmp/util_paths.sh \
     --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
-    --mount=type=bind,source=scripts/util_logging.sh,target=/tmp/util_logging.sh \
     --mount=type=bind,source=dependencies/,target=${WORKSPACE_PATH}/dependencies/ \
-    export SOURCE_LOG=/tmp/util_logging.sh && \
-    bash /tmp/util_apt_helper.sh install-packages all
+    bash /tmp/util_apt_helper.sh install-packages all && \
+    rm -f /etc/apt/apt.conf.d/keep-cache && \
+    printf 'DPkg::Post-Invoke { "rm -f /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/*.deb || true"; };\nAPT::Keep-Downloaded-Packages "false";\n' \
+        > /etc/apt/apt.conf.d/docker-clean
 WORKDIR ${WORKSPACE_PATH}
 
 FROM dev-core AS ros-base
@@ -218,18 +216,12 @@ ARG STRICT_GPG_CHECK
 ENV ROS_DISTRO=${ROS_DISTRO}
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    --mount=type=bind,source=config/util_paths.sh,target=/tmp/util_paths.sh \
     --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
-    --mount=type=bind,source=scripts/util_logging.sh,target=/tmp/util_logging.sh \
-    export SOURCE_LOG=/tmp/util_logging.sh && \
     bash /tmp/util_apt_helper.sh setup-ros-repo ${ROS_DISTRO}
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    --mount=type=bind,source=config/util_paths.sh,target=/tmp/util_paths.sh \
     --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
-    --mount=type=bind,source=scripts/util_logging.sh,target=/tmp/util_logging.sh \
     --mount=type=bind,source=dependencies/,target=${WORKSPACE_PATH}/dependencies/ \
-    export SOURCE_LOG=/tmp/util_logging.sh && \
     bash /tmp/util_apt_helper.sh install-packages all ${ROS_DISTRO} && \
     bash /tmp/util_apt_helper.sh update-rosdep ${ROS_DISTRO} && \
     cp -r /root/.ros /opt/ros_cache && \
@@ -244,7 +236,10 @@ RUN mkdir -p src && ${WORKSPACE_PATH}/scripts/util_setup_links.sh
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     SYNC_TARGET_DIR=/tmp/staging ${WORKSPACE_PATH}/scripts/setup_sync_deps.sh --rosdep && \
-    rm -rf /tmp/staging
+    rm -rf /tmp/staging && \
+    rm -f /etc/apt/apt.conf.d/keep-cache && \
+    printf 'DPkg::Post-Invoke { "rm -f /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/*.deb || true"; };\nAPT::Keep-Downloaded-Packages "false";\n' \
+        > /etc/apt/apt.conf.d/docker-clean
 
 # ── Stage: production ROS build base (No desktop/GUI tooling) ────────────────
 FROM build-core AS ros-builder-base
@@ -255,18 +250,12 @@ ENV ROS_DISTRO=${ROS_DISTRO} \
     COLCON_HOME=${WORKSPACE_PATH}
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    --mount=type=bind,source=config/util_paths.sh,target=/tmp/util_paths.sh \
     --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
-    --mount=type=bind,source=scripts/util_logging.sh,target=/tmp/util_logging.sh \
-    export SOURCE_LOG=/tmp/util_logging.sh && \
     bash /tmp/util_apt_helper.sh setup-ros-repo ${ROS_DISTRO}
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    --mount=type=bind,source=config/util_paths.sh,target=/tmp/util_paths.sh \
     --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
-    --mount=type=bind,source=scripts/util_logging.sh,target=/tmp/util_logging.sh \
     --mount=type=bind,source=dependencies/,target=${WORKSPACE_PATH}/dependencies/ \
-    export SOURCE_LOG=/tmp/util_logging.sh && \
     bash /tmp/util_apt_helper.sh install-packages builder ${ROS_DISTRO} && \
     bash /tmp/util_apt_helper.sh update-rosdep ${ROS_DISTRO}
 WORKDIR ${WORKSPACE_PATH}
@@ -277,56 +266,59 @@ ARG WORKSPACE_PATH
 ARG ROS_DISTRO
 ARG CUDA_VERSION
 ARG CUDNN_VERSION
-ARG OPENCV_CUDA=auto
+ARG BASE_IMAGE
+ARG APT_SNAPSHOT_DATE
 ARG IMAGE_TAG=latest
 ARG GIT_COMMIT=unknown
 ARG COMPOSE_PROJECT_NAME=unknown
+ARG DEVKIT_STRIP_SOURCE=""
+ARG DEVKIT_FAIL_ON_SOURCE=""
 ARG SOURCE_DATE_EPOCH=""
 ENV IMAGE_TAG=${IMAGE_TAG} \
     GIT_COMMIT=${GIT_COMMIT} \
     COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME} \
-    OPENCV_CUDA=${OPENCV_CUDA} \
     SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    --mount=type=bind,source=config/util_paths.sh,target=/tmp/util_paths.sh \
     --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
-    --mount=type=bind,source=scripts/util_logging.sh,target=/tmp/util_logging.sh \
     --mount=type=bind,source=dependencies/,target=${WORKSPACE_PATH}/dependencies/ \
-    export SOURCE_LOG=/tmp/util_logging.sh && \
     bash /tmp/util_apt_helper.sh install-packages builder
 COPY src ${WORKSPACE_PATH}/src
 COPY dependencies ${WORKSPACE_PATH}/dependencies
 COPY config ${WORKSPACE_PATH}/config
 COPY scripts ${WORKSPACE_PATH}/scripts
 WORKDIR ${WORKSPACE_PATH}
-RUN FORCE_LOAD_ALIASES=true bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync" && \
+RUN DEVKIT_BUILD_TYPE=prod bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync" && \
+    DEVKIT_STRIP_SOURCE=${DEVKIT_STRIP_SOURCE} DEVKIT_FAIL_ON_SOURCE=${DEVKIT_FAIL_ON_SOURCE} \
     bash ${WORKSPACE_PATH}/scripts/check_deps.sh ${WORKSPACE_PATH}/install && \
-    bash ${WORKSPACE_PATH}/scripts/util_release_metadata.sh ${WORKSPACE_PATH}/release/devkit-release.json
+    DEVKIT_BUILD_TYPE=prod bash ${WORKSPACE_PATH}/scripts/util_release_metadata.sh ${WORKSPACE_PATH}/release/devkit-release.json
 
 FROM ros-builder-base AS prod-ros-builder
 ARG WORKSPACE_PATH
 ARG ROS_DISTRO
 ARG CUDA_VERSION
 ARG CUDNN_VERSION
-ARG OPENCV_CUDA=auto
+ARG BASE_IMAGE
+ARG APT_SNAPSHOT_DATE
 ARG IMAGE_TAG=latest
 ARG GIT_COMMIT=unknown
 ARG COMPOSE_PROJECT_NAME=unknown
+ARG DEVKIT_STRIP_SOURCE=""
+ARG DEVKIT_FAIL_ON_SOURCE=""
 ARG SOURCE_DATE_EPOCH=""
 ENV IMAGE_TAG=${IMAGE_TAG} \
     GIT_COMMIT=${GIT_COMMIT} \
     COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME} \
-    OPENCV_CUDA=${OPENCV_CUDA} \
     SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 COPY src ${WORKSPACE_PATH}/src
 COPY dependencies ${WORKSPACE_PATH}/dependencies
 COPY config ${WORKSPACE_PATH}/config
 COPY scripts ${WORKSPACE_PATH}/scripts
 WORKDIR ${WORKSPACE_PATH}
-RUN FORCE_LOAD_ALIASES=true bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync --share" && \
+RUN DEVKIT_BUILD_TYPE=prod bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync --share" && \
+    DEVKIT_STRIP_SOURCE=${DEVKIT_STRIP_SOURCE} DEVKIT_FAIL_ON_SOURCE=${DEVKIT_FAIL_ON_SOURCE} \
     bash ${WORKSPACE_PATH}/scripts/check_deps.sh ${WORKSPACE_PATH}/install && \
-    bash ${WORKSPACE_PATH}/scripts/util_release_metadata.sh ${WORKSPACE_PATH}/release/devkit-release.json
+    DEVKIT_BUILD_TYPE=prod bash ${WORKSPACE_PATH}/scripts/util_release_metadata.sh ${WORKSPACE_PATH}/release/devkit-release.json
 
 # ── Stage: production runtime (Minimal user-facing artifacts) ────────────────
 FROM base AS prod-base
@@ -344,7 +336,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get autoremove -y && \
     rm -rf /var/tmp/*
 COPY docker/prod_entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh && mkdir -p ${WORKSPACE_PATH}/install /etc/devkit
+# base's init-apt keeps .deb files so BuildKit cache mounts work; that policy
+# must NOT ship in the deployed artifact or every runtime apt install hoards
+# its packages forever. Restore the lean docker-clean behaviour here.
+RUN chmod +x /entrypoint.sh && mkdir -p ${WORKSPACE_PATH}/install /etc/devkit && \
+    rm -f /etc/apt/apt.conf.d/keep-cache && \
+    printf 'DPkg::Post-Invoke { "rm -f /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/*.deb || true"; };\nAPT::Keep-Downloaded-Packages "false";\n' \
+        > /etc/apt/apt.conf.d/docker-clean && \
+    rm -rf /var/cache/apt/archives/*.deb
 WORKDIR ${WORKSPACE_PATH}
 ENTRYPOINT ["/entrypoint.sh"]
 
@@ -352,16 +351,13 @@ FROM prod-base AS prod-dev-runtime
 ARG WORKSPACE_PATH
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    --mount=type=bind,source=config/util_paths.sh,target=/tmp/util_paths.sh \
     --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
-    --mount=type=bind,source=scripts/util_logging.sh,target=/tmp/util_logging.sh \
     --mount=type=bind,source=dependencies/,target=${WORKSPACE_PATH}/dependencies/ \
-    export SOURCE_LOG=/tmp/util_logging.sh && \
     bash /tmp/util_apt_helper.sh install-packages runtime && \
     if command -v sudo >/dev/null 2>&1; then chmod a-s "$(command -v sudo)"; fi
 COPY --from=prod-dev-builder ${WORKSPACE_PATH}/install ${WORKSPACE_PATH}/install
 COPY --from=prod-dev-builder /root/.local/share/uv/python /root/.local/share/uv/python
-COPY --from=prod-dev-builder ${WORKSPACE_PATH}/release/devkit-release.json /etc/devkit/release.json
+COPY --from=prod-dev-builder ${WORKSPACE_PATH}/release/ /etc/devkit/
 ENV PATH="${WORKSPACE_PATH}/install/.venv/bin:${WORKSPACE_PATH}/install/bin:$PATH" \
     VIRTUAL_ENV="${WORKSPACE_PATH}/install/.venv"
 CMD []
@@ -372,18 +368,15 @@ ARG ROS_DISTRO
 ARG STRICT_GPG_CHECK
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    --mount=type=bind,source=config/util_paths.sh,target=/tmp/util_paths.sh \
     --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
-    --mount=type=bind,source=scripts/util_logging.sh,target=/tmp/util_logging.sh \
     --mount=type=bind,source=dependencies/,target=${WORKSPACE_PATH}/dependencies/ \
-    export SOURCE_LOG=/tmp/util_logging.sh && \
     bash /tmp/util_apt_helper.sh setup-ros-repo ${ROS_DISTRO} && \
     bash /tmp/util_apt_helper.sh install-packages runtime ${ROS_DISTRO} && \
     apt-get purge -y --auto-remove curl gnupg2 dirmngr && \
     if command -v sudo >/dev/null 2>&1; then chmod a-s "$(command -v sudo)"; fi
 COPY --from=prod-ros-builder ${WORKSPACE_PATH}/install ${WORKSPACE_PATH}/install
 COPY --from=prod-ros-builder /root/.local/share/uv/python /root/.local/share/uv/python
-COPY --from=prod-ros-builder ${WORKSPACE_PATH}/release/devkit-release.json /etc/devkit/release.json
+COPY --from=prod-ros-builder ${WORKSPACE_PATH}/release/ /etc/devkit/
 ENV PATH="${WORKSPACE_PATH}/install/.venv/bin:${WORKSPACE_PATH}/install/bin:$PATH" \
     VIRTUAL_ENV="${WORKSPACE_PATH}/install/.venv"
 CMD []

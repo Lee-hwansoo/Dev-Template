@@ -19,7 +19,9 @@ x-common-env: &common-env
   HAS_DRI: ${HAS_DRI:-false}
   GPU_MODE: ${GPU_MODE:-auto}
   OPENCV_CUDA: ${OPENCV_CUDA:-auto}
-  DISPLAY: ${DISPLAY:-:0}
+  # HOST_DISPLAY comes from check_env.sh: on macOS it rewrites the launchd
+  # socket path to host.docker.internal:0 (XQuartz); elsewhere it equals DISPLAY.
+  DISPLAY: ${HOST_DISPLAY:-${DISPLAY:-:0}}
   DISPLAY_TYPE: ${DISPLAY_TYPE:-X11}
   WAYLAND_DISPLAY: ${HOST_WAYLAND_DISPLAY:-}
   QT_X11_NO_MITSHM: "1"
@@ -95,7 +97,7 @@ services:
     stdin_open: true
     network_mode: ${NETWORK_MODE:-host}
     ipc: ${IPC_MODE:-host}
-    privileged: ${PRIVILEGED:-true}
+    privileged: ${PRIVILEGED:-false}
     ulimits:
       nofile:
         soft: ${ULIMIT_NOFILE:-65535}
@@ -115,7 +117,7 @@ services:
         TZ: ${TZ:-UTC}
         SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-}
         APT_SNAPSHOT_DATE: ${APT_SNAPSHOT_DATE:-latest}
-        STRICT_GPG_CHECK: ${STRICT_GPG_CHECK:-false}
+        STRICT_GPG_CHECK: ${STRICT_GPG_CHECK:-true}
         WORKSPACE_PATH: ${WORKSPACE_PATH:-/workspace}
         UV_VERSION: ${UV_VERSION:-0.10.10}
         UV_PYTHON: ${UV_PYTHON:-3.10}
@@ -129,7 +131,6 @@ services:
         COLCON_EXTRA_FLAGS: ${COLCON_EXTRA_FLAGS:-}
         HAS_NVIDIA: ${HAS_NVIDIA:-false}
         FULL_CUDA: ${FULL_CUDA:-false}
-        OPENCV_CUDA: ${OPENCV_CUDA:-auto}
         CUDA_VERSION: ${CUDA_VERSION:-}
         CUDNN_VERSION: ${CUDNN_VERSION:-}
         INSTALL_INTEL_GPU_TOOLS: ${INSTALL_INTEL_GPU_TOOLS:-false}
