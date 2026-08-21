@@ -1,0 +1,38 @@
+# =============================================================================
+# .github/workflows/verify.yml
+# The fast tier — every push and pull request.
+#
+# DevKit is a development tool: the common push (a script tweak, a doc edit) must
+# not wait on a container build. This job is ~3 s of actual work — the whole
+# contract suite plus a BuildKit lint that resolves the multi-stage graph without
+# materialising a single layer. Anything that needs a real image lives in
+# images.yml, gated on the files that can break it.
+# =============================================================================
+name: verify
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+# A newer push supersedes an in-flight run of the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: contracts + Dockerfile lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # 33 contracts, ~1.4 s. Needs neither docker nor .env.
+      - run: make verify
+      # --check lints and resolves every stage; nothing is built.
+      - name: docker build --check
+        run: |
+          docker build --check -f docker/Dockerfile \
+            --build-arg BASE_IMAGE=ubuntu:22.04 \
+            --build-arg ROS_DISTRO=humble .

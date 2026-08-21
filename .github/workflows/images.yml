@@ -1,0 +1,137 @@
+# =============================================================================
+# .github/workflows/images.yml
+# The slow tier — only when it can actually matter.
+#
+# `paths:` keeps these minutes off the common push: a change to docs, the
+# Makefile or config/ never triggers them, while a change to the Dockerfile, the
+# apt manifests or the apt helpers always does. The weekly cron covers drift
+# nobody pushed (upstream key rotation, a moved apt package).
+#
+# The runtime job is cron/manual only: it builds the full ~2.7 GB image, and it
+# exists because the bugs it catches are invisible to every static check — a
+# clobbered LD_LIBRARY_PATH hiding librcl, a venv that is never activated, a
+# display probe naming a binary the image does not ship.
+# =============================================================================
+name: images
+
+on:
+  push:
+    paths:
+      - 'docker/**'
+      - 'dependencies/**'
+      - 'scripts/util_apt_helper.sh'
+      - 'scripts/util_cuda_apt.sh'
+      - '.github/workflows/images.yml'
+  pull_request:
+    paths:
+      - 'docker/**'
+      - 'dependencies/**'
+      - 'scripts/util_apt_helper.sh'
+      - 'scripts/util_cuda_apt.sh'
+      - '.github/workflows/images.yml'
+  schedule:
+    # Monday 03:00 UTC.
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apt-key-paths:
+    # The ROS 1 key import aborted inside `docker build` for want of /dev/tty
+    # while every host-side test passed, so exercise both distro families where
+    # the failure actually lives: in a container, with no terminal.
+    name: apt keys (${{ matrix.distro }} on ${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:20.04
+            distro: noetic
+            package: ros-noetic-ros-base
+          - image: ubuntu:22.04
+            distro: humble
+            package: ros-humble-ros-base
+    steps:
+      - uses: actions/checkout@v4
+      - name: setup-ros-repo
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w -e DEBIAN_FRONTEND=noninteractive \
+            ${{ matrix.image }} bash -c '
+              set -e
+              apt-get update -qq
+              apt-get install -y -qq curl gnupg lsb-release ca-certificates >/dev/null
+              bash scripts/util_apt_helper.sh setup-ros-repo ${{ matrix.distro }}
+              # apt refuses an unsigned or wrongly-signed repository, so a
+              # resolvable candidate proves the keyring landed correctly.
+              apt-cache policy ${{ matrix.package }} | tee /dev/stderr | grep -q Candidate:'
+      - name: cuda repo (fingerprint-pinned)
+        if: matrix.image == 'ubuntu:22.04'
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w -e DEBIAN_FRONTEND=noninteractive \
+            ${{ matrix.image }} bash -c '
+              set -e
+              apt-get update -qq
+              apt-get install -y -qq curl gnupg lsb-release ca-certificates >/dev/null
+              bash scripts/util_apt_helper.sh setup-cuda-repo 12.4
+              apt-cache policy cuda-nvcc-12-4 | grep -q Candidate:'
+
+  image-stages:
+    name: image stages (base, build-core)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: build the cheap stages
+        run: |
+          for target in base build-core; do
+            docker build --target "$target" -f docker/Dockerfile \
+              --build-arg BASE_IMAGE=ubuntu:22.04 \
+              --build-arg ROS_DISTRO=humble \
+              --build-arg APT_SNAPSHOT_DATE=latest \
+              --build-arg STRICT_GPG_CHECK=true \
+              -t "devkit-ci:${target}" .
+          done
+      - name: the built image must not carry dead plumbing
+        run: |
+          docker run --rm --entrypoint bash devkit-ci:build-core -c '
+            [ "$BASH_ENV" = /etc/devkit/shell-env.sh ] || { echo "BASH_ENV not wired"; exit 1; }
+            [ -z "${SOURCE_LOG:-}" ] || { echo "SOURCE_LOG resurrected"; exit 1; }'
+
+  runtime-smoke:
+    name: runtime smoke (build, run, ROS python)
+    # Cron and manual only — this one builds the full image.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: reclaim runner disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc 2>/dev/null || true
+      - name: setup (.env + completion + xauth)
+        run: make setup
+      - name: build and start (GPU_MODE=auto resolves to cpu here)
+        run: |
+          make build ENV=ros
+          make start ENV=ros
+      - name: the environment must reach a NON-bash process
+        run: |
+          make exec ENV=ros CMD='python3 -c "import rclpy; print(\"rclpy\", rclpy.__file__)"'
+          make exec ENV=ros CMD='ros2 pkg list | wc -l'
+      - name: the display probe must name a binary the image ships
+        run: make exec ENV=ros CMD='command -v xdpyinfo'
+      - name: shell functions must reach a child shell
+        run: make exec ENV=ros CMD='type -t mksync'
+      - name: one-click init, then the venv must be active and project-named
+        run: |
+          make exec ENV=ros CMD='mksync'
+          make exec ENV=ros CMD='test -n "$$VIRTUAL_ENV_PROMPT" && echo "venv: $$VIRTUAL_ENV_PROMPT"'
+          make exec ENV=ros CMD='python3 -c "import rclpy"'
+          make exec ENV=ros CMD='check_deps'
+      - name: teardown
+        if: always()
+        run: make down ENV=ros
