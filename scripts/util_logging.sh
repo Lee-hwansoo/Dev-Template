@@ -5,6 +5,11 @@
 #
 # Provides color-coded logging functions (INFO, OK, WARN, ERROR, DEBUG)
 # with support for timestamps, custom prefixes, and file-based logging.
+#
+# THIS FILE IS PROVIDED API. DevKit is a base kit, so every verb below exists
+# for the project code built on top of it — a symbol with no in-tree caller is
+# a feature, not dead code. scripts/verify_repo.sh check [provided-api] asserts the
+# whole surface stays callable; extend it when you add a verb.
 # =============================================================================
 
 # ANSI Color Codes
@@ -63,10 +68,22 @@ log_info()  { _log_base "INFO"  "${BLUE}"   ""   "$1"; }
 log_ok()    { _log_base "OK"    "${GREEN}"  "✓"  "$1"; }
 log_warn()  { _log_base "WARN"  "${YELLOW}" "⚠"  "$1"; }
 log_error() { _log_base "ERROR" "${RED}"    "✗"  "$1"; }
+
+# log_debug — the consumer of DEBUG_MODE (.env.example → compose → container).
 log_debug() {
     if [ "${DEBUG_MODE}" = "true" ]; then
         _log_base "DEBUG" "${PURPLE}" "⚙" "$1"
     fi
+}
+
+# log_detail [message] - Indented auxiliary information (a hint under a finding)
+log_detail() {
+    echo -e "    ${CYAN}→${NC} $1"
+}
+
+# log_step_done [message] - Completion of a step
+log_step_done() {
+    echo -e "  ${GREEN}✓${NC} $1"
 }
 
 # devkit_enable_error_trap
@@ -81,10 +98,26 @@ devkit_enable_error_trap() {
     trap 'devkit_err_rc=$?; log_error "aborted (exit ${devkit_err_rc}) at line ${LINENO}: ${BASH_COMMAND}"' ERR
 }
 
-# Export color variables for independent use in Makefile, etc.
-export RED GREEN YELLOW BLUE CYAN PURPLE NC TEAL
+# devkit_auto_color: honour NO_COLOR and non-terminal output.
+# DevKit's diagnostics emit SGR escapes as literals throughout, so instead of
+# threading a colour variable through every printf we strip them at the output
+# boundary when stdout is not a terminal (CI logs, pipes, `> file`).
+# Call once, early, from any script whose output a user may redirect.
+devkit_auto_color() {
+    [ -n "${NO_COLOR:-}" ] || [ ! -t 1 ] || return 0
+    command -v sed >/dev/null 2>&1 || return 0
+    local re=$'s/\033\\[[0-9;]*m//g'   # $'\033': BSD sed has no \x1b
+    # stderr first: the process substitution is forked before the redirection is
+    # applied, so its >&2 still points at the REAL stderr. Warnings and errors
+    # are the lines a user greps out of a redirected log — they must be plain too.
+    exec 2> >(sed -E "$re" >&2)
+    exec > >(sed -E "$re")
+}
 
-# Formatted status strings for manual usage (e.g. within sections or sub-items)
+# The palette and the pre-formatted status tags are exported so project scripts
+# can build their own lines (`echo -e "  $INFO ..."`) without re-deriving them.
+export RED GREEN YELLOW BLUE CYAN PURPLE NC DIM TEAL
+
 INFO="${BLUE}[INFO]${NC}"
 OK="${GREEN}[OK]${NC}"
 WARN="${YELLOW}[WARN]${NC}"
@@ -98,7 +131,8 @@ export INFO OK WARN ERROR DEBUG
 # =============================================================================
 
 # print_banner [type]
-#   type: WELCOME (Large), DIAG (Diagnostics), SETUP (Maintenance)
+#   type: WELCOME (MOTD), DIAG (diagnostics), SETUP (maintenance),
+#         GUIDE (help screens), or any label → boxed "DevKit | <label>".
 print_banner() {
     local type="${1:-WELCOME}"
 
@@ -168,16 +202,6 @@ print_section() {
     printf "\n${TEAL}[ %s ] %s${NC}\n" "$title" "$padding"
 }
 
-# log_detail [message] - Indented auxiliary information
-log_detail() {
-    echo -e "    ${CYAN}→${NC} $1"
-}
-
-# log_step_done [message] - Completion of a step
-log_step_done() {
-    echo -e "  ${GREEN}✓${NC} $1"
-}
-
 # print_env_info - Displays a standardized project dashboard (Single Source of Truth)
 print_env_info() {
     # 1. Detect Python Environment Mode
@@ -195,18 +219,19 @@ print_env_info() {
     local root="${WS_ROOT:-${WORKSPACE_PATH:-/workspace}}"
     local v_rel="${v_path#$root/}"
 
-    # 3. Output Unified Dashboard
-    echo -e "  Project: ${BLUE}${COMPOSE_PROJECT_NAME}${NC} | User: ${PURPLE}$(whoami) (${UID:-$(id -u)})${NC} | WS: ${GREEN}${root}${NC} | GPU: ${YELLOW}${GPU_MODE:-auto}${NC} | ROS: ${YELLOW}${ROS_DISTRO:-None}${NC} | Python: ${CYAN}${v_rel}${NC}(${venv_status})"
-}
+    # 3. Identity + bind-mount writability. A UID/GID mismatch against the mounted
+    #    workspace is the most common container failure, so surface it on entry.
+    local my_uid my_gid ws_warn=""
+    my_uid="$(id -u)"; my_gid="$(id -g)"
+    if [ -d "$root" ] && [ ! -w "$root" ]; then
+        ws_warn=" ${RED}(NOT writable — uid mismatch? run 'hwcheck')${NC}"
+    fi
 
-# =============================================================================
-# Guide Renderer (bundled)
-# =============================================================================
-# Colors are defined above; load the shared guide renderer here so every
-# consumer of this logging SSOT can render DevKit guides (make help / h|help)
-# without a separate require. Guarded twice: `devkit_require` is only present
-# when util_paths.sh is loaded (a few Makefile recipes source this file alone,
-# and only need print_section), and a missing renderer must never break logging.
-if declare -F devkit_require >/dev/null 2>&1; then
-    devkit_require "util_doc_render.sh" 2>/dev/null || true
-fi
+    # 4. ROS is reported only when it is actually installed: compose passes
+    #    ROS_DISTRO to every service, so the non-ROS image would claim "humble".
+    local ros_status="None"
+    [ -d "/opt/ros/${ROS_DISTRO:-}" ] && ros_status="${ROS_DISTRO}"
+
+    # 5. Output Unified Dashboard
+    echo -e "  Project: ${BLUE}${COMPOSE_PROJECT_NAME}${NC} | User: ${PURPLE}$(whoami) (${my_uid}:${my_gid})${NC} | WS: ${GREEN}${root}${NC}${ws_warn} | GPU: ${YELLOW}${GPU_MODE:-auto}${NC} | ROS: ${YELLOW}${ros_status}${NC} | Python: ${CYAN}${v_rel}${NC}(${venv_status})"
+}
