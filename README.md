@@ -216,6 +216,10 @@ git add src/uv.lock && git commit -m "chore: pin python dependencies"
   - `mksync` 가동 순서, `pyproject.toml` 연동, 파이썬 패키지 관리 (`uv`), SIF 생성 옵션 상세.
 - 🛰️ [**원격 서버 &amp; SLURM 클러스터 배포 매뉴얼 (docs/SLURM.md)**](docs/SLURM.md)
   - Apptainer SIF 빌드 및 원격 서버 스토리지 분리 구조, `sbatch` 배치 작업 제출, 실시간 로그 모니터링.
+- 🤝 [**기여 가이드 (CONTRIBUTING.md)**](CONTRIBUTING.md)
+  - 커밋·주석 규약, 계약을 추가하는 방법(뮤테이션 테스트), 표면을 늘릴 때 함께 갱신할 것.
+- 🤖 [**LLM 코딩 에이전트 지침 (docs/GEMINI.md)**](docs/GEMINI.md)
+  - 이 저장소에서 LLM 에이전트에게 요구하는 작업 규칙(가정 명시, 최소 구현, 국소 변경, 검증 가능한 목표).
 - 🐞 [**디버깅 &amp; 트러블슈팅 가이드 (docs/DEBUGGING.md)**](docs/DEBUGGING.md)
   - VSCode GDB/debugpy 디버거 세팅, X11/Wayland GUI 권한 문제 해결, `check_deps` 의존성 검사법.
 
