@@ -124,6 +124,15 @@ case "$COMMAND" in
         apt-get install -y --no-install-recommends curl ca-certificates gnupg lsb-release
         log_ok "APT initialized."
         ;;
+    restore-docker-clean)
+        # The inverse of init-apt's cache retention, for every stage that SHIPS.
+        # keep-cache only serves BuildKit's cache mounts; left in place, runtime
+        # `apt install` in the deployed image hoards .debs forever.
+        rm -f /etc/apt/apt.conf.d/keep-cache
+        printf 'DPkg::Post-Invoke { "rm -f /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/*.deb || true"; };\nAPT::Keep-Downloaded-Packages "false";\n' \
+            > /etc/apt/apt.conf.d/docker-clean
+        log_ok "APT cache retention restored to docker-clean."
+        ;;
     configure-snapshot)
         # Pin APT to a point-in-time Ubuntu snapshot so SOURCE_DATE_EPOCH builds are
         # actually reproducible. 'latest' (or empty) keeps the rolling mirrors.
@@ -321,6 +330,7 @@ case "$COMMAND" in
 Usage: util_apt_helper.sh <command> [args...]
 
   init-apt
+  restore-docker-clean          Undo init-apt's cache retention (shipped stages)
   configure-snapshot <latest|YYYYMMDDTHHMMSSZ>
   setup-ros-repo     <ros_distro>
   setup-cuda-repo    <cuda_version>

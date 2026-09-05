@@ -101,6 +101,19 @@ jobs:
           docker run --rm --entrypoint bash devkit-ci:build-core -c '
             [ "$BASH_ENV" = /etc/devkit/shell-env.sh ] || { echo "BASH_ENV not wired"; exit 1; }
             [ -z "${SOURCE_LOG:-}" ] || { echo "SOURCE_LOG resurrected"; exit 1; }'
+      # The interpreter a baked venv symlinks into must run under a non-root
+      # uid. On the real image: the failure was a 0700 directory mode.
+      - name: the managed interpreter must run as a non-root uid
+        run: |
+          docker run --rm --entrypoint bash devkit-ci:build-core -c '
+            set -e
+            case "${UV_PYTHON_INSTALL_DIR:-}" in
+              ""|/root/*) echo "managed python at ${UV_PYTHON_INSTALL_DIR:-<unset>}: no other uid can reach it"; exit 1 ;;
+            esac
+            # No -type f: uv leaves bin/python3 as a symlink to bin/pythonX.Y.
+            PY=$(find "$UV_PYTHON_INSTALL_DIR" -maxdepth 3 -path "*/bin/python3" -print -quit)
+            [ -n "$PY" ] || { echo "no managed interpreter under $UV_PYTHON_INSTALL_DIR"; exit 1; }
+            su -s /bin/sh nobody -c "$PY -V"'
 
   runtime-smoke:
     name: runtime smoke (build, run, ROS python)

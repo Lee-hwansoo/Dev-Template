@@ -96,8 +96,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 # Install uv and setup Python once for both dev images and production builders.
 COPY --from=uv-binaries /uv /uvx /usr/local/bin/
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
-    uv python install ${UV_PYTHON}
+    uv python install ${UV_PYTHON} && \
+    chmod -R a+rX /opt/uv
 
 ENV PATH="/usr/lib/ccache:${WORKSPACE_PATH}/install/.venv/bin:$PATH" \
     CCACHE_DIR=/cache/ccache \
@@ -190,23 +192,20 @@ RUN chmod +x /entrypoint.sh ${WORKSPACE_PATH}/scripts/*.sh ${WORKSPACE_PATH}/con
     cp ${WORKSPACE_PATH}/config/terminator_config /root/.config/terminator/config && \
     cp ${WORKSPACE_PATH}/config/terminator_config /home/${CONTAINER_USER}/.config/terminator/config; \
     fi && \
-    chown -R ${CONTAINER_USER}:${CONTAINER_USER} /home/${CONTAINER_USER}
+    chown -R ${CONTAINER_USER}:${CONTAINER_USER} /home/${CONTAINER_USER} /opt/uv
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["bash"]
 
 # ── Stage: dev targets (Interactive Developer Environments) ─────────────────
 FROM dev-core AS dev
 ARG WORKSPACE_PATH
-ARG ROS_DISTRO
 ENV COLCON_HOME=${WORKSPACE_PATH}
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
     --mount=type=bind,source=dependencies/,target=${WORKSPACE_PATH}/dependencies/ \
     bash /tmp/util_apt_helper.sh install-packages all && \
-    rm -f /etc/apt/apt.conf.d/keep-cache && \
-    printf 'DPkg::Post-Invoke { "rm -f /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/*.deb || true"; };\nAPT::Keep-Downloaded-Packages "false";\n' \
-        > /etc/apt/apt.conf.d/docker-clean
+    bash /tmp/util_apt_helper.sh restore-docker-clean
 WORKDIR ${WORKSPACE_PATH}
 
 FROM dev-core AS ros-base
@@ -237,9 +236,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     SYNC_TARGET_DIR=/tmp/staging ${WORKSPACE_PATH}/scripts/setup_sync_deps.sh --rosdep && \
     rm -rf /tmp/staging && \
-    rm -f /etc/apt/apt.conf.d/keep-cache && \
-    printf 'DPkg::Post-Invoke { "rm -f /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/*.deb || true"; };\nAPT::Keep-Downloaded-Packages "false";\n' \
-        > /etc/apt/apt.conf.d/docker-clean
+    bash ${WORKSPACE_PATH}/scripts/util_apt_helper.sh restore-docker-clean
 
 # ── Stage: production ROS build base (No desktop/GUI tooling) ────────────────
 FROM build-core AS ros-builder-base
@@ -333,6 +330,15 @@ ARG CUDA_VERSION
 ARG CUDNN_VERSION
 ARG HAS_NVIDIA
 ARG FULL_CUDA
+ARG CONTAINER_USER=user
+ARG USER_UID=1000
+ARG USER_GID=$USER_UID
+# The runtime uid: created here, switched to at the END of each runtime stage
+# (the apt layers between need root). The artifact only reads install/ and
+# /etc/devkit, and k8s runAsNonRoot rejects a root image. Apptainer ignores
+# USER — it runs as the invoking user.
+RUN groupadd --gid ${USER_GID} ${CONTAINER_USER} \
+    && useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash ${CONTAINER_USER}
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     --mount=type=bind,source=scripts/util_cuda_apt.sh,target=/tmp/util_cuda_apt.sh \
@@ -342,19 +348,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get autoremove -y && \
     rm -rf /var/tmp/*
 COPY docker/prod_entrypoint.sh /entrypoint.sh
-# base's init-apt keeps .deb files so BuildKit cache mounts work; that policy
-# must NOT ship in the deployed artifact or every runtime apt install hoards
-# its packages forever. Restore the lean docker-clean behaviour here.
-RUN chmod +x /entrypoint.sh && mkdir -p ${WORKSPACE_PATH}/install /etc/devkit && \
-    rm -f /etc/apt/apt.conf.d/keep-cache && \
-    printf 'DPkg::Post-Invoke { "rm -f /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/*.deb || true"; };\nAPT::Keep-Downloaded-Packages "false";\n' \
-        > /etc/apt/apt.conf.d/docker-clean && \
-    rm -rf /var/cache/apt/archives/*.deb
+RUN --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
+    chmod +x /entrypoint.sh && mkdir -p ${WORKSPACE_PATH}/install /etc/devkit && \
+    bash /tmp/util_apt_helper.sh restore-docker-clean
 WORKDIR ${WORKSPACE_PATH}
 ENTRYPOINT ["/entrypoint.sh"]
 
 FROM prod-base AS prod-dev-runtime
 ARG WORKSPACE_PATH
+ARG CONTAINER_USER=user
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
@@ -362,14 +364,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     bash /tmp/util_apt_helper.sh install-packages runtime && \
     if command -v sudo >/dev/null 2>&1; then chmod a-s "$(command -v sudo)"; fi
 COPY --from=prod-dev-builder ${WORKSPACE_PATH}/install ${WORKSPACE_PATH}/install
-COPY --from=prod-dev-builder /root/.local/share/uv/python /root/.local/share/uv/python
+COPY --from=prod-dev-builder /opt/uv/python /opt/uv/python
 COPY --from=prod-dev-builder ${WORKSPACE_PATH}/release/ /etc/devkit/
 ENV PATH="${WORKSPACE_PATH}/install/.venv/bin:${WORKSPACE_PATH}/install/bin:$PATH" \
     VIRTUAL_ENV="${WORKSPACE_PATH}/install/.venv"
+USER ${CONTAINER_USER}
 CMD []
 
 FROM prod-base AS prod-ros-runtime
 ARG WORKSPACE_PATH
+ARG CONTAINER_USER=user
 ARG ROS_DISTRO
 ARG STRICT_GPG_CHECK
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -381,8 +385,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get purge -y --auto-remove curl gnupg2 dirmngr && \
     if command -v sudo >/dev/null 2>&1; then chmod a-s "$(command -v sudo)"; fi
 COPY --from=prod-ros-builder ${WORKSPACE_PATH}/install ${WORKSPACE_PATH}/install
-COPY --from=prod-ros-builder /root/.local/share/uv/python /root/.local/share/uv/python
+COPY --from=prod-ros-builder /opt/uv/python /opt/uv/python
 COPY --from=prod-ros-builder ${WORKSPACE_PATH}/release/ /etc/devkit/
 ENV PATH="${WORKSPACE_PATH}/install/.venv/bin:${WORKSPACE_PATH}/install/bin:$PATH" \
     VIRTUAL_ENV="${WORKSPACE_PATH}/install/.venv"
+USER ${CONTAINER_USER}
 CMD []

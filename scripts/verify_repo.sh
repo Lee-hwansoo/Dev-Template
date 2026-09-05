@@ -1036,6 +1036,35 @@ grep -Eq '^[^#]*CUDA_VERSION' scripts/apptainer_bake.sh \
     || { log_err "apptainer_bake.sh no longer forwards CUDA_VERSION — baked SIFs would silently ship without CUDA."; sif_errors=1; }
 grep -Eq '^[^#]*sources\.list\.d/cuda\.list' scripts/util_apt_helper.sh \
     || { log_err "util_apt_helper.sh setup-cuda-repo no longer configures the NVIDIA repository."; sif_errors=1; }
+uv_python_dir="$(grep -oE '^ENV UV_PYTHON_INSTALL_DIR=[^[:space:]]+' docker/Dockerfile | head -1 | cut -d= -f2)"
+case "${uv_python_dir:-}" in
+    "")       log_err "docker/Dockerfile does not set UV_PYTHON_INSTALL_DIR; uv installs into the calling user's home, which no other uid can read."; sif_errors=1 ;;
+    /root/*)  log_err "UV_PYTHON_INSTALL_DIR is under /root (${uv_python_dir}); an Apptainer run as your own uid cannot traverse it."; sif_errors=1 ;;
+esac
+grep -qE '^[^#]*/root/\.local/share/uv' docker/Dockerfile \
+    && { log_err "a Dockerfile stage still references /root/.local/share/uv — that path is unreachable for a non-root uid."; sif_errors=1; }
+# …and the runtime stages must actually copy it from there, or the venv symlink
+# in the shipped image points at nothing.
+for uv_stage in 'prod-dev-runtime' 'prod-ros-runtime'; do
+    awk -v stage="$uv_stage" -v dir="${uv_python_dir:-/dev/null}" '
+        $0 ~ "AS " stage        {inside=1}
+        inside && /^FROM / && $0 !~ "AS " stage {inside=0}
+        inside && /^COPY / && index($0, dir) {found=1}
+        END {exit found ? 0 : 1}' docker/Dockerfile \
+        || { log_err "docker/Dockerfile: ${uv_stage} does not copy ${uv_python_dir:-the managed interpreter}; the shipped venv would symlink to a missing interpreter."; sif_errors=1; }
+done
+# Both runtime stages must END as a non-root uid: a root artifact is rejected by
+# k8s runAsNonRoot, and the stage's last USER wins.
+for uid_stage in 'prod-dev-runtime' 'prod-ros-runtime'; do
+    last_user="$(awk -v stage="$uid_stage" '
+        $0 ~ "AS " stage        {inside=1}
+        inside && /^FROM / && $0 !~ "AS " stage {inside=0}
+        inside && /^USER /      {u=$2}
+        END {print u}' docker/Dockerfile)"
+    case "$last_user" in
+        ""|root|0) log_err "docker/Dockerfile: ${uid_stage} runs as ${last_user:-root} (no USER); k8s runAsNonRoot rejects it."; sif_errors=1 ;;
+    esac
+done
 rc=0; bash scripts/apptainer_bake.sh --bogus-flag >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || { log_err "apptainer_bake.sh must reject unknown flags with exit 2, not silently ignore them."; sif_errors=1; }
 grep -Eq '^[^#]*\$\{SYNC_TARGET_DIR' scripts/setup_sync_deps.sh \
@@ -1058,8 +1087,7 @@ awk '/^FROM .* AS base$/,/^FROM [^ ]* AS build-core$/' docker/Dockerfile | grep 
     || { log_err "slurm_run.sh lost the argv-preserving CMD array scheme."; sif_errors=1; }
 # Host/container path confusion: the Makefile exports WORKSPACE_PATH=/workspace
 # to EVERY recipe, host-side ones included, so a script that trusts it resolves
-# /workspace/scripts/... and dies. `make bake-prod` was broken exactly this way
-# while the flag assertions above all passed.
+# /workspace/scripts/... and dies — invisibly to every flag assertion above.
 [ "$(WORKSPACE_PATH=/nonexistent-devkit bash -c 'source config/util_paths.sh; printf %s "$WS_ROOT"')" = "$ROOT_DIR" ] \
     || { log_err "config/util_paths.sh trusts WORKSPACE_PATH even when it is not a DevKit tree here — host scripts resolve /workspace/..."; sif_errors=1; }
 grep -qE '^WS_ROOT="\$\{WORKSPACE_PATH' scripts/apptainer_bake.sh scripts/apptainer_run.sh \
@@ -1128,10 +1156,19 @@ grep -Eq '^[^#]*http://snapshot\.ubuntu\.com' scripts/util_apt_helper.sh \
     && { log_err "A snapshot mirror regressed to http:// (Check-Valid-Until is off — TLS is the only anti-rollback control)."; sec_errors=1; }
 grep -Eq '^[^#]*NVIDIA_GPG_FINGERPRINT="[A-F0-9]{40}"' scripts/util_apt_helper.sh \
     || { log_err "NVIDIA CUDA key fingerprint pin removed (TOFU regression)."; sec_errors=1; }
-# Shipped images must restore docker-clean (init-apt's keep-cache only serves
-# BuildKit cache mounts; left in place, runtime apt installs hoard .debs forever).
-[ "$(grep -c 'apt.conf.d/docker-clean' docker/Dockerfile)" -ge 3 ] \
-    || { log_err "A terminal image stage (dev/ros/prod-base) lost its docker-clean restore — runtime apt would hoard .deb files."; sec_errors=1; }
+# Every stage that SHIPS must undo init-apt's cache retention: keep-cache only
+# serves BuildKit cache mounts, and left in place a runtime `apt install` in the
+# deployed image hoards .debs forever. One verb, asserted per stage.
+grep -q '^    restore-docker-clean)' scripts/util_apt_helper.sh \
+    || { log_err "util_apt_helper.sh no longer offers restore-docker-clean; the shipped stages have nothing to call."; sec_errors=1; }
+for apt_stage in dev ros prod-base; do
+    awk -v stage="$apt_stage" '
+        $0 ~ "AS " stage "$"     {inside=1}
+        inside && /^FROM / && $0 !~ "AS " stage "$" {inside=0}
+        inside && /restore-docker-clean/ {found=1}
+        END {exit found ? 0 : 1}' docker/Dockerfile \
+        || { log_err "docker/Dockerfile: stage ${apt_stage} does not call 'util_apt_helper.sh restore-docker-clean' — runtime apt would hoard .deb files."; sec_errors=1; }
+done
 # `make term` must probe with a binary the image actually ships: xset lives in
 # x11-xserver-utils (not installed) and made the target report "no display" on a
 # working X11 host. xdpyinfo comes from x11-utils, which the image does install.
