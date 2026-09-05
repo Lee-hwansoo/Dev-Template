@@ -1,0 +1,58 @@
+# =============================================================================
+# .github/workflows/project.yml — the loop for the code in src/. verify.yml and
+# images.yml validate the KIT; this one runs YOUR tests and style checks.
+# Gated on src/** because it builds a real image; ENV=dev keeps that to a few
+# minutes — a ROS project switches ENV below and raises the timeout.
+# =============================================================================
+name: project
+
+on:
+  push:
+    paths:
+      - 'src/**'
+      - 'dependencies/**'
+      - '.github/workflows/project.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'dependencies/**'
+      - '.github/workflows/project.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: test + lint (ENV=dev)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ENV: dev
+    steps:
+      - uses: actions/checkout@v4
+      - name: reclaim runner disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc 2>/dev/null || true
+      # Gate: the contract suite is ~15 s and needs no docker. A tree that fails
+      # it cannot teach us anything about an image, and the steps below cost
+      # minutes — the push before this gate existed burned six of them on a tree
+      # whose own suite was red in nine seconds.
+      - name: contracts first (a red tree teaches an image build nothing)
+        run: make verify
+      # `make setup` writes .env from .env.example; every target below reads it.
+      - run: make setup
+      - name: build and start
+        run: |
+          make build
+          make start
+      # mksync installs the project's dependencies and the `dev` group that
+      # carries the runners. A GPU-less runner selects UV_EXTRA=cpu, so heavy
+      # extras (torch) are paid for here — set UV_EXTRA= to skip them.
+      - name: sync the workspace
+        run: make exec CMD='mksync'
+      - run: make lint
+      - run: make test
+      - name: teardown
+        if: always()
+        run: make down

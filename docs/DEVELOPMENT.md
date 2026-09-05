@@ -61,7 +61,45 @@ mksync
 > - `cbuild` / `mbuild` / `mksync` / `mkenv`는 모두 **함수**로 정의되어 있어 `docker build`의 비대화형 셸에서도 호출됩니다
 >   (별칭은 비대화형 셸에서 전개되지 않으므로 빌드 진입점은 별칭으로 만들지 마세요 — `make verify` [build-entrypoints]이 이를 강제합니다).
 
-### 2. 스타터 예제 노드 실행 테스트 (Starter Node Execution)
+### 2. 품질 루프 — 테스트와 린트 (`mtest` / `mlint`)
+
+빌드(`cbuild`/`mbuild`)의 형제입니다. 둘 다 `mksync`와 **같은 프로젝트 형태 감지**를 사용하므로
+플래그를 외울 필요가 없습니다.
+
+```bash
+# 컨테이너 내부
+mtest                # ROS → colcon test + test-result / CMake → ctest / 순수 Python → pytest
+mlint                # ruff check + ruff format --check (+ clang-format이 있으면 C/C++까지)
+mlint --fix          # 자동 수정 가능한 것만 적용
+
+# 호스트에서 (동일 경로를 make exec으로 경유)
+make test ENV=ros
+make lint ENV=ros FIX=1
+```
+
+**러너는 어디서 오는가**: `src/pyproject.toml`의 `[dependency-groups] dev`에 `ruff`와 `pytest`가
+있고, `uv sync`는 이 그룹을 **기본으로 설치**합니다 — 즉 `mksync` 한 번이면 준비됩니다. 버전은
+DevKit이 추측하지 않고 파생 프로젝트의 `uv.lock`이 고정합니다. 프로덕션 빌드는
+`--no-default-groups`로 이 그룹을 제외하므로 배포 이미지에는 들어가지 않습니다
+(`scripts/verify_repo.sh` check [reproducibility]가 실행으로 검증).
+
+**규칙의 출처는 `.editorconfig` 하나**입니다. ruff와 clang-format은 `.editorconfig`를 읽지
+않으므로 같은 값을 `src/pyproject.toml`의 `[tool.ruff]`와 `.clang-format`에 복제해 두었고,
+셋이 어긋나면 check [style-config]가 실패합니다. 저장 시 포맷(`editor.formatOnSave`)이 적용하는
+규칙과 `mlint`가 검사하는 규칙이 동일하므로, 에디터에서 깨끗한 파일은 CI에서도 깨끗합니다.
+
+> [!NOTE]
+> `clang-format`은 **선택 설치**입니다(libllvm 의존성). 에디터는 C/C++ 확장에 내장된 복사본을
+> 쓰므로 CLI 검사가 필요할 때만 `dependencies/apt.txt`의 `# clang-format # dev` 줄을 해제하고
+> `make build`하세요. 테스트가 아직 없는 프로젝트에서 `mtest`는 실패가 아니라 안내를 출력합니다.
+
+**CI**: `.github/workflows/project.yml`이 `src/**` 변경 시 `make build && make start && make lint
+&& make test`를 실행합니다. 키트 자체를 검증하는 `verify.yml`·`images.yml`과 역할이 분리되어
+있으니, 파생 프로젝트는 이 파일만 자기 것으로 손보면 됩니다.
+
+---
+
+### 3. 스타터 예제 노드 실행 테스트 (Starter Node Execution)
 
 `src/example/`의 예제는 사용자의 실제 패키지가 프로젝트 타입 판별을 결정하도록 **빌드 시스템에 등록하지 않은 독립 파일**입니다.
 따라서 아래와 같이 직접 실행/컴파일합니다:
@@ -78,7 +116,7 @@ mkdir -p build && g++ -std=c++17 src/example/starter_node.cpp -o build/starter_n
 예제를 빌드 파이프라인에 편입하려면 `src/`에 `package.xml`(ROS) 또는 `CMakeLists.txt`(Pure C++)를 추가한 뒤
 `mksync`(전체 동기화) 또는 `cbuild`/`mbuild`(빌드만)를 실행하세요.
 
-### 3. 셸 환경의 단일 정의 (One Environment, Every Shell)
+### 4. 셸 환경의 단일 정의 (One Environment, Every Shell)
 
 `config/init_bash.sh` **한 파일**이 DevKit 셸 환경을 정의하고, bash의 세 가지 호출 방식이 모두 이를 경유합니다:
 
@@ -141,7 +179,7 @@ docker exec <container> /entrypoint.sh --env sh -c 'echo $VIRTUAL_ENV'
 >
 > `make verify` [env-bridge]이 이 구조(단일 훅 소싱 · 비대화형 무출력 · 스냅샷 미사용)를 강제합니다.
 
-### 4. 의존성 관리 체계 (Dependency Management)
+### 5. 의존성 관리 체계 (Dependency Management)
 
 * **Python 패키지 (`uv`)**: `src/pyproject.toml`을 통해 관리됩니다. `uvs` 명령어로 초고속 파이썬 동기화를 수행합니다.
 * **시스템 및 ROS 패키지**: `dependencies/` 디렉토리를 통해 관리되며, `sync_deps --rosdep` 명령어로 외부 레포지토리 수신 및 시스템 패키지를 설치합니다.

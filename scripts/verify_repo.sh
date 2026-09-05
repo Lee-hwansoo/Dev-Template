@@ -702,6 +702,25 @@ fi
 rm -rf "$src_probe"
 grep -q 'cmake --install' config/util_aliases.sh \
     || { log_err "mbuild must install into install/ for prod builds; the runtime image never copies build/."; repro_errors=1; }
+# The quality-loop tools must not ship. uv installs the `dev` dependency-group
+# by DEFAULT, so a production venv would carry ruff and pytest unless uvs opts
+# out — asserted against a fake `uv` that echoes the argv it was handed.
+printf '#!/bin/sh\necho "$*"\n' > "$prod_probe/bin/uv"; chmod +x "$prod_probe/bin/uv"
+mkdir -p "$prod_probe/install/.venv/bin"; printf '#!/bin/sh\n' > "$prod_probe/install/.venv/bin/python3"
+chmod +x "$prod_probe/install/.venv/bin/python3"
+printf '[project]\nname = "p"\nversion = "0"\n' > "$prod_probe/src/pyproject.toml"
+sync_flags() {
+    env -i PATH="$prod_probe/bin:/usr/bin:/bin" HOME=/tmp WORKSPACE_PATH="$prod_probe" \
+        ${1:+DEVKIT_BUILD_TYPE=$1} \
+        bash -lc "source $prod_probe/config/util_aliases.sh 2>/dev/null; uvs" 2>/dev/null
+}
+case "$(sync_flags prod)" in
+    *--no-default-groups*) ;;
+    *) log_err "prod uvs does not pass --no-default-groups; the shipped venv would carry the dev group (ruff, pytest)."; repro_errors=1 ;;
+esac
+case "$(sync_flags '')" in
+    *--no-default-groups*) log_err "dev uvs excludes the dev dependency-group, so mtest/mlint have no runner."; repro_errors=1 ;;
+esac
 rm -rf "$prod_probe"
 # The flag only helps if the Dockerfile actually sets it on the builder stages.
 for stage_line in 'prod-dev-builder' 'prod-ros-builder'; do

@@ -3,7 +3,9 @@
 Simple ROS 2 / Pure Python starter node for DevKit.
 Runs cleanly in ROS 2 (Humble) or fallback pure Python environment.
 """
+
 import sys
+
 
 def main():
     print("🚀 [DevKit] Starter Node Initialized.")
@@ -22,6 +24,7 @@ def main():
     except ImportError:
         print("  - ROS 2 Subsystem: Not detected (Running in Pure Python Mode)")
         print(f"  - Python Version: {sys.version.split()[0]}")
+
 
 if __name__ == "__main__":
     main()

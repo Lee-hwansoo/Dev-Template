@@ -171,6 +171,37 @@
       "detail": "Clone external repos from dependencies.repos and install rosdep packages"
     },
     {
+      "label": "🧪 Project: Test (mtest)",
+      "type": "shell",
+      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && mtest'",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "problemMatcher": [],
+      "detail": "Run the project's tests — colcon test, ctest or pytest, chosen from the project layout"
+    },
+    {
+      "label": "🎨 Project: Lint (mlint)",
+      "type": "shell",
+      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && mlint'",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "detail": "Check ruff + clang-format rules without rewriting files (same rules as format-on-save)"
+    },
+    {
+      "label": "🎨 Project: Lint --fix",
+      "type": "shell",
+      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && mlint --fix'",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "detail": "Apply every fix ruff and clang-format can make automatically"
+    },
+    {
       "label": "🔍 Check Dependencies (Sanity)",
       "type": "shell",
       "command": "bash \"${workspaceFolder}/scripts/check_deps.sh\" \"${workspaceFolder}/install\"",

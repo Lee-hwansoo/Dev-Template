@@ -133,7 +133,8 @@ __print_container_help() {
     echo -e "${S}[ Quick Start & Build ] =============================${N}"
     printf "  ${G}%-20s${N} : %s\n" "mksync [--share]" "Initialize workspace; --share for system-site-packages"
     printf "  ${G}%-20s${N} : %s\n" "cbuild / mbuild" "Build workspace (ROS colcon or Modern CMake)"
-    printf "  ${G}%-20s${N} : %s\n" "cbt / cbtr" "Run tests / view test results"
+    printf "  ${G}%-20s${N} : %s\n" "mtest / mlint" "Run the project's tests / check style and lint rules"
+    printf "  ${G}%-20s${N} : %s\n" "cbt / cbtr" "Run ROS tests directly / view test results"
     printf "  ${G}%-20s${N} : %s\n" "s / sb" "Source workspace / Source .bashrc"
     printf "  ${G}%-20s${N} : %s\n" "mclean" "Clean build, install & log output directories"
 
@@ -264,7 +265,10 @@ uvs() {
     local req_file="${WS_ROOT}/dependencies/requirements.txt"
     local sync_flags=()
     [ -n "${UV_SYNC_FLAGS:-}" ] && read -r -a sync_flags <<< "${UV_SYNC_FLAGS}"
-    [ -x "${venv}/bin/python" ] || mkenv || return 1
+    # uv installs the `dev` group by default; a prod venv must not carry
+    # ruff and pytest. Dev builds keep them — mtest/mlint need them.
+    [ "${DEVKIT_BUILD_TYPE:-dev}" = "prod" ] && sync_flags+=(--no-default-groups)
+    [ -x "${WS_VENV_PY:-}" ] || mkenv || return 1
 
     if [ -f "$pyproject" ]; then
         local extra_args=()
@@ -621,5 +625,6 @@ complete -W "--packages-select --packages-up-to --cmake-args --event-handlers" c
 complete -W "-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_TYPE=Debug" mbuild 2>/dev/null || true
 complete -W "--rosdep --force" sync_deps 2>/dev/null || true
 complete -W "--all" mclean 2>/dev/null || true
+complete -W "--fix" mlint 2>/dev/null || true
 complete -W "--brief" hwcheck hw_check 2>/dev/null || true
 complete -W "--share" mksync mkenv 2>/dev/null || true

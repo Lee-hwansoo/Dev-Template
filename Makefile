@@ -215,7 +215,7 @@ define CONFIRM
 	fi
 endef
 
-.PHONY: help h setup status check verify xauth gpus build start stop restart shell exec term bake-dev bake-prod run-sif slurm-status slurm-cancel stats top logs update-gpg down clean clean-cache clean-all docker-clean
+.PHONY: help h setup adopt status check verify xauth gpus build start stop restart shell exec test lint term bake-dev bake-prod run-sif slurm-status slurm-cancel stats top logs update-gpg down clean clean-cache clean-all docker-clean
 
 # =============================================================================
 # Help & Setup
@@ -239,6 +239,7 @@ help:
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "restart / down" "Restart containers / stop & remove containers"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "shell / term" "Interactive container shell / new window"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "exec CMD='...'" "Run command"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "test / lint" "Run project tests / check style (FIX=1 applies)"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "logs / stats / top" "Stream logs, real-time stats, process monitor"
 	@echo -e "\n$(CYAN)[ Apptainer SIF & SLURM ] ===========================$(NC)"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "bake-dev / bake-prod" "Bake development / production SIF artifacts"
@@ -448,6 +449,18 @@ exec:
 	else \
 		docker exec $$USER_FLAG -w "$(WORKSPACE_PATH)" $$CONTAINER bash -c "$$CMD"; \
 	fi
+
+## @target test : Run the project's tests inside the container
+# Both go through `make exec` to inherit its entrypoint routing, user
+# resolution and container guard. mtest/mlint pick the runner by layout.
+test:
+	$(call GUARD_HOST_ONLY)
+	@$(MAKE) --no-print-directory exec CMD='mtest'
+
+## @target lint : Check style and lint rules inside the container (FIX=1 applies them)
+lint:
+	$(call GUARD_HOST_ONLY)
+	@$(MAKE) --no-print-directory exec CMD='mlint $(if $(filter 1 true,$(FIX)),--fix,)'
 
 ## @target term : Launch in-container Terminator GUI window (2x2 grid layout)
 # The display probe uses xdpyinfo (x11-utils), not xset (x11-xserver-utils, which

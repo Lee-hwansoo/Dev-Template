@@ -19,6 +19,12 @@
 ccache
 ninja-build
 
+# Quality loop (opt-in). The editor formats C/C++ with the copy bundled in the
+# C/C++ extension, so `mlint`'s CLI half is the only thing that needs this —
+# and clang-format pulls libllvm, which the dev image otherwise avoids.
+# Python needs nothing here: ruff ships in src/pyproject.toml's `dev` group.
+# clang-format # dev
+
 # Runtime graphics (opt-in for deployed apps that need OpenGL/EGL or non-headless OpenCV)
 # libegl1-mesa # runtime
 # libgl1-mesa-dri # runtime
