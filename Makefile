@@ -1,5 +1,7 @@
 # =============================================================================
-# DevKit Makefile — High Performance Workflow Orchestration
+# DevKit Makefile — the host-side entry points. `make help` is the index.
+# The literal "DevKit Makefile" above is a marker: tab completion walks up from
+# $PWD looking for it, so a DevKit tree is recognised from any subdirectory.
 # =============================================================================
 
 SHELL := /bin/bash
@@ -164,9 +166,37 @@ CONTAINER=$$(docker ps --filter "label=com.docker.compose.project=$(COMPOSE_PROJ
 		| awk '$$1 ~ /^$(SERVICE_PREFIX)-/ { print $$2; exit }')
 endef
 
-# CONFIRM: interactive guard for irreversible targets.
-# Skipped when stdin is not a terminal (CI/pipes) or FORCE=1 / CI=true is set,
-# so scripted use keeps working — but a human at a prompt always gets the ask.
+# REQUIRE_CONTAINER: FIND_CONTAINER plus the ONE message for "nothing is up",
+# with a non-zero exit — six targets need exactly this and no other wording.
+define REQUIRE_CONTAINER
+$(FIND_CONTAINER); \
+	if [ -z "$$CONTAINER" ]; then \
+		echo -e "  $(ERROR) No running $(ENV) container for '$(COMPOSE_PROJECT_NAME)'. Run 'make start ENV=$(ENV)' first." >&2; \
+		exit 1; \
+	fi
+endef
+
+# EXEC_USER_FLAG: run as CONTAINER_USER when the image has that user.
+# `shell` and `exec` must agree, or one of them writes root-owned files
+# into the bind-mounted workspace.
+define EXEC_USER_FLAG
+: "$${CONTAINER_USER:=user}"; \
+	USER_FLAG=""; \
+	if [ "$$CONTAINER_USER" != "root" ] && docker exec $$CONTAINER id -u "$$CONTAINER_USER" >/dev/null 2>&1; then \
+		USER_FLAG="-u $$CONTAINER_USER"; \
+	fi
+endef
+
+# HINT_ROOT_OWNED: remediation for a path Docker re-created as root.
+# $(1) = host path. Both `clean` and `clean-cache` need the same words.
+define HINT_ROOT_OWNED
+	echo -e "  $(INFO) Docker creates a missing mount source as root at container start."; \
+	echo -e "  $(INFO) Remove it from inside a container (no sudo needed):"; \
+	echo -e "  $(INFO)   docker run --rm -v \"$(HOST_WORKSPACE_PATH):/w\" alpine rm -rf /w/$(1)"
+endef
+
+# CONFIRM: interactive guard for irreversible targets. Skipped off-TTY or with
+# FORCE=1 / CI=true, so scripts keep working; a human always gets the ask.
 define CONFIRM
 	@if [ -z "$$FORCE$$CI" ] && [ -t 0 ]; then \
 		printf "  $(YELLOW)[CONFIRM]$(NC) %s [y/N]: " "$(1)"; \
@@ -209,9 +239,7 @@ help:
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "clean / clean-cache" "Delete build outputs / wipe .docker_cache"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "clean-all / docker-clean" "Reset containers & volumes / prune docker cache"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "update-gpg" "Update ROS GPG keys in build scripts"
-	@echo -e "\n  $(CYAN)Common flows:$(NC)"
-	@echo -e "    make build ENV=ros && make start ENV=ros && make shell ENV=ros"
-	@echo -e "    make bake-prod ENV=ros\n"
+	@echo ""
 
 ## @target h : Alias for help (muscle memory from earlier versions)
 h: help
@@ -343,18 +371,9 @@ restart: stop start
 ## @target shell : Enter container interactive shell
 shell:
 	$(call GUARD_HOST_ONLY)
-	@$(FIND_CONTAINER); \
-	if [ -n "$$CONTAINER" ]; then \
-		: "$${CONTAINER_USER:=user}"; \
-		if [ "$$CONTAINER_USER" != "root" ] && docker exec $$CONTAINER id -u "$$CONTAINER_USER" >/dev/null 2>&1; then \
-			docker exec -it -u "$$CONTAINER_USER" -w "$(WORKSPACE_PATH)" $$CONTAINER bash; \
-		else \
-			docker exec -it $$CONTAINER bash; \
-		fi; \
-	else \
-		echo -e "  $(ERROR) No running container found. Run 'make start' first."; \
-		exit 1; \
-	fi
+	@$(REQUIRE_CONTAINER); \
+	$(EXEC_USER_FLAG); \
+	docker exec -it $$USER_FLAG -w "$(WORKSPACE_PATH)" $$CONTAINER bash
 
 ## @target exec : Run a command inside the container with the full DevKit environment
 # The paved path for automation, independent of ENV, language and shell.
@@ -374,13 +393,8 @@ exec:
 		echo -e "  $(ERROR) Usage: make exec CMD='<command>'   e.g. CMD='python3 -m pytest'"; \
 		echo -e "  $(INFO) Double any '$$' so it survives make: CMD='echo \$$\$$ROS_DISTRO'"; \
 		exit 2; fi
-	@$(FIND_CONTAINER); \
-	if [ -z "$$CONTAINER" ]; then echo -e "  $(ERROR) No running container found. Run 'make start' first."; exit 1; fi; \
-	: "$${CONTAINER_USER:=user}"; \
-	USER_FLAG=""; \
-	if [ "$$CONTAINER_USER" != "root" ] && docker exec $$CONTAINER id -u "$$CONTAINER_USER" >/dev/null 2>&1; then \
-		USER_FLAG="-u $$CONTAINER_USER"; \
-	fi; \
+	@$(REQUIRE_CONTAINER); \
+	$(EXEC_USER_FLAG); \
 	if docker exec $$CONTAINER test -x /entrypoint.sh 2>/dev/null && \
 	   docker exec $$CONTAINER grep -q '"--env"' /entrypoint.sh 2>/dev/null; then \
 		docker exec $$USER_FLAG -w "$(WORKSPACE_PATH)" $$CONTAINER /entrypoint.sh --env bash -c "$$CMD"; \
@@ -395,11 +409,7 @@ exec:
 term:
 	$(call GUARD_HOST_ONLY)
 	@$(MAKE) xauth >/dev/null 2>&1 || true
-	@$(FIND_CONTAINER); \
-	if [ -z "$$CONTAINER" ]; then \
-		echo -e "  $(ERROR) No running container found. Run 'make start' first."; \
-		exit 1; \
-	fi; \
+	@$(REQUIRE_CONTAINER); \
 	if docker exec $$CONTAINER xdpyinfo >/dev/null 2>&1; then \
 		echo -e "  $(INFO) Launching in-container Terminator GUI ($$CONTAINER)..."; \
 		TERM_BIN="$${TERMINAL:-terminator}"; \
@@ -485,13 +495,9 @@ gpus:
 ## @target stats : Real-time container resource monitor
 stats:
 	$(call GUARD_HOST_ONLY)
-	@$(FIND_CONTAINER); \
-	if [ -n "$$CONTAINER" ]; then \
-		echo -e "  $(INFO) Streaming container resource stats (Ctrl+C to stop)..."; \
-		docker stats $$CONTAINER; \
-	else \
-		echo -e "  $(WARN) No running containers for '$(COMPOSE_PROJECT_NAME)'. Run 'make start' first."; \
-	fi
+	@$(REQUIRE_CONTAINER); \
+	echo -e "  $(INFO) Streaming container resource stats (Ctrl+C to stop)..."; \
+	docker stats $$CONTAINER
 
 ## @target top : Detailed process monitor
 top:
@@ -507,11 +513,7 @@ top:
 ## @target logs : Stream real-time container logs
 logs:
 	$(call GUARD_HOST_ONLY)
-	@$(FIND_CONTAINER); \
-	if [ -z "$$CONTAINER" ]; then \
-		echo -e "  $(WARN) No running $(ENV) container for '$(COMPOSE_PROJECT_NAME)'. Run 'make start' first."; \
-		exit 1; \
-	fi
+	@$(REQUIRE_CONTAINER)
 	$(COMPOSE) --profile "*" logs -f --tail 100 $(ENV_SERVICES)
 
 ## @target update-gpg : Update ROS GPG keys in build scripts
@@ -556,8 +558,7 @@ clean:
 	@if [ -d install ] && [ -z "$$(ls -A install 2>/dev/null)" ]; then \
 		rmdir install 2>/dev/null || { \
 			echo -e "  $(WARN) install/ is root-owned and cannot be removed from the host."; \
-			echo -e "  $(INFO) The entrypoint creates it as root; remove it from a container:"; \
-			echo -e "  $(INFO)   docker run --rm -v \"$(HOST_WORKSPACE_PATH):/w\" alpine rm -rf /w/install"; \
+			$(call HINT_ROOT_OWNED,install); \
 		}; \
 	fi
 	@if [ -z "$(ROS_INSTALL_VOL)$(DEV_INSTALL_VOL)" ]; then \
@@ -592,9 +593,7 @@ clean-cache:
 	esac; \
 	if ! rm -rf "$$CACHE_DIR" .docker_cache 2>/dev/null; then \
 		echo -e "  $(ERROR) $$CACHE_DIR contains root-owned entries and cannot be removed."; \
-		echo -e "  $(INFO) Docker creates the mount source as root when it is missing at container start."; \
-		echo -e "  $(INFO) Remove it from inside a container (no sudo needed):"; \
-		echo -e "  $(INFO)   docker run --rm -v \"$(HOST_WORKSPACE_PATH):/w\" alpine rm -rf /w/.docker_cache"; \
+		$(call HINT_ROOT_OWNED,.docker_cache); \
 		exit 1; \
 	fi
 	@echo -e "  $(OK) Cache directory cleaned."

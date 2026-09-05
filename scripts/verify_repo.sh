@@ -506,8 +506,13 @@ grep -qE '\$\(COMPOSE\).*down .*--rmi local' Makefile \
 stray_attach="$(grep -nE "docker ps --filter \"label=com\.docker\.compose\.project=[^\"]*\" --format '\{\{\.Names\}\}' \| head" Makefile || true)"
 [ -z "$stray_attach" ] \
     || log_err "attach targets pick the first project container instead of the ENV's: $(cut -d: -f1,2 <<< "$stray_attach" | tr '\n' ' ')"
-[ "$(grep -c '\$(FIND_CONTAINER)' Makefile)" -ge 5 ] \
-    || log_err "shell/exec/term/top/stats/logs must resolve the container through \$(FIND_CONTAINER) (ENV-scoped)."
+# Per-recipe, not a global count: a helper that stopped being called would keep
+# the count up while the target it was meant to guard attached to anything.
+for attach_target in shell exec term stats logs top; do
+    awk -v t="$attach_target" '$0 ~ "^"t":" {inside=1; next} inside && /^[^\t]/ {inside=0} inside' Makefile \
+        | grep -qE '\$\((FIND|REQUIRE)_CONTAINER\)' \
+        || log_err "'make ${attach_target}' does not resolve the container through \$(FIND_CONTAINER)/\$(REQUIRE_CONTAINER) — it can attach to the other ENV's container."
+done
 
 # =============================================================================
 # [knob-implementations] Documented knobs must have an implementation (no advertised dead switches)

@@ -50,6 +50,10 @@ graph TD
 
 ## ⚡ 1분 퀵스타트 (Quick Start)
 
+> **처음엔 5개만 알면 됩니다**: `make setup` → `make build` → `make start` → `make shell`,
+> 그리고 컨테이너 안에서 `mksync`. 나머지 타겟은 `make help`, 컨테이너 숏컷은 `h`로 언제든
+> 꺼내 볼 수 있으니 외울 필요가 없습니다.
+
 ### 1. ROS 2 / ROS 1 개발 환경 시작 (`ENV=ros`)
 
 ```bash

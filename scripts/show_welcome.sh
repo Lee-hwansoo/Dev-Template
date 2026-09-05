@@ -59,5 +59,6 @@ for row in "${WELCOME_ROWS[@]}"; do
     fi
 done
 
-echo -e "\n  Type ${CYAN}h${NC} or ${CYAN}help${NC} to see the full alias & shortcut guide."
+echo -e "\n  Start with ${GREEN}mksync${NC} — then ${GREEN}cbuild${NC}/${GREEN}mbuild${NC} to build, ${GREEN}mtest${NC}/${GREEN}mlint${NC} to check, ${GREEN}s${NC} to source."
+echo -e "  Type ${CYAN}h${NC} or ${CYAN}help${NC} to see the full alias & shortcut guide."
 echo -e "  Workspace: ${CYAN}${WS_ROOT:-/workspace}${NC} (mapped from host)\n"
