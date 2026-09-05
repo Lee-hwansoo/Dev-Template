@@ -37,14 +37,14 @@ for arg in "$@"; do
         --check) CHECK_ONLY=true ;;
         --update) AUTO_UPDATE=true ;;
         -h|--help) usage; exit 0 ;;
-        *) log_error "Unknown option: $arg"; usage; exit 2 ;;
+        *) log_error "Unknown option: $arg"; usage >&2; exit 2 ;;
     esac
 done
 
 fetch_fingerprint() {
     local url=$1
     local tmp_key
-    tmp_key=$(mktemp /tmp/ros_key_update.XXXXXX)
+    tmp_key=$(mktemp "${TMPDIR:-/tmp}/devkit-ros-key.XXXXXX")
 
     if ! curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 "$url" -o "$tmp_key"; then
         rm -f "$tmp_key"
@@ -63,8 +63,8 @@ fetch_fingerprint() {
 }
 
 log_info "Fetching current ROS GPG key fingerprints..."
-FP_KEY=$(fetch_fingerprint "$ROS_KEY_URL")
-FP_ASC=$(fetch_fingerprint "$ROS_ASC_URL")
+FP_KEY=$(fetch_fingerprint "$ROS_KEY_URL" || true)
+FP_ASC=$(fetch_fingerprint "$ROS_ASC_URL" || true)
 
 if [ -z "$FP_KEY" ] || [ -z "$FP_ASC" ]; then
     log_error "Could not retrieve fingerprints from official sources. Check your internet connection."
@@ -88,7 +88,7 @@ if [ -z "$CURRENT_FP" ]; then
     exit 1
 fi
 
-if [ "$CURRENT_FP" == "$LATEST_FP" ]; then
+if [ "$CURRENT_FP" = "$LATEST_FP" ]; then
     log_ok "Fingerprint is already up to date: $CURRENT_FP"
     exit 0
 fi
@@ -97,15 +97,15 @@ log_warn "Fingerprint mismatch detected!"
 log_warn "  Current (in code): $CURRENT_FP"
 log_warn "  Latest (from web): $LATEST_FP"
 
-if [ "$CHECK_ONLY" == "true" ]; then
+if [ "$CHECK_ONLY" = "true" ]; then
     log_error "Check failed (GPG drift detected). Please run 'make update-gpg' locally."
     exit 1
 fi
 
 if [ "$AUTO_UPDATE" != "true" ]; then
-    echo ""
-    echo -e "  ${YELLOW}WARNING: This will modify your source code to trust the new GPG key.${NC}"
-    echo -n "  Do you want to update the fingerprint in util_apt_helper.sh? [y/N]: "
+    log_warn "This rewrites tracked source to trust a new GPG key."
+    # printf, not a log verb: the answer is typed on the same line as the ask.
+    printf "  Update the fingerprint in util_apt_helper.sh? [y/N]: "
     read -r ans
     if [[ ! "$ans" =~ ^[yY]$ ]]; then
         log_info "Update cancelled by user."
@@ -114,7 +114,7 @@ if [ "$AUTO_UPDATE" != "true" ]; then
 fi
 
 log_info "Updating $TARGET_FILE..."
-tmp_target=$(mktemp /tmp/ros_gpg_update.XXXXXX)
+tmp_target=$(mktemp "${TMPDIR:-/tmp}/devkit-gpg-update.XXXXXX")
 sed "s/^ROS_GPG_FINGERPRINT=\"$CURRENT_FP\"/ROS_GPG_FINGERPRINT=\"$LATEST_FP\"/" "$TARGET_FILE" > "$tmp_target"
 cat "$tmp_target" > "$TARGET_FILE"
 rm -f "$tmp_target"

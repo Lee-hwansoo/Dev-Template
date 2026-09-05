@@ -26,6 +26,17 @@ if { [ -n "${NO_COLOR:-}" ] || [ ! -t 1 ]; } && command -v sed >/dev/null 2>&1; 
     exec > >(sed -E "$_nocolor")
 fi
 
+# Plain echo, like the colour block above: this script must not depend on the
+# files it validates. Guarding argv matters here too — a typo'd flag used to run
+# the whole suite and exit 0, reporting success for a request it never honoured.
+case "${1:-}" in
+    "") ;;
+    -h|--help)
+        echo "Usage: verify_repo.sh   (no options; validates repository structure and contracts)"
+        exit 0 ;;
+    *) echo "verify_repo.sh: unknown option: $1" >&2; exit 2 ;;
+esac
+
 FAILED=0
 log_ok()  { echo -e "  \033[0;32m[OK]\033[0m $*"; }
 log_err() { echo -e "  \033[0;31m[ERROR]\033[0m $*" >&2; FAILED=$((FAILED+1)); }
@@ -634,6 +645,18 @@ fi
 if bash -c 'source scripts/util_logging.sh; log_error probe' 2>&1 >/dev/null | grep -q $'\033'; then
     log_err "log_error emits ANSI into a redirected stderr without devkit_auto_color."; color_errors=1
 fi
+# A destructive in-container command must refuse an unknown argument instead of
+# falling through to its default: `mclean --help` used to delete the build tree.
+mclean_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+mkdir -p "$mclean_probe/config" "$mclean_probe/build/keep"
+cp config/util_aliases.sh config/util_paths.sh "$mclean_probe/config/" 2>/dev/null || true
+: > "$mclean_probe/build/keep/file"
+rc=0
+bash --norc -c "WORKSPACE_PATH='$mclean_probe' source '$mclean_probe/config/util_aliases.sh' >/dev/null 2>&1
+    mclean --devkit-bogus" >/dev/null 2>&1 || rc=$?
+{ [ "$rc" -eq 2 ] && [ -f "$mclean_probe/build/keep/file" ]; } \
+    || { log_err "mclean accepts an unknown flag (exit ${rc}) and deleted the build tree anyway."; color_errors=1; }
+rm -rf "$mclean_probe"
 # …and the in-container commands must go through those verbs, not hand-rolled
 # escapes, or the guarantee above stops covering the output a user actually pipes.
 # __require_cmd, not a build entry point: it exercises log_error + log_detail
@@ -1162,15 +1185,47 @@ grep -q function <<< "$compat_shell" \
 #      default — which would cache a detected-env.mk make cannot parse.
 # =============================================================================
 cli_errors=0
-for cli in check_deps check_env check_hardware setup_gpu setup_sync_deps \
-           apptainer_bake apptainer_run slurm_run util_apt_helper util_release_metadata show_welcome; do
-    bash "scripts/${cli}.sh" --help >/dev/null 2>&1 \
-        || { log_err "scripts/${cli}.sh does not answer --help with exit 0."; cli_errors=1; }
-    rc=0; bash "scripts/${cli}.sh" --devkit-bogus-flag >/dev/null 2>&1 || rc=$?
+cli_count=0
+# Derived from the directory, not a hand-kept list: a new script that skips the
+# convention has to be exempted here on purpose. Exempt are the sourced-only
+# libraries (they define functions and never look at argv) and this script,
+# which is checked below with a recursion guard.
+for cli_path in scripts/*.sh; do
+    case "$cli_path" in
+        scripts/util_logging.sh|scripts/util_gpu_detect.sh|scripts/util_sif_common.sh|scripts/verify_repo.sh) continue ;;
+    esac
+    cli_count=$((cli_count + 1))
+    bash "$cli_path" --help >/dev/null 2>&1 \
+        || { log_err "${cli_path} does not answer --help with exit 0."; cli_errors=1; }
+    # …and again with the CONTAINER path exported, because that is how `make`
+    # runs every host-side script (WORKSPACE_PATH=/workspace is exported to all
+    # recipes). A script that anchors itself on it instead of asking
+    # config/util_paths.sh dies here with 127 or 1 — as two of them did.
+    WORKSPACE_PATH=/nonexistent-devkit bash "$cli_path" --help >/dev/null 2>&1 \
+        || { log_err "${cli_path} --help fails when WORKSPACE_PATH points at the container; resolve the root through config/util_paths.sh."; cli_errors=1; }
+    rc=0; bash "$cli_path" --devkit-bogus-flag >/dev/null 2>&1 || rc=$?
     [ "$rc" -ne 0 ] \
-        || { log_err "scripts/${cli}.sh accepts an unknown flag silently — a typo would run the wrong mode."; cli_errors=1; }
+        || { log_err "${cli_path} accepts an unknown flag silently — a typo would run the wrong mode."; cli_errors=1; }
 done
-[ "$cli_errors" -eq 0 ] && log_ok "CLI convention holds (11 scripts: --help exits 0, unknown flags rejected)."
+# This script too, but only one level deep: DEVKIT_VERIFY_NESTED stops the child
+# from spawning its own copy. Without the guard a regression in the flag check
+# below would fork the whole suite recursively.
+if [ -z "${DEVKIT_VERIFY_NESTED:-}" ]; then
+    cli_count=$((cli_count + 1))
+    rc=0; DEVKIT_VERIFY_NESTED=1 bash scripts/verify_repo.sh --devkit-bogus-flag >/dev/null 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] \
+        || log_err "scripts/verify_repo.sh accepts an unknown flag silently — 'verify_repo.sh --fix' would report success for a request it ignored."
+    bash scripts/verify_repo.sh --help >/dev/null 2>&1 \
+        || log_err "scripts/verify_repo.sh does not answer --help with exit 0."
+fi
+# setup_gpu.sh is SOURCED by the `gpu` helper, so a rejected mode must leave the
+# caller's shell untouched — validation has to precede the variable reset.
+gpu_typo="$(bash --norc -c "WORKSPACE_PATH='${ROOT_DIR}' source config/util_aliases.sh >/dev/null 2>&1
+    export LIBGL_ALWAYS_SOFTWARE=probe
+    gpu devkit-bogus-mode >/dev/null 2>&1; printf '%s %s' \"\$?\" \"\${LIBGL_ALWAYS_SOFTWARE:-unset}\"" 2>/dev/null || true)"
+[ "$gpu_typo" = "2 probe" ] \
+    || { log_err "'gpu <typo>' must exit 2 without resetting the shell's GPU variables (got: ${gpu_typo})."; cli_errors=1; }
+[ "$cli_errors" -eq 0 ] && log_ok "CLI convention holds (${cli_count} scripts: --help exits 0, unknown flags rejected)."
 
 # =============================================================================
 # [doc-references] Every check citation in the docs and in code comments must

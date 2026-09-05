@@ -516,18 +516,11 @@ alias ccs='ccache -s'
 alias ccc='ccache -C'
 
 # --- Hardware & GPU Diagnostics ---------------------------------------------
-gpu() {
-    local mode="${1:-status}"
-    case "$mode" in
-        status|opencv_args|auto|nvidia|tegra|intel|amd|igpu|cpu)
-            source "${WS_SCRIPTS}/setup_gpu.sh" "$mode"
-            ;;
-        *)
-            echo "Usage: gpu {status|opencv_args|auto|nvidia|tegra|intel|amd|igpu|cpu}"
-            return 1
-            ;;
-    esac
-}
+# gpu [mode]
+#   status (default) | opencv_args | auto | nvidia | tegra | intel | amd | igpu | cpu
+#   Sourced, so a mode switch applies to the current shell. setup_gpu.sh owns
+#   the vocabulary and answers --help; a second copy of the list here drifted.
+gpu() { source "${WS_SCRIPTS}/setup_gpu.sh" "${1:-status}"; }
 
 alias gpu_check='glxinfo 2>&1 | grep -E "OpenGL (vendor|renderer|version)" || echo "No display / glxinfo unavailable"'
 alias vulkan_check='vulkaninfo --summary 2>/dev/null | head -20 || echo "Vulkan not available"'
@@ -571,6 +564,10 @@ PY
 alias pyt='torch_check'
 
 # --- Modern CMake & C++ Shortcuts --------------------------------------------
+# mbuild [--debug|--release] [-- <cmake args>]
+#   Plain CMake build of the repository root (or src/ when the root has no
+#   CMakeLists.txt): configure, build with all cores, and install for a prod
+#   build. Default RelWithDebInfo; --pkg is refused (ROS builds only).
 mbuild() {
     # Source root: repository root if it carries the top-level CMakeLists.txt,
     # otherwise src/ (the layout __detect_project_type reports as CPP).
@@ -606,10 +603,16 @@ mbuild() {
 mclean() {
     local dirs=("${WS_ROOT:?}/build" "${WS_ROOT:?}/log" "${WS_ROOT:?}/install/bin" "${WS_ROOT:?}/install/lib")
     local what="build, log and install output directories (--all removes install/ too)"
-    if [ "${1:-}" = "--all" ]; then
-        dirs=("${WS_ROOT:?}/build" "${WS_ROOT:?}/log" "${WS_ROOT:?}/devel" "${WS_ROOT:?}/install")
-        what="ALL build output including install/ and the virtualenv (re-run mksync)"
-    fi
+    # A destructive command must not swallow an unknown argument — falling
+    # through to the default clean would delete the build output.
+    case "${1:-}" in
+        "") ;;
+        --all)
+            dirs=("${WS_ROOT:?}/build" "${WS_ROOT:?}/log" "${WS_ROOT:?}/devel" "${WS_ROOT:?}/install")
+            what="ALL build output including install/ and the virtualenv (re-run mksync)" ;;
+        -h|--help) echo "Usage: mclean [--all]   (--all also removes install/ and the venv)"; return 0 ;;
+        *) log_error "mclean: unknown option: $1"; return 2 ;;
+    esac
     rm -rf "${dirs[@]}" 2>/dev/null || true
     if [ -n "$(find "${dirs[@]}" -mindepth 1 -print -quit 2>/dev/null)" ]; then
         log_error "Some entries could not be removed (root-owned? permissions?)."

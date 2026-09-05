@@ -24,7 +24,7 @@ for arg in "$@"; do
     case "$arg" in
         --brief) BRIEF_MODE=true ;;
         -h|--help) echo "Usage: check_hardware.sh [--brief]"; exit 0 ;;
-        *) echo "Unknown option: $arg" >&2; exit 2 ;;
+        *) log_error "Unknown option: $arg"; exit 2 ;;
     esac
 done
 

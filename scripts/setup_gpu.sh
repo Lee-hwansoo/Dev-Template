@@ -306,6 +306,15 @@ case "$__gpu_req_mode" in
         ;;
 esac
 
+# Validated before anything is unset: this file is SOURCED, so a typo'd mode
+# must not leave the caller's shell stripped of its GPU variables.
+case "$__gpu_req_mode" in
+    auto|nvidia|tegra|intel|amd|igpu|cpu) ;;
+    *)  LOG_PREFIX="[GPU]" log_error "Unknown mode '${__gpu_req_mode}' (valid: auto nvidia tegra intel amd igpu cpu)."
+        # `return` when sourced (the `gpu` helper), `exit` when executed.
+        return 2 2>/dev/null || exit 2 ;;
+esac
+
 __gpu_reset
 GPU_UV_EXTRA="cpu"
 

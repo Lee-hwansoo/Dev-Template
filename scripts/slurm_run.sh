@@ -26,10 +26,9 @@ devkit_require "util_sif_common.sh"
 
 case "${1:-}" in
     -h|--help) echo "Usage: slurm_run.sh <sif-image> [command [args...]]"; exit 0 ;;
-    -*) echo "slurm_run.sh: unknown option: $1" >&2; exit 2 ;;
+    -*) LOG_PREFIX="[SLURM]" log_error "Unknown option: $1"; exit 2 ;;
 esac
-# The SIF path is required: a guessed default here silently ran the wrong
-# image when this script was submitted directly.
+# Required: a guessed default silently ran the wrong image.
 SIF_IMAGE="${1:?Usage: slurm_run.sh <sif-image> [command [args...]]}"
 shift || true
 

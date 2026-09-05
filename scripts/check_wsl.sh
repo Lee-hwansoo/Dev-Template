@@ -1,13 +1,21 @@
 #!/bin/bash
 # =============================================================================
-# scripts/check_wsl.sh
-# Diagnostic check for WSL2 host environment, networking & GPU readiness
+# scripts/check_wsl.sh — WSL2 host audit: systemd, GPU device nodes, WSLg and
+# the mirrored networking DDS multicast needs.
 # =============================================================================
 set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || { echo "  [ERROR] Cannot load config/util_paths.sh (broken checkout?)" >&2; exit 1; }  # host-only: never fall back to world-writable /tmp
 devkit_require "util_logging.sh"
 LOG_PREFIX="[WSL Check]"
+
+case "${1:-}" in
+    "") ;;
+    -h|--help)
+        echo "Usage: check_wsl.sh   (no options; audits WSL2 systemd, GPU nodes, WSLg and DDS networking)"
+        exit 0 ;;
+    *) log_error "Unknown option: $1"; exit 2 ;;
+esac
 
 # Strip colour when piped/redirected or NO_COLOR is set (see util_logging.sh).
 declare -F devkit_auto_color >/dev/null 2>&1 && devkit_auto_color

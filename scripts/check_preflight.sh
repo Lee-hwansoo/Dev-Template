@@ -20,6 +20,16 @@ source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || {
 devkit_require "util_logging.sh"
 LOG_PREFIX="[Preflight]"
 
+# check [cli-convention]: --help answers, a typo is refused. This once ran the
+# full audit and reported success for `check_preflight.sh --fix`.
+case "${1:-}" in
+    "") ;;
+    -h|--help)
+        echo "Usage: check_preflight.sh   (no options; audits host prerequisites for 'make build')"
+        exit 0 ;;
+    *) log_error "Unknown option: $1"; exit 2 ;;
+esac
+
 # Strip colour when piped/redirected or NO_COLOR is set (see util_logging.sh).
 declare -F devkit_auto_color >/dev/null 2>&1 && devkit_auto_color
 
