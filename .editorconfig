@@ -1,6 +1,7 @@
 # =============================================================================
-# .editorconfig
-# All-in-One DevKit Universal Style Configuration
+# .editorconfig — the style SSOT. ruff and clang-format read none of it, so
+# .clang-format and [tool.ruff] copy the widths; check [style-config] asserts
+# the copies never drift.
 # =============================================================================
 
 root = true

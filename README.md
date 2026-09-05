@@ -57,6 +57,9 @@ graph TD
 ### 1. ROS 2 / ROS 1 개발 환경 시작 (`ENV=ros`)
 
 ```bash
+# 0) 최초 1회: .env 생성 + X11 인증 + 탭 자동완성 등록
+make setup
+
 # 1) 도커 이미지 빌드 (GPU 자동 감지)
 make build ENV=ros
 
@@ -67,9 +70,14 @@ make start ENV=ros
 make shell ENV=ros
 ```
 
+> [!IMPORTANT]
+> `make setup`을 먼저 실행하세요. `.env`는 git 에 포함되지 않으므로 새 클론에는 없고,
+> 없으면 `make build`가 `.env file missing. Run 'make setup' first.`로 멈춥니다.
+
 ### 2. 순수 C++ / Python 개발 환경 시작 (`ENV=dev`)
 
 ```bash
+make setup   # 최초 1회
 make build ENV=dev && make start ENV=dev && make shell ENV=dev
 ```
 
@@ -106,7 +114,7 @@ git add src/uv.lock && git commit -m "chore: pin python dependencies"
 
 > DevKit 저장소 자체는 `src/uv.lock`을 배포하지 않습니다 — 템플릿이 특정 시점의 해석 결과를
 > 담으면 모든 fork가 그 스냅샷을 물려받습니다. 완전한 재현이 필요하면 `BASE_IMAGE` 다이제스트와
-> `APT_SNAPSHOT_DATE`까지 고정하세요 ([docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#-재현성-reproducibility--현재-보장-범위)).
+> `APT_SNAPSHOT_DATE`까지 고정하세요 ([docs/DEPLOY.md](docs/DEPLOY.md#-재현성-reproducibility--현재-보장-범위)).
 
 ---
 
@@ -141,7 +149,7 @@ git add src/uv.lock && git commit -m "chore: pin python dependencies"
 | **`cbuild` / `mbuild`** | **통합 빌드**: `colcon build` / `catkin_make` (ROS) 또는 Modern `cmake` (Pure C++) 실행. `--debug`/`--release`(기본 `RelWithDebInfo`), `--pkg <이름…>`, `--meta`(`config/colcon.meta` 적용) |
 | **`cw` / `cs` / `cc`** | **디렉토리 이동**: 워크스페이스 루트(`$WS_ROOT`), `src/`, `config/`로 빠르게 이동 |
 | **`gpus` / `gpu <mode>`** | **렌더링 스택 리포트**: OpenGL/GLX·EGL·Vulkan·D3D12 렌더러와 Mesa 버전, 로더 경로, 활성 환경변수 조회 / 가속 모드 전환 |
-| **`hwcheck`** | **6섹션 종합 스캔**: 시스템·네트워크·GPU·디스플레이·**신원(uid/gid)과 마운트 권한**·툴체인 (0.8초) |
+| **`hwcheck`** | **6섹션 종합 스캔**: 시스템·네트워크·GPU·디스플레이·**신원(uid/gid)과 마운트 권한**·툴체인 |
 | **`mkenv` / `activate`** | **Python venv**: `install/.venv` 가상환경 생성 또는 활성화 |
 | **`uvs` / `uvr` / `uvp`** | **Python 패키지 관리**: `uv` 기반 초고속 패키지 동기화 / 실행 / 설치 |
 | **`uvpython` / `syspython`**| **Python 인터프리터**: venv 파이썬 또는 우분투 시스템 파이썬 구분 실행 |
@@ -238,7 +246,13 @@ MAJOR 상승은 "파생 프로젝트가 무언가 고쳐야 한다"는 뜻입니
 자세한 기능 설명 및 고급 서버 배포법은 아래 전문 문서를 참조하세요:
 
 - 📘 [**개발자 워크플로우 &amp; 숏컷 상세 가이드 (docs/DEVELOPMENT.md)**](docs/DEVELOPMENT.md)
-  - `mksync` 가동 순서, `pyproject.toml` 연동, 파이썬 패키지 관리 (`uv`), SIF 생성 옵션 상세.
+  - `mksync` 가동 순서, 품질 루프(`mtest`/`mlint`), 셸 환경의 단일 정의, 템플릿 버전과 상류 갱신.
+- 📦 [**의존성 관리 (docs/DEPENDENCIES.md)**](docs/DEPENDENCIES.md)
+  - `pyproject.toml`과 `uv`, `dependencies.repos` 오버레이, `apt*.txt` 태그 필터.
+- 🚀 [**배포: SIF · 소스 보호 · 재현성 · 보안 (docs/DEPLOY.md)**](docs/DEPLOY.md)
+  - `bake-prod` 산출물 구조, 소스 비유출 옵션, 고정 가능/불가 계층과 빌드 매니페스트.
+- 🏥 [**진단 (docs/DIAGNOSTICS.md)**](docs/DIAGNOSTICS.md)
+  - `make check`/`status`, `hwcheck` 6섹션 스캔, `gpus` 렌더링 스택 리포트.
 - 🛰️ [**원격 서버 &amp; SLURM 클러스터 배포 매뉴얼 (docs/SLURM.md)**](docs/SLURM.md)
   - Apptainer SIF 빌드 및 원격 서버 스토리지 분리 구조, `sbatch` 배치 작업 제출, 실시간 로그 모니터링.
 - 🤝 [**기여 가이드 (CONTRIBUTING.md)**](CONTRIBUTING.md)

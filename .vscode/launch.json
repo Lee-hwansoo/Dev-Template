@@ -1,20 +1,11 @@
 {
     // =========================================================================
-    // .vscode/launch.json
-    // Multi-layer debugging configurations for DevKit
+    // .vscode/launch.json — C++ via GDB (launch & attach), Python via debugpy
+    // (local & remote), ROS 1/2 launch and node debugging, and compounds for
+    // multi-process sessions. ROS paths follow /opt/ros/${env:ROS_DISTRO}.
     //
-    // Supports:
-    //   - C++ node debugging via GDB (launch & attach)
-    //   - Python debugging via debugpy (local & remote attach)
-    //   - ROS 2 (Humble) and ROS 1 (Noetic) launch & node debugging
-    //   - Compound configurations for simultaneous multi-process debugging
-    //
-    // ROS version is auto-detected via the ROS_DISTRO environment variable.
-    // All paths use /opt/ros/${env:ROS_DISTRO} for seamless ROS 1/2 switching.
-    //
-    // Prerequisites:
-    //   - Build with Debug symbols: Ctrl+Shift+B → "🔨 colcon: Build (Debug)"
-    //   - For Python remote debug: pip install debugpy (inside container)
+    // Prerequisites: build with Debug symbols (Ctrl+Shift+B → "🔨 colcon:
+    // Build (Debug)"), and debugpy in the container for remote Python.
     // =========================================================================
     "version": "0.2.0",
     "inputs": [

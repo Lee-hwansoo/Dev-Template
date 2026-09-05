@@ -31,8 +31,8 @@ Environment:
 EOF
 }
 
-# An unknown flag must not be read as a directory name: `check_deps --help`
-# would otherwise fail with "Target directory '--help' does not exist".
+# An unknown flag must not become a directory name: `check_deps --help` once
+# failed with "Target directory '--help' does not exist".
 case "${1:-}" in
     -h|--help) usage; exit 0 ;;
     --*) log_error "Unknown option: $1"; usage >&2; exit 2 ;;
@@ -40,8 +40,7 @@ esac
 
 TARGET_DIR="${1:-${WS_ROOT}/install}"
 
-# A missing install tree must fail: this script gates the prod builder stages,
-# and a build that produced nothing would otherwise pass the gate silently.
+# A missing install tree must fail: this gates the prod builder stages.
 if [ ! -d "$TARGET_DIR" ]; then
     log_error "Target directory '$TARGET_DIR' does not exist."
     log_detail "Build your workspace first (e.g. 'cbuild' or 'mksync')." >&2
@@ -51,8 +50,7 @@ fi
 log_info "Scanning ELF binaries in ${TARGET_DIR}..."
 
 missing=0
-# Candidate filter (executables + shared objects, no scripts) keeps the per-file
-# `file` probe off the thousands of assets a real install tree carries.
+# Filter to executables and .so first: the `file` probe is per-file.
 while IFS= read -r -d '' binary; do
     if file "$binary" 2>/dev/null | grep -qE "ELF.*(executable|shared object)"; then
         if ldd "$binary" 2>/dev/null | grep -q "not found"; then
@@ -97,20 +95,15 @@ if [ -n "${ROS_DISTRO:-}" ]; then
 fi
 
 # =============================================================================
-# Source exposure
-# -----------------------------------------------------------------------------
-# Production images copy install/ and never src/ — but that is not the same as
-# "no source ships": colcon copies ament_python modules verbatim into
-# install/<pkg>/lib/pythonX.Y/site-packages/, so a Python node's source is
-# shipped in plaintext unless it is removed here.
+# Source exposure. A prod image copies install/ and never src/, but colcon
+# copies ament_python modules verbatim into install/ — so Python source ships
+# in plaintext unless removed here.
 #
-# NOTE: byte-compilation is OBFUSCATION, NOT ENCRYPTION — .pyc is decompilable.
-# It prevents casual reading and accidental disclosure, nothing more. For real
-# protection, compile to native code (C++ nodes, or Nuitka/Cython).
+# Byte-compilation is OBFUSCATION, NOT ENCRYPTION: .pyc decompiles. For real
+# protection compile to native code (C++, Nuitka/Cython).
 # =============================================================================
-# .venv holds third-party packages, not project source: excluded throughout.
-# Launch files are read AS SOURCE by the ROS 2 launch system and cannot be
-# byte-compiled without breaking `ros2 launch`, so they are reported separately.
+# .venv is third-party, not project source. Launch files are read AS SOURCE by
+# ros2 launch and cannot be compiled, so they are counted separately.
 project_py() {
     find "$TARGET_DIR" -path "*/.venv" -prune -o -type f -name '*.py' \
         ! -path "*/launch/*" -print 2>/dev/null || true

@@ -83,7 +83,7 @@ PROD_FULL_CUDA=1 make bake-prod ENV=ros
 > **기본적으로 실패 시 즉시 중단**됩니다 — 의존성이 누락된 이미지가 원격 클러스터에 배포되는 것을 막기 위함입니다.
 > 오프라인·사설 레포 등으로 의도적으로 일부만 받고 진행해야 한다면 `DEVKIT_VCS_ALLOW_FAILURE=1`(서드파티 vcs) 또는
 > `DEVKIT_ROSDEP_ALLOW_FAILURE=1`(rosdep)로 **fail-open**을 명시적으로 켜세요. 단, 이 경우 의존성이 빠진 SIF가
-> 생성될 수 있으니 주의하세요. (상세: [`docs/DEVELOPMENT.md`](DEVELOPMENT.md))
+> 생성될 수 있으니 주의하세요. (상세: [`docs/DEPENDENCIES.md`](DEPENDENCIES.md))
 
 ---
 

@@ -1,16 +1,15 @@
 {
     // =========================================================================
-    // .vscode/c_cpp_properties.json
-    // C++ IntelliSense configurations for DevKit
+    // .vscode/c_cpp_properties.json — IntelliSense profiles. Pick one in the
+    // status bar:
+    //   "Docker (Container)"  editing inside the container (Dev Containers)
+    //   "Host (macOS)"        editing on macOS against the bind mount
+    //   "Host (Linux/WSL)"    editing on Linux/WSL against the bind mount
     //
-    // Two configurations are provided:
-    //   1. "Docker (Container)" - When working inside the container via Dev Containers
-    //   2. "Host (Bind Mount)"  - When build/ is bind-mounted to the host
-    //
-    // ROS include paths use ${env:ROS_DISTRO} for automatic ROS 1/2 switching.
-    //
-    // Note: For full IntelliSense, set ROS_BUILD_VOL=./build in .env
-    //       so compile_commands.json is accessible from the host.
+    // Paths are ${workspaceFolder}-relative: ${env:WS_*} resolves to nothing in
+    // the IDE process (check [vscode-json]). ${env:ROS_DISTRO} and
+    // ${env:CMAKE_*_STANDARD} come from compose, so only the container profile
+    // reads them. Host IntelliSense also needs ROS_BUILD_VOL=./build in .env.
     // =========================================================================
     "version": 4,
     "configurations": [

@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
-# scripts/setup_ros_gpg.sh
-# Utility to verify and update ROS GPG repository fingerprints.
+# scripts/setup_ros_gpg.sh — verify, and on request update, the ROS repository
+# GPG fingerprint pinned in scripts/util_apt_helper.sh (`make update-gpg`).
 # =============================================================================
 
 set -eo pipefail

@@ -1,17 +1,9 @@
 #!/bin/bash
 # =============================================================================
-# scripts/setup_sync_deps.sh
-# Synchronize third-party repos via vcs (.repos) and apply overlay files.
-# Usage: setup_sync_deps.sh [--force] [--rosdep]
-#
-# Options:
-#   --force    Reset imported third-party repositories before updating.
-#   --rosdep   Run rosdep install after source synchronization.
-#
-# Environment:
-#   SYNC_TARGET_DIR                Where sources land (default: src/thirdparty).
-#   DEVKIT_VCS_ALLOW_FAILURE=1     Warn instead of failing on vcs errors.
-#   DEVKIT_ROSDEP_ALLOW_FAILURE=1  Warn instead of failing on rosdep errors.
+# scripts/setup_sync_deps.sh — import the third-party sources named in
+# dependencies/dependencies.repos, apply the overlay files, and optionally run
+# rosdep. `setup_sync_deps.sh --help` carries the flags; the knobs are
+# SYNC_TARGET_DIR and the DEVKIT_*_ALLOW_FAILURE pair (see .env.example).
 # =============================================================================
 set -euo pipefail
 

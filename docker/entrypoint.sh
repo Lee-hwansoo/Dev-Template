@@ -1,7 +1,8 @@
 #!/bin/bash
 # =============================================================================
-# docker/entrypoint.sh
-# DevKit Container Runtime Entrypoint
+# docker/entrypoint.sh — the development container's PID 1: resolve the display,
+# GPU, ROS and venv environment, publish it to every shell flavour, then exec.
+# `/entrypoint.sh --env <cmd>` reuses that environment without the setup.
 # =============================================================================
 set -eE
 
@@ -17,14 +18,9 @@ WS_ROOT="${WORKSPACE_PATH:-/workspace}"
 
 # =============================================================================
 # Exec-wrapper mode:  /entrypoint.sh --env <command> [args...]
-# -----------------------------------------------------------------------------
-# Shell rc hooks (BASH_ENV, /etc/bash.bashrc, profile.d) only reach *bash*.
-# A `docker exec` of a bare binary, a `sh -c`, a compose `command:` or a k8s
-# probe never touches them and would run without the DevKit environment.
-#
-# This mode loads the environment the boot sequence already resolved and execs
-# the target directly, so ANY process — not just bash — inherits it. It performs
-# no setup (no chown, no GPU probing): the container is already running.
+# Shell rc hooks only reach *bash*, so a bare binary, `sh -c`, a compose
+# `command:` or a k8s probe would run without the DevKit environment. This mode
+# loads what the boot sequence resolved and execs the target — no setup.
 # =============================================================================
 if [ "${1:-}" = "--env" ]; then
     shift
@@ -42,11 +38,9 @@ fi
 source "${WS_ROOT}/config/util_paths.sh"  2>/dev/null || true
 source "${WS_ROOT}/scripts/util_logging.sh" 2>/dev/null || true
 
-# Persist boot logs for post-mortem debugging: `docker logs` dies with the
-# container, the file survives in the log/ volume. The LOG_FILE knob still wins.
-# Not exported: this is the ENTRYPOINT's log — user shells and tools must not
-# inherit it and interleave their output into it.
-# Truncate past 1 MB — the file accretes across every container start.
+# Boot log for post-mortems: `docker logs` dies with the container, this file
+# survives in the log/ volume. Not exported — user shells must not interleave
+# into it. Truncated past 1 MB, since it accretes across every start.
 LOG_FILE="${LOG_FILE:-log/entrypoint.log}"
 # Boot lines land in `docker logs` beside the application's own output, so they
 # say who is speaking. Not exported: a user shell must not inherit the tag.
@@ -68,7 +62,7 @@ declare -F log_error >/dev/null 2>&1 || log_error() { echo "  [ERROR] $*" >&2; }
 
 trap 'ec=$?; log_error "Entrypoint aborted (exit ${ec}) at line ${LINENO}: ${BASH_COMMAND}"' ERR
 
-# source_runtime_file: source without aborting on unbound vars or non-zero returns
+# Source without aborting on unbound vars or a non-zero return
 source_runtime_file() {
     local file="$1"; shift
     [ -f "$file" ] || return 0
@@ -83,8 +77,8 @@ source_runtime_file() {
     return "$_rc"
 }
 
-# sync_owner_if_root: chown path to CONTAINER_USER when running as root.
-# Fast-path: skip if target already owns the entry (avoids slow recursive chown on re-runs).
+# chown to CONTAINER_USER when running as root; skipped when already owned
+# (a recursive chown on every restart is slow).
 sync_owner_if_root() {
     local path="$1"
     [ "$(id -u)" = "0" ] || return 0
@@ -98,14 +92,10 @@ sync_owner_if_root() {
         || log_warn "Could not synchronize ownership: $path"
 }
 
-# bridge_profile_d: make /etc/profile.d/devkit-*.sh reach every shell flavour.
-# Bash consults a different file per invocation mode, and none of them overlap:
-#   login            → /etc/profile → /etc/profile.d/*      (already covered)
-#   interactive      → /etc/bash.bashrc                     (appended below)
-#   non-interactive  → $BASH_ENV                            (file written below)
-# The image points BASH_ENV at this generated file rather than ~/.bashrc,
-# because Ubuntu's stock ~/.bashrc returns early when not interactive, which
-# silently discards everything appended after it (init_bash.sh included).
+# bridge_profile_d: reach every shell flavour — login (/etc/profile.d/*),
+# interactive (/etc/bash.bashrc), non-interactive ($BASH_ENV). BASH_ENV points
+# here and not at ~/.bashrc, which returns early when not interactive and would
+# discard everything appended after it.
 DEVKIT_SHELL_ENV="/etc/devkit/shell-env.sh"
 bridge_profile_d() {
     # One definition for every shell flavour: the entrypoint-resolved values in
@@ -189,9 +179,8 @@ unset _var
 # =============================================================================
 # [1] Cache Directories & Ownership
 # =============================================================================
-# log/ is a named volume too: Docker creates it root:root on first use and the
-# first colcon build as CONTAINER_USER would fail. devel/ (ROS 1) is a plain
-# workspace dir catkin creates; covered here for the same ownership reason.
+# Docker creates a named volume root:root on first use, so the first build as
+# CONTAINER_USER would fail. devel/ (ROS 1) is here for the same reason.
 mkdir -p /cache/ccache /cache/uv "${WS_ROOT}/build" "${WS_ROOT}/install" "${WS_ROOT}/log" 2>/dev/null || true
 for _dir in /cache/ccache /cache/uv "${WS_ROOT}/build" "${WS_ROOT}/install" "${WS_ROOT}/log" "${WS_ROOT}/devel"; do
     sync_owner_if_root "$_dir"
@@ -234,8 +223,8 @@ fi
 # =============================================================================
 # [4] ROS & Workspace Environment Sourcing
 # =============================================================================
-# source_runtime_file returns 0 for a missing file, so gate the success log on
-# actual existence — a non-ROS image must not claim "ROS sourced".
+# source_runtime_file returns 0 for a missing file: gate the log on existence,
+# or a non-ROS image claims "ROS sourced".
 ROS_SETUP="/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
 if [ -f "$ROS_SETUP" ]; then
     source_runtime_file "$ROS_SETUP" && log_ok "ROS ${ROS_DISTRO:-humble} sourced"
@@ -245,12 +234,10 @@ if [ -f "${WS_ROOT}/install/setup.bash" ]; then
 fi
 source_runtime_file "${WS_ROOT}/config/init_ros_env.sh" 2>/dev/null || true
 
-# Persist the ROS/DDS settings resolved above. init_ros_env.sh is only reached
-# through ~/.bashrc, i.e. interactive shells — without this, a `docker exec`
-# script or CI job runs with no CYCLONEDDS_URI and silently uses a different
-# DDS configuration than the interactive session it was tested in.
-# Only when ROS is actually installed: ROS_DISTRO is passed to every service
-# by compose, so its presence alone does not mean this image has ROS.
+# Persist the resolved ROS/DDS settings: init_ros_env.sh only runs in
+# interactive shells, so a `docker exec` job would silently use a different DDS
+# configuration. Gated on ROS being installed — compose sets ROS_DISTRO
+# everywhere, so its presence proves nothing.
 if [ -w /etc/profile.d ] && [ -d "/opt/ros/${ROS_DISTRO:-}" ]; then
     {
         echo "# Generated by docker/entrypoint.sh — do not edit"
@@ -267,11 +254,8 @@ source_runtime_file "${WS_VENV:-${WS_ROOT}/install/.venv}/bin/activate" 2>/dev/n
 
 # =============================================================================
 # [5] rosdep cache seeding
-# -----------------------------------------------------------------------------
-# The image builds the rosdep sources cache as root and stages it at
-# /opt/ros_cache. Without this seeding step every non-root shell hits
-# "your rosdep installation has not been initialized yet" and `mksync` fails —
-# which is the default path now that shells run as CONTAINER_USER.
+# The image stages the root-built cache at /opt/ros_cache; without seeding it
+# every non-root shell hits "rosdep has not been initialized" and mksync fails.
 # =============================================================================
 seed_rosdep_cache() {
     [ -d /opt/ros_cache ] || return 0

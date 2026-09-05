@@ -1,6 +1,6 @@
 # =============================================================================
-# .dockerignore
-# Exclude files and directories from the Docker build context
+# .dockerignore — what never enters the build context. The prod builders COPY
+# src/, dependencies/, config/, scripts/ and VERSION; everything else is noise.
 # =============================================================================
 
 # AI
@@ -17,7 +17,6 @@ build/
 install/
 log/
 logs/
--logs/
 .ccache/
 .docker_cache/
 *.sif
@@ -77,5 +76,5 @@ _build/
 *.patch
 .history/
 
-# Documentation
-# *.md (Commented out to allow README.md access during build)
+# Markdown is NOT excluded: `make bake-dev` copies the whole tree into the
+# snapshot image, and a workspace without its README is a worse artifact.

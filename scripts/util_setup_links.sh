@@ -66,7 +66,7 @@ safe_link() {
     rm -f "$dest"
     ln -sf "$src" "$dest"
 
-    if [[ "$VERBOSE" == true && -n "$LOG_PREFIX" ]]; then
+    if [ "$VERBOSE" = true ]; then
         log_ok "$desc synchronized."
     fi
 }
@@ -74,14 +74,13 @@ safe_link() {
 # 1. colcon.meta (Build Optimization Configuration)
 safe_link "$COLCON_META_SRC" "${WS_ROOT}/colcon.meta" "Colcon configuration"
 
-
 # 2. .venv (IDE Integration)
 safe_link "$VENV_DIR_SRC" "${WS_ROOT}/.venv" "Virtual environment"
 
 # 3. compile_commands.json (C++ IntelliSense)
 # If we have multiple package-specific build directories (e.g. ROS colcon), merge them into a single compile_commands.json
 if [ "$SYNC_COMPILE_COMMANDS" = true ] && [ -d "${WS_ROOT}/build" ]; then
-    if [ "$VERBOSE" == true ]; then
+    if [ "$VERBOSE" = true ]; then
         log_info "Aggregating compile_commands.json from all sub-packages..."
     fi
     if ! BUILD_DIR="${WS_ROOT}/build" python3 -c "

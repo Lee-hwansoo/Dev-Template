@@ -1,11 +1,6 @@
 # =============================================================================
-# config/terminator_config
-# Optimized layout and keybinding configuration for Terminator
-#
-# Features:
-#   - 2x2 Grid Layout (Main, Monitoring, Logs x2)
-#   - Intuitive Alt-based window management and broadcasting
-#   - D2Coding font support for enhanced legibility
+# config/terminator_config — 2x2 grid (main, monitoring, two log panes) with
+# Alt-based split/broadcast keys and the D2Coding font. Used by `make term`.
 # =============================================================================
 
 [global_config]

@@ -1,16 +1,10 @@
 #!/bin/bash
 # =============================================================================
-# scripts/verify_repo.sh
-# Fast repository validation for DevKit.
-#
-# Every check below asserts a CONTRACT that a past regression actually broke —
-# not the mere presence of a string. Checks are ordered cheap-first and the
-# whole suite is expected to finish in about a second offline (measured: ~1.1 s,
-# dominated by the per-script process spawns in [cli-convention]).
-#
-# Checks are identified by a STABLE SLUG ([env-bridge], [provided-api], …), not
-# by position: docs and code comments cite them, and renumbering on every insert
-# is how those references went stale before.
+# scripts/verify_repo.sh — every check asserts a CONTRACT a past regression
+# actually broke, not the presence of a string. Cheap-first and offline.
+# Checks carry a STABLE SLUG ([env-bridge], …) because docs cite them.
+# Every grep here is anchored to CODE ('^[^#]*' or an explicit --exclude): an
+# unanchored one is satisfied by the comment that explains it.
 # =============================================================================
 set -euo pipefail
 
@@ -51,11 +45,14 @@ for f in \
     Makefile docker-compose.common.yml docker-compose.dev.yml \
     docker/Dockerfile docker/entrypoint.sh docker/prod_entrypoint.sh \
     config/util_aliases.sh config/util_paths.sh config/devkit_make_completion.bash \
+    config/cyclonedds.xml config/colcon.meta \
     scripts/check_env.sh scripts/setup_gpu.sh scripts/util_apt_helper.sh \
     scripts/apptainer_bake.sh scripts/apptainer_run.sh scripts/slurm_run.sh \
     scripts/util_sif_common.sh scripts/util_logging.sh \
     dependencies/apt.txt dependencies/apt_ros.txt \
-    src/example/starter_node.cpp src/example/starter_node.py
+    VERSION .clang-format \
+    docs/DEVELOPMENT.md docs/DEPENDENCIES.md docs/DEPLOY.md docs/DIAGNOSTICS.md \
+    src/example/starter_node.cpp src/example/starter_node.py src/example/test_starter_node.py
 do
     [ -f "$f" ] || log_err "Missing required file: $f"
 done
@@ -65,6 +62,25 @@ for f in docker/entrypoint.sh docker/prod_entrypoint.sh \
           scripts/slurm_run.sh scripts/verify_repo.sh; do
     [ -f "$f" ] && [ ! -x "$f" ] && log_err "Missing executable permission: $f"
 done
+
+# A UTF-8 BOM is invisible, and GNU grep silently ignores a leading one — so it
+# breaks '^#' matching, hides a shebang from the kernel and makes an
+# intentionally empty placeholder non-empty, with nothing to see in a diff.
+bom_files="$(python3 - <<'PYBOM'
+import os
+bad = []
+for root, dirs, files in os.walk('.'):
+    dirs[:] = [d for d in dirs if not d.startswith('.')
+               and d not in ('build', 'install', 'log', 'logs', 'thirdparty')]
+    for f in files:
+        p = os.path.join(root, f)
+        with open(p, 'rb') as fh:
+            if fh.read(3) == b'\xef\xbb\xbf':
+                bad.append(p[2:])
+print(' '.join(sorted(bad)))
+PYBOM
+)"
+[ -z "$bom_files" ] || log_err "file(s) start with a UTF-8 BOM: ${bom_files}"
 
 [ "$FAILED" -eq 0 ] && log_ok "All required repository files and permissions present."
 
@@ -109,8 +125,8 @@ rm -rf "$wf_probe"
 # =============================================================================
 # [phony-targets] Makefile dry-run: every .PHONY target must be resolvable
 # =============================================================================
-# The awk below assumes a single-line .PHONY; a wrapped declaration would make
-# this AND check [tab-completion] under-count together and still "pass" — refuse the wrap.
+# A wrapped .PHONY would make this and check [tab-completion] under-count
+# together and still pass, so refuse the wrap.
 grep -q '^\.PHONY:.*\\$' Makefile \
     && log_err ".PHONY uses a line continuation — the parsers here and in tab completion assume one line."
 phony_targets="$(awk '/^\.PHONY:/ { sub(/^\.PHONY:[[:space:]]*/, ""); print }' Makefile)"
@@ -138,12 +154,10 @@ else
 fi
 
 # =============================================================================
-# [host-detect-contract] Host detection contract: check_env.sh must emit every HOST_*/WSL_* key
-#     that docker-compose consumes, otherwise mounts silently fall back to
-#     placeholder defaults (lost GPU/X11/Wayland/ssh-agent passthrough).
+# [host-detect-contract] check_env.sh must emit every HOST_*/WSL_* key compose
+#     consumes, or a mount degrades to its placeholder (no GPU/X11/ssh-agent).
 # =============================================================================
-# `|| true`: a broken check_env.sh must surface as THIS check failing, not as
-# the whole suite aborting under set -e with no output.
+# `|| true`: a broken detector must fail THIS check, not abort the suite.
 emitted="$(bash scripts/check_env.sh --makefile 2>/dev/null | awk -F' :=' '{print $1}' || true)"
 # Anti-vacuous: an empty emit list means the detector broke, not "nothing to check".
 [ "$(wc -w <<< "$emitted")" -ge 20 ] \
@@ -160,6 +174,8 @@ fi
 
 # =============================================================================
 # [compose-env-split] One template per acceleration profile; the ROS/dev split
+#     lives in the dev file alone. So every service must merge an ENV anchor,
+#     and both anchors must carry a healthcheck.
 # =============================================================================
 compose_errors=0
 [ "$(grep -cE '^  healthcheck: \*(dev|ros)-healthcheck$' docker-compose.dev.yml)" -eq 2 ] \
@@ -252,9 +268,8 @@ else
 fi
 
 # =============================================================================
-# [detector-cache] Detector cache safety: the write must be atomic and a failed probe fatal.
-#     A partial cache would be reused forever (wildcard guard) and every host
-#     mount would silently degrade to its placeholder default.
+# [detector-cache] The cache write must be atomic and a failed probe fatal: a
+#     partial cache is reused forever and every mount degrades silently.
 # =============================================================================
 if grep -q 'mktemp "$(DETECTED_ENV_FILE)' Makefile && grep -q 'DETECT_STATUS),fail' Makefile; then
     log_ok "Host detection cache is written atomically and fails the build on error."
@@ -263,14 +278,11 @@ else
 fi
 
 # =============================================================================
-# [advertised-shortcuts] Advertised vs. defined commands: every shortcut named in the in-container
-#      help or the MOTD must actually resolve in an interactive shell.
+# [advertised-shortcuts] Every shortcut the help screen or MOTD names must
+#      resolve in an interactive shell.
 # =============================================================================
-# Extract only the NAME column of the help/MOTD tables, not every quoted string
-# in the file (a literal like "prod" in unrelated code is not a shortcut).
-# Extracted per source so one collapsing (e.g. the help printf column width
-# changes and the sed stops matching) is caught instead of silently shrinking
-# the checked set to whatever the other source still yields.
+# The NAME column only, and per source: if one extraction collapses, the
+# other must not quietly cover for it.
 adv_names() { tr '/' '\n' | sed 's/\[.*//; s/<.*//' | tr -d ' ' | grep -E '^[a-z_][a-z_0-9]*$'; }
 adv_help="$(sed -n 's/.*%-20s.*\\n" *"\([^"]*\)".*/\1/p' config/util_aliases.sh | adv_names || true)"
 adv_motd="$(sed -n 's/^ *"\([a-z_0-9 /]*\)|.*/\1/p' scripts/show_welcome.sh | adv_names || true)"
@@ -346,12 +358,11 @@ child_fns="$(__DEVKIT_ENV_READY="$ROOT_DIR" WORKSPACE_PATH="$ROOT_DIR" bash -c \
 [ "$bridge_errors" -eq 0 ] && log_ok "Runtime env reaches login, interactive and non-interactive shells; rosdep cache seeded."
 
 # =============================================================================
-# [gpg-anchor] GPG trust anchor: the pinned fingerprint must exist and stay in sync with
-#      the updater that maintains it (`make update-gpg`).
+# [gpg-anchor] The pinned fingerprint must exist and stay in sync with the
+#      updater that maintains it (`make update-gpg`).
 # =============================================================================
-# `gpg --dearmor -o FILE` prompts "Overwrite?" on /dev/tty when FILE exists —
-# and mktemp pre-creates it, while `docker build` has no tty. Every dearmor call
-# must therefore carry --yes. This silently broke every ROS 1 image build.
+# Every dearmor needs --yes: it prompts on a /dev/tty `docker build` lacks,
+# which silently broke every ROS 1 image build.
 tty_bound="$(grep -nE '^[^#]*gpg([^|#]*)--dearmor' scripts/*.sh config/*.sh 2>/dev/null \
     | grep -v 'verify_repo.sh' | grep -v -- '--yes' || true)"
 if [ -n "$tty_bound" ]; then
@@ -368,9 +379,8 @@ else
 fi
 
 # =============================================================================
-# [knob-consumers] Documented knobs need a live consumer, not just a definition. A logging
-#       helper with no in-tree caller still implements DEBUG_MODE — deleting it
-#       as "dead code" silently removes the documented feature.
+# [knob-consumers] A documented knob needs a live consumer: log_debug with no
+#       in-tree caller still implements DEBUG_MODE.
 # =============================================================================
 knob_consumer_errors=0
 if grep -q '^DEBUG_MODE=' .env.example; then
@@ -386,19 +396,15 @@ fi
 [ "$knob_consumer_errors" -eq 0 ] && log_ok "Documented knobs still have a working consumer (DEBUG_MODE → log_debug)."
 
 # =============================================================================
-# [env-reaches-detector] .env must actually reach the detector. make's `export` does not apply to
-#       $(shell ...), so check_env.sh reads .env itself; and the cache it feeds
-#       is included after .env, so it has to be invalidated when .env changes.
-#       Get either wrong and `ROS_DISTRO=noetic` silently builds a humble image.
+# [env-reaches-detector] make's `export` does not reach $(shell …), so the
+#       detector reads .env itself and its cache must expire when .env changes.
+#       Get either wrong and ROS_DISTRO=noetic builds a humble image.
 # =============================================================================
 probe_env="$(mktemp "${TMPDIR:-/tmp}/devkit-env.XXXXXX")"
 printf 'ROS_DISTRO=noetic\n' > "$probe_env"
-# Capture first: `grep -q` exits on the first match, and the SIGPIPE that kills
-# check_env.sh would fail the pipeline under `set -o pipefail`.
-# Unset first: an explicit environment variable outranks .env by design, and
-# `make verify` exports ROS_DISTRO into the recipe — without this the probe tests
-# make's export instead of the .env reader, and `make verify` fails while a bare
-# `bash scripts/verify_repo.sh` passes.
+# Capture first: `grep -q` exits early and the SIGPIPE fails pipefail.
+# Unset first: `make verify` exports ROS_DISTRO into the recipe, so the probe
+# would test make's export instead of the .env reader.
 probe_out="$( unset ROS_DISTRO BASE_IMAGE
     DEVKIT_ENV_FILE="$probe_env" bash scripts/check_env.sh --makefile 2>/dev/null || true )"
 if grep -qx 'ROS_DISTRO := noetic' <<< "$probe_out"; then
@@ -411,11 +417,9 @@ grep -q '\.env -nt "\$(DETECTED_ENV_FILE)"' Makefile \
     || log_err "the detection cache must be regenerated when .env is newer; it is included after .env and would override it."
 
 # =============================================================================
-# [provided-api] util_logging.sh is PROVIDED API, not application code. DevKit is a base
-#       kit, so a verb with no in-tree caller still ships as a feature — the
-#       rule check [knob-consumers] states for DEBUG_MODE, applied to the whole surface.
-#       Probed by CALLING it: a rename, a syntax slip or a "dead code" sweep
-#       fails here instead of silently shrinking what projects can rely on.
+# [provided-api] util_logging.sh is provided API: a verb with no in-tree caller
+#       still ships as a feature. Probed by CALLING it, so a rename, a syntax
+#       slip or a "dead code" sweep fails here.
 # =============================================================================
 api_errors=0
 for fn in log_info log_ok log_warn log_error log_debug log_detail log_step_done \
@@ -541,9 +545,8 @@ done
     || log_err "shared libraries missing from the docs/DEVELOPMENT.md SSOT table:${undocumented_libs}"
 
 # =============================================================================
-# [clean-semantics] `make clean` must not destroy the virtualenv. install/ holds both build
-#       output and install/.venv, which costs a full `mksync` to rebuild; the
-#       in-container `mclean` already preserves it, so the host target must too.
+# [clean-semantics] `make clean` must not destroy install/.venv — it costs a
+#       full mksync to rebuild, and mclean already preserves it.
 # =============================================================================
 { grep -q "rm -rf build devel log" Makefile \
   && grep -qF "find install -mindepth 1 -maxdepth 1 ! -name '.venv'" Makefile; } \
@@ -579,12 +582,11 @@ for attach_target in shell exec term stats logs top; do
 done
 
 # =============================================================================
-# [knob-implementations] Documented knobs must have an implementation (no advertised dead switches)
+# [knob-implementations] No advertised dead switches: every documented knob has
+#      an implementation.
 # =============================================================================
-# One corpus, one pass: 20 recursive greps cost ~75 ms for no extra signal.
-# Implementation files only: the tab completion ADVERTISES knobs (a KEY=VALUE
-# candidate list) and would vouch for one nobody implements, and this script
-# names every knob it checks.
+# One corpus, one pass (20 recursive greps cost ~75 ms). Implementation files
+# only: the completion list advertises knobs and would vouch for itself.
 knob_corpus="$(cat Makefile $(find scripts config -type f \( -name '*.sh' -o -name '*.bash' \) \
     ! -name 'verify_repo.sh' ! -name 'devkit_make_completion.bash') 2>/dev/null || true)"
 dead_knobs=()
@@ -608,9 +610,8 @@ else
 fi
 
 # =============================================================================
-# [render-probes] Rendering-stack probes must be timeout-guarded and emit key=value pairs.
-#      An unguarded glxinfo/eglinfo against an unreachable DISPLAY hangs hwcheck
-#      forever; a changed output shape silently blanks every diagnostic.
+# [render-probes] The probes must stay timeout-guarded and key=value: an
+#      unreachable DISPLAY hangs hwcheck forever, a shape change blanks it.
 # =============================================================================
 probe_errors=0
 for fn in probe_gl probe_egl probe_vulkan probe_gl_libs; do
@@ -717,15 +718,17 @@ alias_msg="$(bash --norc -c "WORKSPACE_PATH='${ROOT_DIR}' source config/util_ali
 { grep -q '\[ERROR\]' <<< "$alias_msg" && grep -q '→' <<< "$alias_msg" \
   && ! grep -q $'\033' <<< "$alias_msg"; } \
     || { log_err "config/util_aliases.sh prints raw escapes (or nothing) on failure — use log_error/log_warn/log_detail."; color_errors=1; }
+# The help screen runs in the user's shell, so it cannot call devkit_auto_color
+# and must drop colour itself (`h | tee log`). The function, not the alias: an
+# alias defined in the same command string does not expand at parse time.
 help_piped="$(bash --norc -c "WORKSPACE_PATH='${ROOT_DIR}' source config/util_aliases.sh >/dev/null 2>&1; __print_container_help" 2>/dev/null || true)"
 { [ -n "$help_piped" ] && ! grep -q $'\033' <<< "$help_piped"; } \
     || { log_err "in-container 'h' emits ANSI escapes into a pipe (or printed nothing) — it must drop colour off-TTY."; color_errors=1; }
 [ "$color_errors" -eq 0 ] && log_ok "Colour output is TTY/NO_COLOR aware (scripts, Makefile and in-container help)."
 
 # =============================================================================
-# [reproducibility] Reproducibility inputs: the knobs that actually pin a build must exist.
-#      This asserts the mechanism is wired, not that a given build is pinned —
-#      docs/DEVELOPMENT.md lists what the user still has to pin themselves.
+# [reproducibility] The pinning mechanism must be wired. What a given build
+#      still has to pin itself is listed in docs/DEVELOPMENT.md.
 # =============================================================================
 repro_errors=0
 grep -q 'snapshot.ubuntu.com' scripts/util_apt_helper.sh || { log_err "APT snapshot pinning (APT_SNAPSHOT_DATE) is not implemented."; repro_errors=1; }
@@ -867,6 +870,12 @@ if grep -rqE '\$\{[A-Za-z_][A-Za-z0-9_]*:-' .vscode .devcontainer 2>/dev/null; t
     grep -rE '\$\{[A-Za-z_][A-Za-z0-9_]*:-' .vscode .devcontainer 2>/dev/null | sed 's/^/    /' >&2
     vscode_errors=1
 fi
+# ${env:WS_*} resolves to NOTHING in the IDE: util_paths.sh exports those into a
+# *sourced shell*, which the VS Code server process is not — so every such
+# reference became a path rooted at "/" ("/compile_commands.json", "/bin/python",
+# a sourceFileMap key of "/src"). ${workspaceFolder} is always defined; only the
+# REMOTE→local mappings use ${env:WORKSPACE_PATH}, which compose exports.
+# JSONC comment lines are excluded — the note above is written in one.
 stray_ide_env="$(grep -rn '\${env:WS_' .vscode .devcontainer 2>/dev/null | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
 [ -z "$stray_ide_env" ] \
     || { log_err "IDE config reads \${env:WS_*}, which is never set in the IDE process: $(cut -d: -f1,2 <<< "$stray_ide_env" | tr '\n' ' ')"; vscode_errors=1; }
@@ -1010,6 +1019,8 @@ PYINDEX
 
 # =============================================================================
 # [style-config] One declared style. Neither ruff nor clang-format reads
+#      .editorconfig, so format-on-save wrapped Python at 88 and C++ at 80
+#      against the rulers in the same window. Assert the three agree.
 # =============================================================================
 style_errors=0
 ec_section_value() {   # ec_section_value <section-prefix> <key>
@@ -1053,18 +1064,18 @@ else
 fi
 
 # =============================================================================
-# [sif-contract] SIF pipeline contract: build args forwarded, inputs rejected loudly
+# [sif-contract] SIF pipeline: build args forwarded, inputs rejected loudly.
 # =============================================================================
-# These pin the exact failure modes of the streamline refactor: bake dropping
-# CUDA_VERSION (SIF silently ships without CUDA), bake swallowing typo'd flags,
-# and the CUDA apt repo helper degrading to a no-op stub.
-# '^[^#]*' anchors each grep to CODE — a mutation test showed the plain form
-# was satisfied by its own explanatory comment after the code was deleted.
+# Pins real failures: bake dropping CUDA_VERSION, bake swallowing a typo'd flag,
+# the CUDA repo helper degrading to a stub.
 sif_errors=0
 grep -Eq '^[^#]*CUDA_VERSION' scripts/apptainer_bake.sh \
     || { log_err "apptainer_bake.sh no longer forwards CUDA_VERSION — baked SIFs would silently ship without CUDA."; sif_errors=1; }
 grep -Eq '^[^#]*sources\.list\.d/cuda\.list' scripts/util_apt_helper.sh \
     || { log_err "util_apt_helper.sh setup-cuda-repo no longer configures the NVIDIA repository."; sif_errors=1; }
+# The managed interpreter must sit where ANY uid can traverse: a baked venv
+# symlinks into it and Apptainer runs as the invoking user. Under /root (0700)
+# PATH fell through to /usr/bin/python3 and the venv's packages vanished.
 uv_python_dir="$(grep -oE '^ENV UV_PYTHON_INSTALL_DIR=[^[:space:]]+' docker/Dockerfile | head -1 | cut -d= -f2)"
 case "${uv_python_dir:-}" in
     "")       log_err "docker/Dockerfile does not set UV_PYTHON_INSTALL_DIR; uv installs into the calling user's home, which no other uid can read."; sif_errors=1 ;;
@@ -1121,9 +1132,10 @@ awk '/^FROM .* AS base$/,/^FROM [^ ]* AS build-core$/' docker/Dockerfile | grep 
     || { log_err "config/util_paths.sh trusts WORKSPACE_PATH even when it is not a DevKit tree here — host scripts resolve /workspace/..."; sif_errors=1; }
 grep -qE '^WS_ROOT="\$\{WORKSPACE_PATH' scripts/apptainer_bake.sh scripts/apptainer_run.sh \
     && { log_err "apptainer_*.sh derive the repo root from WORKSPACE_PATH (the container path) but run on the host."; sif_errors=1; }
-# `apptainer exec` does not run the image ENTRYPOINT, so both run paths must
-# route the command through /entrypoint.sh or the job starts with no ROS/venv
-# environment at all — verified against a real SIF, where `import rclpy` failed.
+# `apptainer exec` skips the image ENTRYPOINT, so both run paths must route
+# through it or the job starts with no ROS/venv (`import rclpy` failed).
+# By EXECUTION against a stub runtime: the prefix differs per image, and a
+# grep cannot tell whether that distinction survived.
 sif_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
 cat > "${sif_probe}/rt" <<'STUB'
 #!/bin/sh
@@ -1170,10 +1182,8 @@ grep -q 'SIF artifact not found' <<< "$sif_root_probe" \
 [ "$sif_errors" -eq 0 ] && log_ok "SIF pipeline contract: build args forwarded, bad inputs rejected, CUDA repo wired."
 
 # =============================================================================
-# [security-defaults] Security defaults: fail-closed GPG, unprivileged containers, TLS snapshot
+# [security-defaults] Fail-closed GPG, unprivileged containers, TLS snapshot.
 # =============================================================================
-# All greps anchored to code ('^[^#]*') — unanchored ones are satisfied by
-# comments mentioning the old value (proven by mutation testing).
 sec_errors=0
 grep -Eq '^[^#]*STRICT_GPG_CHECK: \$\{STRICT_GPG_CHECK:-true\}' docker-compose.common.yml \
     || { log_err "STRICT_GPG_CHECK compose default regressed to fail-open."; sec_errors=1; }
@@ -1246,11 +1256,10 @@ fi
 [ "$sec_errors" -eq 0 ] && log_ok "Security defaults: fail-closed GPG pins, unprivileged containers, TLS snapshot, scoped xhost, guarded rm/arrays."
 
 # =============================================================================
-# [deprecated-entrypoints] Deprecated entry points must keep working. DevKit is a base kit: renaming
-#      a target breaks the CI of every project built on it, so the pre-streamline
-#      spellings forward to the current name. Asserted by DRY-RUN (they must
-#      resolve AND delegate), plus: they must stay OUT of .PHONY/help so tab
-#      completion and the guide never advertise them.
+# [deprecated-entrypoints] Renaming a target breaks the CI of every project
+#      built on this kit, so the old spellings forward. By DRY-RUN (resolve AND
+#      delegate), and they must stay out of .PHONY/help so nothing advertises
+#      them.
 # =============================================================================
 compat_errors=0
 while read -r old new; do
@@ -1280,11 +1289,10 @@ grep -q function <<< "$compat_shell" \
 [ "$compat_errors" -eq 0 ] && log_ok "Deprecated entry points still forward (4 make targets, hw_check) and OPENCV_CUDA is wired."
 
 # =============================================================================
-# [cli-convention] CLI convention: every user-facing script answers --help with exit 0 and
-#      rejects an unknown flag non-zero. Regressions here are silent and ugly:
-#      `check_deps --help` once died with "Target directory '--help' does not
-#      exist", and check_env.sh treated a typo'd mode as its shell-output
-#      default — which would cache a detected-env.mk make cannot parse.
+# [cli-convention] Every executed script answers --help with 0 and refuses an
+#      unknown flag. `check_deps --help` once died with "Target directory
+#      '--help' does not exist"; check_env.sh took a typo'd mode as its
+#      default and cached a detected-env.mk make cannot parse.
 # =============================================================================
 cli_errors=0
 cli_count=0
@@ -1330,10 +1338,8 @@ gpu_typo="$(bash --norc -c "WORKSPACE_PATH='${ROOT_DIR}' source config/util_alia
 [ "$cli_errors" -eq 0 ] && log_ok "CLI convention holds (${cli_count} scripts: --help exits 0, unknown flags rejected)."
 
 # =============================================================================
-# [doc-references] Every check citation in the docs and in code comments must
-#      resolve to a real check. Numbered ids drifted silently (two different
-#      checks were both cited as [22]); slugs only help if the reference is
-#      verified, so assert every cited slug exists here.
+# [doc-references] Every check slug cited in docs or comments must resolve.
+#      Numbered ids drifted silently — two checks were both cited as [22].
 # =============================================================================
 cited="$(grep -rhoE '(check|verify|verify`) \[[a-z][a-z-]+\]' README.md docs/*.md docker/Dockerfile \
              config/*.sh scripts/*.sh 2>/dev/null | grep -oE '\[[a-z][a-z-]+\]' | tr -d '[]' | sort -u)"
@@ -1350,16 +1356,76 @@ else
     log_err "Docs/comments cite check(s) that do not exist: ${dangling[*]}"
 fi
 
+# README advertises how many contracts this suite enforces, and the number went
+# stale twice (24 while 32 groups existed). Derived from the slug headers, which
+# are also what the docs cite.
+readme_contracts="$(grep -oE '[0-9]+개 계약' README.md | grep -oE '[0-9]+' | head -1)"
+slug_groups="$(grep -cE '^# \[[a-z][a-z-]+\]' scripts/verify_repo.sh)"
+[ "${readme_contracts:-0}" = "$slug_groups" ] \
+    && log_ok "README's contract count matches the suite (${slug_groups} groups)." \
+    || log_err "README advertises ${readme_contracts:-no} contracts; the suite has ${slug_groups} check groups."
+
+# Every relative link in the docs must resolve — file AND anchor. Splitting this
+# guide left a link to docs/LICENSE, which never existed. python3 is already a
+# dependency of this suite (util_release_metadata.sh), and one call costs ~40 ms.
+# One python3 call for both: a link that resolves and a command that exists.
+# `make release` outlived its target in the docs once, so the second half reads
+# only code spans and fences — prose like "make them pass" is not a claim.
+doc_problems="$(DEVKIT_PHONY="$phony_targets" python3 - <<'PYCHECK'
+import os, pathlib, re
+
+def slug(h):
+    h = re.sub(r'[^\w\s-]', '', h.lstrip('#').strip().lower(), flags=re.UNICODE)
+    return re.sub(r'\s', '-', h)
+
+def code_only(text):
+    """Fenced blocks and inline `spans` — the parts that claim to be runnable."""
+    fenced = re.findall(r'```[^\n]*\n(.*?)```', text, re.S)
+    return "\n".join(fenced + re.findall(r'`([^`\n]+)`', text))
+
+targets = set(os.environ.get('DEVKIT_PHONY', '').split())
+# Deprecated spellings still forward, so naming one in the docs is not a lie.
+targets |= {'check-host', 'env-check', 'completion', 'completion-install'}
+bad = []
+for f in [pathlib.Path('README.md'), pathlib.Path('CONTRIBUTING.md'),
+          *sorted(pathlib.Path('docs').glob('*.md'))]:
+    text = f.read_text()
+    for m in re.finditer(r'\[[^\]]*\]\(([^)]+)\)', text):
+        target = m.group(1)
+        if target.startswith(('http://', 'https://', '#')):
+            continue
+        path, _, frag = target.partition('#')
+        p = (f.parent / path) if path else f
+        if not p.exists():
+            bad.append(f"{f} -> {target} (no such file)")
+        elif frag and frag not in [slug(l) for l in p.read_text().splitlines() if l.startswith('#')]:
+            bad.append(f"{f} -> {target} (no such heading)")
+    # [ \t], not \s: two adjacent inline spans must not join into a phantom
+    # "make" + "source …" across the newline between them.
+    for m in re.finditer(r'\bmake[ \t]+([a-z][a-z0-9-]*)', code_only(text)):
+        if m.group(1) not in targets:
+            bad.append(f"{f} -> make {m.group(1)} (no such target)")
+print(" | ".join(bad))
+PYCHECK
+)"
+[ -z "$doc_problems" ] \
+    || log_err "documentation is out of date: ${doc_problems}"
+# …and no guide may sit unreferenced: docs/GEMINI.md was reachable from nothing.
+for doc_file in docs/*.md; do
+    grep -rqF "$(basename "$doc_file")" README.md CONTRIBUTING.md $(ls docs/*.md | grep -v "^${doc_file}$") \
+        || log_err "${doc_file} is referenced by no other document."
+done
+
 # =============================================================================
-# [venv-identity] The virtualenv is NAMED after the project and the prompt shows
-#      it. Both were lost once: mkenv dropped `--prompt`, so uv fell back to the
-#      directory basename (every project looked like "(.venv)"), and init_bash.sh
-#      assigns PS1 AFTER activation, which discarded activate's own marker.
+# [venv-identity] The venv is named after the project and the prompt shows it.
+#      Both were lost once: mkenv dropped --prompt (every project read
+#      "(.venv)"), and PS1 is assigned after activation.
 # =============================================================================
 venv_errors=0
 # Continuations joined first: the flag sits on the next physical line, and a
 # per-line grep would report a false regression (it did).
-venv_cmds="$(sed -e :a -e '/\\$/N; s/\\\n//; ta' config/util_aliases.sh)"
+# Comment lines stripped: a usage note naming `uv venv` is not a creation path.
+venv_cmds="$(sed -e :a -e '/\\$/N; s/\\\n//; ta' config/util_aliases.sh | grep -v '^[[:space:]]*#')"
 # EVERY creation path, not just one: mkenv has two (uv, and the python3 -m venv
 # fallback) and naming only one of them would hide the other.
 venv_creates="$(grep -cE '(uv venv|python3 -m venv) ' <<< "$venv_cmds" || true)"
@@ -1373,6 +1439,12 @@ grep -qE '^[^#]*COMPOSE_PROJECT_NAME' config/util_aliases.sh \
 stray_venv="$(grep -nE '\$\{WS_ROOT\}/install/\.venv' config/util_aliases.sh | grep -v 'WS_VENV:-' || true)"
 [ -z "$stray_venv" ] \
     || { log_err "venv path hardcoded outside \${WS_VENV}: $(cut -d: -f1,2 <<< "$stray_venv" | tr '\n' ' ')"; venv_errors=1; }
+# The interpreter path is composed once too (${WS_VENV_PY}): the five sites
+# that spelled it themselves used three different fallbacks. docker/ and
+# .devcontainer/ are exempt — an image ENV cannot source the path SSOT.
+stray_venv_py="$(grep -rn '\.venv/bin/python' config scripts | grep -vE '^(config/util_paths\.sh|scripts/verify_repo\.sh):' || true)"
+[ -z "$stray_venv_py" ] \
+    || { log_err "the venv interpreter path is re-composed outside \${WS_VENV_PY}: $(cut -d: -f1,2 <<< "$stray_venv_py" | tr '\n' ' ')"; venv_errors=1; }
 # Rendered, not grepped: PS1 is re-expanded at every prompt, so an active venv
 # must surface there regardless of the order activation and PS1 happen in.
 ps1_probe="$(bash --norc -ic "VIRTUAL_ENV_PROMPT=__probe__
@@ -1382,12 +1454,9 @@ grep -q '(__probe__)' <<< "$ps1_probe" \
     || { log_err "the interactive prompt does not show the active virtualenv (PS1 lost \${VIRTUAL_ENV_PROMPT})."; venv_errors=1; }
 grep -q 'VIRTUAL_ENV_DISABLE_PROMPT' config/init_bash.sh \
     || { log_err "VIRTUAL_ENV_DISABLE_PROMPT is unset — running 'activate' would stack a second venv marker."; venv_errors=1; }
-# `uv sync` must pin the interpreter the venv already has: compared against
-# UV_PYTHON (3.10 from the image) uv REPLACES a mismatching environment, which
-# turns the shared venv `mksync --share` builds for noetic back into a pure one
-# and loses rospy. Reproduced before this pin existed.
-# The image pre-sets VIRTUAL_ENV, so activation must not be skipped on that
-# basis: a fake venv plus a pre-set VIRTUAL_ENV must still get activated.
+# `uv sync` must pin the venv's own interpreter: against UV_PYTHON uv REPLACES
+# a mismatching environment, turning `mksync --share` pure and losing rospy.
+# And activation must not be skipped just because the image pre-set VIRTUAL_ENV.
 act_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
 mkdir -p "$act_probe/config" "$act_probe/install/.venv/bin"
 cp config/init_bash.sh config/util_paths.sh "$act_probe/config/"
@@ -1402,11 +1471,9 @@ grep -qE 'uv sync [^|]*--python' <<< "$venv_cmds" \
 [ "$venv_errors" -eq 0 ] && log_ok "Virtualenv identity: project-named, single path source, shown in the prompt, interpreter pinned."
 
 # =============================================================================
-# [build-flags] The MOTD advertises `cbuild (--debug, --release, --pkg, --meta)`.
-#      Those four were dropped in a rewrite while the advertisement stayed, so
-#      assert BOTH directions: every advertised flag is handled by the parser,
-#      and the resulting command line actually carries the effect (probed with a
-#      stub colcon, so no build runs).
+# [build-flags] The MOTD advertises --debug/--release/--pkg/--meta, and a
+#      rewrite once dropped all four while the advertisement stayed. Assert both
+#      directions against a stub colcon: parsed, and present in the argv.
 # =============================================================================
 flag_errors=0
 adv_flags="$(sed -n 's/^ *"cbuild|[^(]*(\([^)]*\)).*/\1/p' scripts/show_welcome.sh | tr -d ' ' | tr ',' ' ')"

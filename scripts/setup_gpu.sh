@@ -1,12 +1,9 @@
 #!/bin/bash
 # =============================================================================
-# scripts/setup_gpu.sh
-# GPU acceleration environment configuration (NVIDIA, Intel, AMD, WSL2, CPU)
+# scripts/setup_gpu.sh — GPU environment (NVIDIA, Tegra, Intel/AMD, WSL2, CPU).
 # Usage: source setup_gpu.sh [auto|nvidia|tegra|igpu|intel|amd|cpu|status|opencv_args]
-#
-# Side effect: writes ${HOME}/.gpu_env.sh so that shells which did NOT go
-# through the entrypoint (`docker exec`, `make shell`, `make term`, VS Code)
-# inherit the exact same GPU environment. config/init_bash.sh sources it.
+# Writes ${HOME}/.gpu_env.sh so shells that skip the entrypoint (docker exec,
+# make shell/term, VS Code) get the same environment; init_bash.sh sources it.
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || echo ".")"
@@ -57,10 +54,8 @@ __gpu_persist() {
         for var in "${GPU_ENV_VARS[@]}"; do
             [ -n "${!var:-}" ] && printf 'export %s=%q\n' "$var" "${!var}"
         done
-        # Prepend, never assign. This file is generated during boot — BEFORE ROS
-        # is sourced — so persisting a whole LD_LIBRARY_PATH snapshot wipes
-        # /opt/ros/<distro>/lib for every shell that re-reads it, and `import
-        # rclpy` then dies on a missing librcl_action.so.
+        # Prepend, never assign: this is written before ROS is sourced, so a
+        # whole-snapshot assignment wipes /opt/ros/<distro>/lib on re-source.
         local dir
         for dir in ${GPU_LIB_DIRS[@]+"${GPU_LIB_DIRS[@]}"}; do
             printf 'case ":${LD_LIBRARY_PATH}:" in *":%s:"*) ;; *) export LD_LIBRARY_PATH="%s${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;; esac\n' "$dir" "$dir"
@@ -78,10 +73,9 @@ __gpu_nvidia_native() {
     GPU_UV_EXTRA="gpu"
 
     if has_dxg 2>/dev/null; then
-        # WSL2 hybrid: CUDA/compute reaches the GPU natively, but OpenGL ALWAYS
-        # goes through the Mesa D3D12 (Dozen) bridge. Without the adapter hint
-        # Mesa picks the first D3D12 adapter — on a hybrid laptop that is the
-        # integrated GPU, so GL silently renders on the wrong device.
+        # WSL2: CUDA is native but OpenGL always crosses the Mesa D3D12
+        # bridge. Without the adapter hint Mesa picks the first adapter — the
+        # iGPU on a hybrid laptop — and GL renders on the wrong device.
         export __GLX_VENDOR_LIBRARY_NAME=mesa
         export MESA_LOADER_DRIVER_OVERRIDE=d3d12
         export GALLIUM_DRIVER=d3d12
@@ -162,11 +156,9 @@ __gpu_software() {
     fi
 }
 
-# __opencv_cmake_args: CMake flags for projects that build OpenCV (or
-# OpenCV-dependent code) from source — `cmake $(gpu opencv_args) ...`.
-# OPENCV_CUDA=off forces the CPU build even on a CUDA-capable host; auto (the
-# default) enables CUDA only when the runtime AND nvcc are both present, because
-# -DWITH_CUDA=ON without a compiler fails deep inside the OpenCV build.
+# CMake flags for source builds of OpenCV: `cmake $(gpu opencv_args) …`.
+# auto enables CUDA only with runtime AND nvcc present — -DWITH_CUDA=ON without
+# a compiler fails deep inside the OpenCV build. off forces the CPU path.
 __opencv_cmake_args() {
     if [ "${OPENCV_CUDA:-auto}" = "off" ] || ! can_build_cuda 2>/dev/null; then
         echo "-DWITH_CUDA=OFF"
@@ -318,10 +310,8 @@ esac
 __gpu_reset
 GPU_UV_EXTRA="cpu"
 
-# Resolve 'auto' against the detected hardware.
-# Tegra is checked before the DRI vendors: a Jetson exposes /dev/nvhost-* and an
-# nvgpu DRI node but no /dev/nvidiactl, so a plain NVIDIA/DRI probe misses it and
-# would silently drop an embedded GPU board to software rendering.
+# Resolve 'auto'. Tegra first: a Jetson has /dev/nvhost-* and an nvgpu DRI node
+# but no /dev/nvidiactl, so a plain NVIDIA probe drops it to software.
 if [ "$__gpu_req_mode" = "auto" ]; then
     if has_nvidia 2>/dev/null;      then __gpu_req_mode="nvidia"
     elif has_tegra 2>/dev/null;     then __gpu_req_mode="tegra"
@@ -329,23 +319,14 @@ if [ "$__gpu_req_mode" = "auto" ]; then
     elif has_intel_dri 2>/dev/null; then __gpu_req_mode="intel"
     elif has_amd_dri 2>/dev/null;   then __gpu_req_mode="amd"
     elif has_dxg 2>/dev/null;       then __gpu_req_mode="igpu"
-    # Vendor-agnostic fallback. Mali (panfrost), Adreno (freedreno), VideoCore
-    # (v3d), Vivante (etnaviv) and every other SoC GPU is a *platform* device
-    # with no PCI vendor ID, so the vendor probes above cannot see it. If a render
-    # node exists, hand it to Mesa with no driver override and let Mesa pick —
-    # forcing llvmpipe here would waste a perfectly good GPU.
+    # SoC GPUs (Mali, Adreno, VideoCore, Vivante) are platform devices with no
+    # PCI vendor id, so the probes above miss them. If a render node exists, let
+    # Mesa choose — forcing llvmpipe would waste a working GPU.
     elif has_any_dri 2>/dev/null;   then __gpu_req_mode="igpu"
     else                                 __gpu_req_mode="cpu"
     fi
 fi
 
-case "$__gpu_req_mode" in
-    nvidia|tegra|intel|amd|igpu|cpu) ;;
-    *)  echo -e "  \033[31m[GPU]\033[0m Unknown mode '${__gpu_req_mode}' (valid: auto nvidia tegra intel amd igpu cpu)." >&2
-        # `return` when sourced (gpu() helper), `exit` when executed — a typo
-        # must fail loudly, not silently reconfigure the shell to llvmpipe.
-        return 2 2>/dev/null || exit 2 ;;
-esac
 
 if [ "$__gpu_req_mode" = "cpu" ]; then
     __gpu_software

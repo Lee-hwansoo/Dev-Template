@@ -1,9 +1,6 @@
 // =============================================================================
-// .devcontainer/devcontainer.json
-// Cross-Platform VSCode Dev Containers Configuration for DevKit
-//
-// Supports Native Linux, Windows WSL2, and macOS (Apple Silicon / Intel)
-// Works with ROS 2 (Humble), ROS 1 (Noetic), Pure C++, and Pure Python.
+// .devcontainer/devcontainer.json — attach to the compose service `make start`
+// runs. Works on Linux, WSL2 and macOS, with ROS 1/2, C++ or pure Python.
 // =============================================================================
 {
     "name": "DevKit Workspace",

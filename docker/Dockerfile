@@ -1,13 +1,12 @@
 # =============================================================================
-# docker/Dockerfile
-# Multi-stage Integrated Dockerfile (Dev & ROS)
+# docker/Dockerfile — one multi-stage file for both images (dev and ROS) and
+# both production chains (builder → runtime).
 # =============================================================================
 
-# ── Global Build Arguments (Single Source of Truth) ──────────────────────────
-# Deliberate: base images are TAG-pinned, not digest-pinned. Reproducibility is
-# carried by APT_SNAPSHOT_DATE + SOURCE_DATE_EPOCH + GPG pins (verify [reproducibility]);
-# digests would break multi-arch convenience and rot silently. Pin BASE_IMAGE
-# to a digest in .env if your compliance regime requires it.
+# ── Global Build Arguments ───────────────────────────────────────────────────
+# Base images are TAG-pinned on purpose: reproducibility comes from
+# APT_SNAPSHOT_DATE + SOURCE_DATE_EPOCH + GPG pins (check [reproducibility]).
+# Pin BASE_IMAGE to a digest in .env if your compliance regime needs it.
 ARG BASE_IMAGE=ubuntu:22.04
 ARG WORKSPACE_PATH=/workspace
 ARG ROS_DISTRO=humble
@@ -93,7 +92,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get autoremove -y && \
     rm -rf /tmp/* /var/tmp/*
 
-# Install uv and setup Python once for both dev images and production builders.
+# uv and its interpreter, once for the dev images and the prod builders.
+# UV_PYTHON_INSTALL_DIR, not uv's default: the default is the calling user's XDG
+# dir, so a root build hid the interpreter in /root (0700) — the container user
+# re-resolved one on every mksync, and a prod venv symlinked where Apptainer
+# (running as the invoking user) could not follow. The dev stages take
+# ownership below so a runtime `uv python install` still works.
 COPY --from=uv-binaries /uv /uvx /usr/local/bin/
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \

@@ -1,7 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# config/init_ros_env.sh
-# Centralized ROS environment orchestration for ROS1 (Noetic) and ROS2 (Humble)
+# config/init_ros_env.sh — the ROS 1 / ROS 2 environment (RMW, domain, DDS URI).
 # =============================================================================
 
 # Every expansion carries a default: this file is sourced from `set -u` contexts

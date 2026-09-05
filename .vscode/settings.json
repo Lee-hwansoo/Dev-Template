@@ -1,11 +1,8 @@
 {
     // =========================================================================
-    // .vscode/settings.json
-    // Project-level IDE configuration for DevKit
-    //
-    // These settings are optimized for Docker container-based development
-    // with ROS 1/2, C++, and Python. Paths reference /workspace (container root).
-    // ROS version is auto-detected via the ROS_DISTRO environment variable.
+    // .vscode/settings.json — workspace settings for container-based ROS/C++/
+    // Python development. Paths are ${workspaceFolder}-relative and the ROS
+    // version follows ${env:ROS_DISTRO}.
     // =========================================================================
 
     // ── Editor Defaults ──────────────────────────────────────────────────────

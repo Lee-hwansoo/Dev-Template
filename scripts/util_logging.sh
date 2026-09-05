@@ -1,18 +1,16 @@
 #!/bin/bash
 # =============================================================================
-# scripts/util_logging.sh
-# Centralized logging utility for standardized shell output
+# scripts/util_logging.sh — the log verbs, banners and palette every DevKit
+# script uses. Knobs: LOG_PREFIX (which component is speaking; every executed
+# script sets one), LOG_SHOW_TIME (console timestamps — the file is always
+# stamped), DEBUG_MODE, NO_COLOR, and LOG_FILE, a path (workspace-relative
+# unless absolute) that also receives every line without colour, or
+# off/none/false/0 to disable the file half.
 #
-# Provides color-coded logging functions (INFO, OK, WARN, ERROR, DEBUG)
-# with support for timestamps, custom prefixes, and file-based logging.
-#
-# THIS FILE IS PROVIDED API. DevKit is a base kit, so every verb below exists
-# for the project code built on top of it — a symbol with no in-tree caller is
-# a feature, not dead code. scripts/verify_repo.sh check [provided-api] asserts the
-# whole surface stays callable; extend it when you add a verb.
+# PROVIDED API: a verb with no in-tree caller is a feature, not dead code.
+# check [provided-api] keeps the surface callable — extend it when you add one.
 # =============================================================================
 
-# ANSI Color Codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -23,7 +21,6 @@ NC='\033[0m'
 DIM='\033[2m'
 TEAL='\033[38;2;45;212;191m'
 
-# Load settings (defaults)
 LOG_SHOW_TIME="${LOG_SHOW_TIME:-false}"
 DEBUG_MODE="${DEBUG_MODE:-false}"
 
@@ -110,7 +107,8 @@ log_debug() {
     fi
 }
 
-# log_detail [message] - Indented auxiliary information (a hint under a finding)
+# log_detail — an indented hint under a finding. Redirect it (`>&2`) to keep a
+# hint with the error it explains; the colour check follows fd 1.
 log_detail() {
     local c="${CYAN}" n="${NC}"; _log_plain && { c=""; n=""; }
     _log_write 1 "    ${c}→${n} $1" "    → $1"
@@ -122,23 +120,17 @@ log_step_done() {
     _log_write 1 "  ${c}✓${n} $1" "  ✓ $1"
 }
 
-# devkit_enable_error_trap
-#   Installs a diagnostic ERR trap that records WHERE a fatal abort occurred
-#   (line + command) instead of dying silently. Intended for scripts that run
-#   under `set -e` (the trap fires on the same conditions `set -e` exits on, so
-#   guarded failures in if/&&/|| are unaffected). Logging only — it does not
-#   change control flow. `set -E` makes the trap fire inside functions too.
-#   Call once, after LOG_PREFIX is set.
+# devkit_enable_error_trap — log WHERE a `set -e` abort happened (line +
+# command) instead of dying silently. Logging only; `set -E` reaches functions.
+# Call once, after LOG_PREFIX.
 devkit_enable_error_trap() {
     set -E
     trap 'devkit_err_rc=$?; log_error "aborted (exit ${devkit_err_rc}) at line ${LINENO}: ${BASH_COMMAND}"' ERR
 }
 
-# devkit_auto_color: honour NO_COLOR and non-terminal output.
-# DevKit's diagnostics emit SGR escapes as literals throughout, so instead of
-# threading a colour variable through every printf we strip them at the output
-# boundary when stdout is not a terminal (CI logs, pipes, `> file`).
-# Call once, early, from any script whose output a user may redirect.
+# devkit_auto_color — strip SGR escapes at the output boundary when stdout is
+# not a terminal, so raw `echo -e` lines need no colour variable threaded
+# through them. Call once, early, in any script a user may redirect.
 devkit_auto_color() {
     [ -n "${NO_COLOR:-}" ] || [ ! -t 1 ] || return 0
     command -v sed >/dev/null 2>&1 || return 0
@@ -150,8 +142,7 @@ devkit_auto_color() {
     exec > >(sed -E "$re")
 }
 
-# The palette and the pre-formatted status tags are exported so project scripts
-# can build their own lines (`echo -e "  $INFO ..."`) without re-deriving them.
+# Exported so project scripts can build their own lines: echo -e "  $INFO …"
 export RED GREEN YELLOW BLUE CYAN PURPLE NC DIM TEAL
 
 INFO="${BLUE}[INFO]${NC}"
@@ -226,7 +217,7 @@ print_banner() {
     esac
 }
 
-# print_section [title] - Creates a professional left-aligned divider
+# print_section [title] — a left-aligned section divider at column 0.
 print_section() {
     local title="$1"
     local total_len=50
@@ -238,9 +229,9 @@ print_section() {
     printf "\n${TEAL}[ %s ] %s${NC}\n" "$title" "$padding"
 }
 
-# print_env_info - Displays a standardized project dashboard (Single Source of Truth)
+# print_env_info — the one-line project dashboard the MOTD and the diagnostics
+# both print, so "which workspace am I in" has a single answer.
 print_env_info() {
-    # 1. Detect Python Environment Mode
     local venv_status="${RED}None${NC}"
     local v_path="${WS_VENV:-${WORKSPACE_PATH:-/workspace}/install/.venv}"
     if [ -d "$v_path" ]; then
@@ -251,23 +242,21 @@ print_env_info() {
         fi
     fi
 
-    # 2. Path Normalization (Relative to Workspace Root)
     local root="${WS_ROOT:-${WORKSPACE_PATH:-/workspace}}"
     local v_rel="${v_path#$root/}"
 
-    # 3. Identity + bind-mount writability. A UID/GID mismatch against the mounted
-    #    workspace is the most common container failure, so surface it on entry.
+    # A UID/GID mismatch against the mounted workspace is the most common
+    # container failure, so surface writability on entry.
     local my_uid my_gid ws_warn=""
     my_uid="$(id -u)"; my_gid="$(id -g)"
     if [ -d "$root" ] && [ ! -w "$root" ]; then
         ws_warn=" ${RED}(NOT writable — uid mismatch? run 'hwcheck')${NC}"
     fi
 
-    # 4. ROS is reported only when it is actually installed: compose passes
-    #    ROS_DISTRO to every service, so the non-ROS image would claim "humble".
+    # ROS is reported only when actually installed: compose passes ROS_DISTRO to
+    # every service, so the non-ROS image would otherwise claim "humble".
     local ros_status="None"
     [ -d "/opt/ros/${ROS_DISTRO:-}" ] && ros_status="${ROS_DISTRO}"
 
-    # 5. Output Unified Dashboard
     echo -e "  Project: ${BLUE}${COMPOSE_PROJECT_NAME}${NC} | User: ${PURPLE}$(whoami) (${my_uid}:${my_gid})${NC} | WS: ${GREEN}${root}${NC}${ws_warn} | GPU: ${YELLOW}${GPU_MODE:-auto}${NC} | ROS: ${YELLOW}${ros_status}${NC} | Python: ${CYAN}${v_rel}${NC}(${venv_status})"
 }

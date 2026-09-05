@@ -1,6 +1,6 @@
 # =============================================================================
-# .gitignore
-# Universal ignore template for ROS / C++ / Python / Docker
+# .gitignore — build output, third-party imports, per-user tooling state.
+# .vscode/ is tracked on purpose: it is the shared IDE contract.
 # =============================================================================
 
 # --- Build Artifacts ---------------------------------
@@ -9,7 +9,6 @@ devel/
 install/
 log/
 logs/
--logs/
 .ccache/
 
 # --- Thirdparty (vcs import) -------------------------
@@ -37,6 +36,11 @@ pip-delete-this-directory.txt
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Per-user agent/editor state
+.claude/
+.codex/
+.agents/
 
 # --- C++ Build ---------------------------------------
 *.o

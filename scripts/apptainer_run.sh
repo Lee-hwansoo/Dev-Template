@@ -41,17 +41,10 @@ APP_CMD="${APP_CMD:-${APP_COMMAND:-}}"
 
 sif_import_host_env || exit 1
 
-# Resolve SIF file. An explicitly given SIF_FILE is used as-is and MUST exist —
-# silently substituting a stale local artifact for a mistyped /scratch path
-# would run the wrong image without a word. The automatic default probes only
-# THIS mode's variants (mode → mode-share): running a dev SIF because prod was
-# never baked is the same wrong-image failure, not a convenience.
-# Project name: env (make export) → .env (direct script invocation) → devkit.
-# Must match apptainer_bake.sh or the default probe misses freshly baked SIFs.
-# tail/tr: keep the last assignment, drop quotes and CR that compose tolerates
-# but a filename must not contain.
-COMPOSE_PROJECT="${COMPOSE_PROJECT_NAME:-$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "${WS_ROOT}/.env" 2>/dev/null | tail -1 | tr -d "\r\"'")}"
-COMPOSE_PROJECT="${COMPOSE_PROJECT:-devkit}"
+# An explicit SIF_FILE is used as-is and MUST exist: substituting a stale local
+# artifact for a mistyped /scratch path runs the wrong image silently. The
+# default probes only THIS mode's variants, for the same reason.
+COMPOSE_PROJECT="$(sif_project_name)"
 # slurm submits the PRODUCTION artifact (there is no `bake --mode slurm`), which
 # .env.example states and the hint below already assumed — the probe has to use
 # the same mapping or the default slurm run can never find an artifact.
@@ -79,12 +72,10 @@ export APPTAINERENV_RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp
 if [ "$MODE" = "slurm" ]; then
     SLURM_SCRIPT="${WS_ROOT}/scripts/slurm_run.sh"
 
-    # DEVKIT_SLURM_* → sbatch flags. Command-line flags override the #SBATCH
-    # defaults baked into slurm_run.sh, so an unset knob keeps the script default.
-    # --chdir pins the job's cwd to the workspace, so the relative #SBATCH
-    # log paths (logs/%x_%j.out) land there no matter where it was submitted.
-    # --export=ALL is SLURM's own default, but sites that set NONE would strip
-    # the ROS/DDS env slurm_run.sh forwards into the container.
+    # DEVKIT_SLURM_* → sbatch flags, which override slurm_run.sh's #SBATCH
+    # defaults, so an unset knob keeps the script default. --chdir pins the cwd
+    # so the relative #SBATCH log paths land in the workspace; --export=ALL
+    # guards against sites that default to NONE and strip the ROS/DDS env.
     SBATCH_OPTS=( "--chdir=${WS_ROOT}" "--export=ALL" )
     [ -n "${DEVKIT_SLURM_PARTITION:-}"     ] && SBATCH_OPTS+=( "--partition=${DEVKIT_SLURM_PARTITION}" )
     [ -n "${DEVKIT_SLURM_GRES:-}"          ] && SBATCH_OPTS+=( "--gres=${DEVKIT_SLURM_GRES}" )
@@ -102,10 +93,9 @@ if [ "$MODE" = "slurm" ]; then
     # shellcheck disable=SC2206
     [ -n "${DEVKIT_SLURM_EXTRA_ARGS:-}" ] && SBATCH_OPTS+=( ${DEVKIT_SLURM_EXTRA_ARGS} )
 
-    # APP_CMD reaches slurm_run.sh as ONE argument and runs via `bash -c`.
-    # Quoting survives for the APP_COMMAND env spelling and for the Makefile's
-    # RUN_ARGS (passed as a single argument); raw multi-arg invocations of this
-    # script are space-joined by "$*" first and lose inner quoting.
+    # APP_CMD reaches slurm_run.sh as ONE argument and runs via `bash -c`, so
+    # quoting survives for APP_COMMAND and RUN_ARGS; a raw multi-arg call here
+    # is space-joined by "$*" first and loses inner quoting.
     if command -v sbatch >/dev/null 2>&1; then
         # ${arr[@]+...}: empty-array "${arr[@]}" is fatal under set -u in
         # bash < 4.4 (RHEL 7/8 SLURM nodes).

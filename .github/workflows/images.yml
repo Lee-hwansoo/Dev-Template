@@ -1,16 +1,8 @@
 # =============================================================================
-# .github/workflows/images.yml
-# The slow tier — only when it can actually matter.
-#
-# `paths:` keeps these minutes off the common push: a change to docs, the
-# Makefile or config/ never triggers them, while a change to the Dockerfile, the
-# apt manifests or the apt helpers always does. The weekly cron covers drift
-# nobody pushed (upstream key rotation, a moved apt package).
-#
-# The runtime job is cron/manual only: it builds the full ~2.7 GB image, and it
-# exists because the bugs it catches are invisible to every static check — a
-# clobbered LD_LIBRARY_PATH hiding librcl, a venv that is never activated, a
-# display probe naming a binary the image does not ship.
+# .github/workflows/images.yml — the slow tier, gated on the files that can
+# break an image. The weekly cron covers drift nobody pushed (a rotated key, a
+# moved apt package); the full-image jobs are cron/manual only, and they exist
+# for the failures no static check can see.
 # =============================================================================
 name: images
 
@@ -18,14 +10,12 @@ on:
   push:
     paths:
       - 'docker/**'
-      - 'dependencies/**'
       - 'scripts/util_apt_helper.sh'
       - 'scripts/util_cuda_apt.sh'
       - '.github/workflows/images.yml'
   pull_request:
     paths:
       - 'docker/**'
-      - 'dependencies/**'
       - 'scripts/util_apt_helper.sh'
       - 'scripts/util_cuda_apt.sh'
       - '.github/workflows/images.yml'
@@ -40,9 +30,8 @@ concurrency:
 
 jobs:
   apt-key-paths:
-    # The ROS 1 key import aborted inside `docker build` for want of /dev/tty
-    # while every host-side test passed, so exercise both distro families where
-    # the failure actually lives: in a container, with no terminal.
+    # The ROS 1 key import once aborted inside `docker build` for want of
+    # /dev/tty while every host test passed — so run it where it failed.
     name: apt keys (${{ matrix.distro }} on ${{ matrix.image }})
     runs-on: ubuntu-latest
     timeout-minutes: 15

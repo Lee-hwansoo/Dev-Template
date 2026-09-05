@@ -1,6 +1,7 @@
 #!/bin/bash
 # =============================================================================
-# Production entrypoint for Apptainer/Docker runtime artifacts
+# docker/prod_entrypoint.sh — PID 1 of the shipped artifact: activate install/
+# and run the configured command. No setup, no host probing.
 # =============================================================================
 
 set -euo pipefail

@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
-# scripts/check_hardware.sh
-# Diagnose system, GPU, display, network, and dev toolchain readiness.
+# scripts/check_hardware.sh — the six-section readiness scan: system, network,
+# GPU, display, identity/permissions, toolchain.
 # Usage: check_hardware.sh [--brief]
 # =============================================================================
 set -euo pipefail
@@ -92,10 +92,8 @@ while read -r iface mtu; do
         || _hw_detail "    ${iface}: MTU ${mtu}"
 done < <(ip link show 2>/dev/null | awk '/^[0-9]+:/{iface=$2} /mtu/{for(i=1;i<=NF;i++) if($i=="mtu") print substr(iface,1,length(iface)-1), $(i+1)}' | grep -v "^lo ")
 
-# Clock sync
-# timedatectl is present in most images but FAILS inside a container (no systemd
-# bus). Under `set -o pipefail` an unguarded assignment from it aborts the whole
-# diagnostic — every external probe below therefore ends in `|| true`.
+# Clock sync. timedatectl fails inside a container (no systemd bus), and under
+# pipefail an unguarded assignment aborts the whole scan — hence `|| true`.
 SYNC=""
 if command -v timedatectl >/dev/null 2>&1; then
     SYNC=$(timedatectl status 2>/dev/null | awk -F: '/synchronized/{gsub(/ /,"",$2); print $2}' || true)
@@ -223,11 +221,8 @@ if ! $BRIEF_MODE; then
 fi
 
 # =============================================================================
-# [5/6] Identity & Permissions
-# -----------------------------------------------------------------------------
-# The single most common container failure is a UID/GID mismatch against a bind
-# mount ("Permission denied" on ${WS_ROOT}), and the second is missing video/
-# render group membership blocking /dev/dri access. Both are verified here.
+# [5/6] Identity & Permissions — the two most common container failures: a
+# UID/GID mismatch against the bind mount, and missing video/render groups.
 # =============================================================================
 _hw_section "5/6 Identity & Permissions"
 

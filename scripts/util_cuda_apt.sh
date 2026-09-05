@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
-# scripts/util_cuda_apt.sh
-# Install CUDA/cuDNN apt package profiles for development and production images.
+# scripts/util_cuda_apt.sh — the CUDA/cuDNN apt profiles for the development and
+# production images. A no-op unless HAS_NVIDIA=true and CUDA_VERSION is set.
 # =============================================================================
 
 set -euo pipefail

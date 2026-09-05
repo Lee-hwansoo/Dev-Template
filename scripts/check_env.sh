@@ -38,10 +38,8 @@ emit_env() {
     local key="$1"
     local value="$2"
     if [ "$OUTPUT_MODE" = "--makefile" ]; then
-        # Escape make metacharacters: an unescaped '#' truncates the line into
-        # a comment and '$' gets re-expanded by make (host paths can contain
-        # both). Newlines would inject arbitrary make lines — strip them; the
-        # env-mode branch below is inherently newline-safe via %q.
+        # Escape make metacharacters: '#' truncates the line, '$' re-expands,
+        # a newline injects a make line. env mode is %q-safe already.
         value="${value//$'\n'/ }"
         value="${value//\$/\$\$}"
         value="${value//#/\\#}"
@@ -67,7 +65,8 @@ elif grep -qi microsoft /proc/version 2>/dev/null; then
 fi
 
 # 2. GPU Detection (NVIDIA / DRI)
-# ponytail: macOS uses CPU LLVMpipe rendering (Ceiling: CUDA/DRI unavailable inside macOS Docker Desktop)
+# macOS is skipped entirely: Docker Desktop runs a Linux VM with no CUDA/DRI
+# passthrough, so every macOS host resolves to cpu (LLVMpipe).
 HAS_NVIDIA="false"
 HAS_TOOLKIT="false"
 HAS_DRI="false"
@@ -90,10 +89,8 @@ fi
 # 3. Path, User & Cache Setup
 HOST_WORKSPACE_PATH="${HOST_WORKSPACE_PATH:-$(pwd)}"
 WORKSPACE_PATH="${WORKSPACE_PATH:-/workspace}"
-# Honour sudo: bind the invoking user's HOME and ids, not root's.
-# macOS has no `getent`; fall back to dscl, then to the passwd file. Every branch
-# is `|| true`-guarded because this script runs under `set -euo pipefail` and a
-# missing lookup tool must degrade, not abort the whole detection.
+# Under sudo, bind the invoking user's HOME and ids, not root's. macOS has no
+# getent, hence the fallbacks; each is `|| true` so a missing tool degrades.
 if [ -n "${SUDO_USER:-}" ]; then
     if command -v getent >/dev/null 2>&1; then
         HOST_HOME="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)"
@@ -124,11 +121,9 @@ if [ -n "${DOCKER_DEV_CACHE_DIR:-}" ]; then
     fi
     HOST_CACHE_DIR="$_cache_root"
 fi
-# The placeholder mechanism below depends on this directory existing; emitting
-# nonexistent paths would let Docker recreate them root-owned — the exact
-# failure placeholders were built to prevent. Fatal for --makefile (compose
-# consumes the placeholders), warn-only otherwise: the apptainer/SIF path only
-# reads ROS/GPU facts and must keep working from a read-only CWD.
+# Placeholders need this directory: emitting a nonexistent path lets Docker
+# recreate it root-owned. Fatal for --makefile (compose consumes them),
+# warn-only otherwise — the SIF path only reads ROS/GPU facts.
 if ! mkdir -p "$HOST_CACHE_DIR" 2>/dev/null; then
     if [ "$OUTPUT_MODE" = "--makefile" ]; then
         log_error "Cannot create the cache directory: ${HOST_CACHE_DIR}"
@@ -137,10 +132,8 @@ if ! mkdir -p "$HOST_CACHE_DIR" 2>/dev/null; then
     log_warn "Cannot create ${HOST_CACHE_DIR}; placeholder mounts unavailable."
 fi
 
-# placeholder <name> [--file] : a stable stand-in path for an absent host resource.
-# Docker auto-creates missing bind-mount sources as root-owned directories, which
-# breaks a later real mount and pollutes the host — so every optional mount below
-# resolves to a real, user-owned placeholder inside .docker_cache instead.
+# placeholder <name> [--file] — a stand-in for an absent host resource. Docker
+# creates a missing mount source as root, breaking the later real mount.
 placeholder() {
     local path="${HOST_CACHE_DIR}/dummy_$1"
     if [ "${2:-}" = "--file" ]; then
@@ -221,13 +214,9 @@ else
     HOST_GITCONFIG="$(placeholder gitconfig --file)"
 fi
 
-# 6. ROS Distro to Ubuntu Base Image Auto-Resolver
-# .env is the single source of truth, but make's `export` does NOT reach
-# $(shell ...), so the Makefile cannot hand these two down: every caller
-# (make, apptainer_*.sh, a manual run) has to read the file itself or the
-# detector silently falls back to the humble/22.04 default and that wrong
-# value gets cached in .docker_cache/detected-env.mk.
-# Read, never source: .env is data, not code.
+# 6. ROS distro → base image. make's `export` does not reach $(shell …), so
+# every caller must read .env itself or the detector caches the humble/22.04
+# default. Read, never source: .env is data, not code.
 DEVKIT_ENV_FILE="${DEVKIT_ENV_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.env}"
 ROS_DISTRO="${ROS_DISTRO:-$(devkit_env_value ROS_DISTRO "$DEVKIT_ENV_FILE")}"
 BASE_IMAGE="${BASE_IMAGE:-$(devkit_env_value BASE_IMAGE "$DEVKIT_ENV_FILE")}"

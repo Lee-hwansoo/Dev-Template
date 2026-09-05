@@ -1,15 +1,13 @@
 #!/bin/bash
 # =============================================================================
-# config/util_paths.sh
-# Centralized Path Management (Single Source of Truth)
+# config/util_paths.sh — every workspace path, composed once, plus the .env
+# reader and the `devkit_require` loader. Provided API: a name with no in-tree
+# caller is a feature, and check [provided-api] keeps the set callable.
 # =============================================================================
 
-# Root Workspace Path.
-# WORKSPACE_PATH is the CONTAINER path (/workspace) and the Makefile exports it
-# to every recipe — host-side scripts included. Honour it only when it really is
-# a DevKit tree on this machine; otherwise anchor to this file's own location,
-# or `make bake-prod` resolves /workspace/scripts/... and dies with
-# "No such file or directory" on the host.
+# WORKSPACE_PATH is the CONTAINER path and make exports it to host recipes too,
+# so honour it only when it really is a DevKit tree here; otherwise anchor to
+# this file. Without that guard `make bake-prod` resolved /workspace/scripts.
 WS_ROOT="${WORKSPACE_PATH:-}"
 [ -n "$WS_ROOT" ] && [ -f "${WS_ROOT}/config/util_paths.sh" ] \
     || WS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,10 +22,8 @@ export WS_SRC="${WS_ROOT}/src"
 export WS_BUILD="${WS_ROOT}/build"
 export WS_LOGS="${WS_ROOT}/log"
 
-# Python & Environment
-# Not configurable: the image (Dockerfile ENV VIRTUAL_ENV/PATH), the compose
-# install volume and docker/prod_entrypoint.sh all hardcode install/.venv, so a
-# relocation knob here would move the shell half only.
+# Not configurable: the image ENV, the compose install volume and
+# prod_entrypoint.sh all hardcode install/.venv — a knob here moves one half.
 export WS_VENV="${WS_INSTALL}/.venv"
 # The venv interpreter, composed ONCE — five call sites spelled it themselves.
 export WS_VENV_PY="${WS_VENV}/bin/python3"
@@ -50,9 +46,8 @@ configure_git_safe_directory() {
     export GIT_CONFIG_VALUE_0="*"
 }
 
-# devkit_require [script_name] [force_reload:optional]
-#   Locates and sources a script cleanly from WS_SCRIPTS or caller directory.
-#   Idempotency protection via variable-name flags.
+# devkit_require <script> [force_reload] — source once from WS_SCRIPTS or the
+# caller's directory.
 devkit_require() {
     local script_name="$1"
     local force_reload="${2:-false}"
@@ -81,7 +76,8 @@ devkit_require() {
     return 1
 }
 
-# Default logging stubs (overridden when util_logging.sh is loaded)
+# Colourless fallbacks, used until util_logging.sh loads. _log_plain answers
+# "yes" so callers that branch on it match these stubs.
 if ! declare -F log_info >/dev/null 2>&1; then
     log_info()       { echo "[INFO] $*"; }
     log_ok()         { echo "[OK] $*"; }

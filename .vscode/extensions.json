@@ -1,10 +1,6 @@
 {
     // =========================================================================
-    // .vscode/extensions.json
-    // Recommended VSCode extensions for DevKit projects
-    //
-    // VSCode will prompt team members to install these extensions
-    // when they open this workspace for the first time.
+    // .vscode/extensions.json — VS Code prompts for these on first open.
     // =========================================================================
     "recommendations": [
         // ── C++ Development ──────────────────────────────────────────────────

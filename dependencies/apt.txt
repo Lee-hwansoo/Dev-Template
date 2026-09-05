@@ -1,6 +1,6 @@
 # =============================================================================
-# dependencies/apt.txt
-# User-defined system package extensions for the development environment
+# dependencies/apt.txt — the distro-agnostic package list. One package per line;
+# the trailing tag decides which image stages get it.
 #
 # Filtering Tag System Guide:
 #   - # runtime : Packages required by deployment artifacts

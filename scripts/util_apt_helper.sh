@@ -1,7 +1,8 @@
 #!/bin/bash
 # =============================================================================
-# scripts/util_apt_helper.sh
-# Build-time APT repository setup and tag-filtered package installation
+# scripts/util_apt_helper.sh — build-time APT: repository trust anchors and
+# tag-filtered installation from dependencies/apt*.txt. Runs in a `docker build`
+# layer with only this file bind-mounted, hence the private log verbs below.
 # =============================================================================
 set -eo pipefail
 
@@ -12,29 +13,22 @@ export DEBIAN_FRONTEND=noninteractive
 export APT_KEY_DONT_WARN_ON_DANGEROUS_USAGE=1
 
 # =============================================================================
-# Pinned ROS archive signing key — Single Source of Truth
-# -----------------------------------------------------------------------------
-# The keyring is the entire trust anchor for packages.ros.org, so the downloaded
-# key is fingerprint-checked against this value before it is installed.
-#   STRICT_GPG_CHECK=true (default) → a mismatch aborts the build
-#   STRICT_GPG_CHECK=false          → a mismatch warns and continues (opt-in)
-# `make update-gpg` (scripts/setup_ros_gpg.sh) rewrites the line below after
-# verifying upstream; keep the exact `ROS_GPG_FINGERPRINT="..."` spelling.
+# Pinned archive signing keys — the whole trust anchor for these repositories,
+# so a downloaded key is fingerprint-checked against the value below before it
+# is installed. STRICT_GPG_CHECK=true (default) aborts on mismatch, false warns.
+# `make update-gpg` rewrites the line below — keep the exact spelling.
 # =============================================================================
 ROS_GPG_FINGERPRINT="C1CF6E31E6BADE8868B172B4F42ED6FBAB17C654"
 # NVIDIA CUDA repository signing key (id 3bf863cc), same trust policy as above.
 NVIDIA_GPG_FINGERPRINT="EB693B3035CD5710E231E123A4B469963BF863CC"
 
-# Private loggers on purpose: this script runs in `docker build` RUN layers
-# where it is the ONLY file bind-mounted, so it cannot source util_logging.sh.
+# Private loggers: this is the ONLY file bind-mounted into its RUN layers.
 log_info() { echo -e "  \033[0;34m[APT]\033[0m $*"; }
 log_ok()   { echo -e "  \033[0;32m[APT]\033[0m $*"; }
 log_error(){ echo -e "  \033[0;31m[APT]\033[0m $*" >&2; }
 
 # verify_key_fingerprint <key_file> <pinned_fp> <label> <rotation_hint>
-# Shared trust policy for every downloaded repo key: the keyring is the entire
-# trust anchor, so the fingerprint is compared against the pin BEFORE install.
-# STRICT_GPG_CHECK=true (default) aborts on mismatch; false warns and continues.
+# One trust policy for every repo key: compare BEFORE install.
 verify_key_fingerprint() {
     local key_file="$1" pinned="$2" label="$3" hint="$4" actual_fp
     actual_fp="$(gpg --with-colons --import-options show-only --import "$key_file" 2>/dev/null \
@@ -57,17 +51,13 @@ verify_key_fingerprint() {
 }
 
 # =============================================================================
-# Tag-based package selection (SSOT: dependencies/apt.txt, dependencies/apt_ros.txt)
-# -----------------------------------------------------------------------------
-# select_packages <filter> [distro]  → one package per line on stdout
-#
-#   filter=all      dev images        : everything except the opposite ROS family
-#   filter=builder  prod build stages : excludes '# dev' and '# gui' entries
-#   filter=runtime  deploy artifacts  : keeps ONLY '# runtime' entries
-#
-#   distro empty → apt_ros.txt is skipped entirely. This is what keeps the
-#   non-ROS stages (dev, prod-dev-*) from requesting ros-* packages on images
-#   that never configured the ROS apt repository.
+# select_packages <filter> [distro] → one package per line (SSOT:
+# dependencies/apt*.txt)
+#   all      dev images        : everything but the opposite ROS family
+#   builder  prod build stages : drops '# dev' and '# gui'
+#   runtime  deploy artifacts  : keeps ONLY '# runtime'
+# An empty distro skips apt_ros.txt entirely, which is what stops the non-ROS
+# stages from requesting ros-* on an image with no ROS repository.
 # =============================================================================
 select_packages() {
     local filter="$1" distro="${2:-}"
@@ -196,12 +186,9 @@ case "$COMMAND" in
         log_info "Setting up ROS repository for ${distro}..."
         mkdir -p /usr/share/keyrings
         tmp_key="$(mktemp)"
-        # ONE key for both families: ros.key is the binary form of ros.asc (same
-        # fingerprint, verified below), it is what `signed-by=` expects, and it is
-        # what upstream documents for noetic too. Fetching it directly also drops
-        # a `gpg --dearmor -o "$tmp_key"` step that aborted EVERY ROS 1 build:
-        # mktemp pre-creates the target, so gpg asked "Overwrite?" on /dev/tty —
-        # which `docker build` does not have (gpg: cannot open '/dev/tty').
+        # ros.key (binary, same fingerprint) for both families: it is what
+        # `signed-by=` expects, and fetching it directly drops a `gpg --dearmor`
+        # step that asked "Overwrite?" on a /dev/tty `docker build` has not.
         curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o "$tmp_key"
 
         verify_key_fingerprint "$tmp_key" "$ROS_GPG_FINGERPRINT" "ROS" \

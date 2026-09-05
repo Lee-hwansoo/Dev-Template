@@ -6,9 +6,8 @@
 
 SHELL := /bin/bash
 
-# Color definitions.
-# MAKE_TERMOUT is set by GNU make only when stdout is a terminal, so redirecting
-# `make ... > log` (or NO_COLOR=1) yields clean, greppable output automatically.
+# MAKE_TERMOUT is set only when stdout is a terminal, so `make … > log`
+# (or NO_COLOR=1) comes out plain.
 DEVKIT_COLOR := $(if $(MAKE_TERMOUT),$(if $(NO_COLOR),,yes),)
 ifeq ($(DEVKIT_COLOR),)
 BLUE   :=
@@ -35,10 +34,8 @@ OK     := $(GREEN)[OK]$(NC)
 WARN   := $(YELLOW)[WARN]$(NC)
 ERROR  := $(RED)[ERROR]$(NC)
 
-# Load environment configuration.
-# A `GPU_MODE=nvidia make start` style override must beat .env, but make gives
-# file assignments priority over inherited environment variables — so snapshot
-# the environment value and restore it after the include.
+# make gives file assignments priority over the environment, so snapshot a
+# `GPU_MODE=nvidia make start` override and restore it after the include.
 ifeq ($(origin GPU_MODE),environment)
 USER_GPU_MODE := $(GPU_MODE)
 endif
@@ -80,10 +77,9 @@ NEEDS_DETECTOR  := $(filter-out $(DETECTOR_EXEMPT),$(or $(MAKECMDGOALS),help))
 
 DETECTED_ENV_FILE := .docker_cache/detected-env.mk
 ifneq ($(NEEDS_DETECTOR),)
-# The cache is included AFTER .env, so its `:=` assignments win: a cache built
-# before .env existed (or before it was edited) silently overrides ROS_DISTRO /
-# BASE_IMAGE forever. Treat it as stale whenever .env is newer. `shell test`
-# instead of `wildcard`: make caches directory listings within a run.
+# Included AFTER .env, so its `:=` wins — stale whenever .env is newer, or a
+# cache built before an edit overrides ROS_DISTRO forever. `shell test`, not
+# `wildcard`: make caches directory listings within a run.
 DETECTED_ENV_FRESH := $(shell [ -f "$(DETECTED_ENV_FILE)" ] && [ ! .env -nt "$(DETECTED_ENV_FILE)" ] && echo yes)
 ifeq ($(DETECTED_ENV_FRESH),)
 # Write via temp + mv: a failed or interrupted probe must never leave a partial
@@ -140,9 +136,8 @@ define GUARD_HOST_ONLY
 	fi
 endef
 
-# CHECK_GPU_RUNTIME: warn when the NVIDIA runtime is present-but-unusable, with
-# the exact remediation. Without this, `make build` picks the nvidia profile and
-# fails deep inside docker with "could not select device driver".
+# CHECK_GPU_RUNTIME: an NVIDIA GPU with no docker runtime fails deep inside
+# docker with "could not select device driver" — say so up front.
 define CHECK_GPU_RUNTIME
 	@if [ "$(HAS_NVIDIA)" = "true" ] && [ "$(HAS_TOOLKIT)" != "true" ]; then \
 		echo -e "  $(WARN) NVIDIA GPU detected, but Docker has no NVIDIA runtime configured."; \
@@ -163,11 +158,9 @@ SVC_MODE=$${GPU_MODE:-auto}; \
 	TARGET_SVC="$(SERVICE_PREFIX)-$$SVC_MODE"
 endef
 
-# FIND_CONTAINER: the running container of the SELECTED ENV. Scoped like
-# stop/down: an unfiltered `docker ps ... | head -1` attached to whichever of a
-# ros/basic pair started first, so `make exec ENV=ros` could land in the non-ROS
-# container. Docker ANDs repeated `--filter label=`, so the service is matched
-# here instead of with a second filter.
+# FIND_CONTAINER: the running container of the SELECTED ENV. An unfiltered
+# `docker ps | head -1` landed `make exec ENV=ros` in the non-ROS container.
+# Docker ANDs repeated `--filter label=`, so the service is matched in awk.
 define FIND_CONTAINER
 CONTAINER=$$(docker ps --filter "label=com.docker.compose.project=$(COMPOSE_PROJECT_NAME)" \
 		--format '{{.Label "com.docker.compose.service"}} {{.Names}}' \
@@ -424,17 +417,11 @@ shell:
 	docker exec -it $$USER_FLAG -w "$(WORKSPACE_PATH)" $$CONTAINER bash
 
 ## @target exec : Run a command inside the container with the full DevKit environment
-# The paved path for automation, independent of ENV, language and shell.
-# Runs through the entrypoint's --env mode, which loads the environment the boot
-# sequence resolved and execs the target directly — so a bare binary, `sh -c` or
-# a Python process gets exactly what an interactive session has. Shell rc hooks
-# (BASH_ENV, /etc/bash.bashrc) only ever reach bash; this does not depend on a
-# shell at all. Falls back to bash on images predating the --env mode.
-#   make exec CMD='python3 -m pytest'      make exec CMD='cmake --build build'
-#   make exec CMD='ros2 topic list'        make exec CMD='./install/bin/app'
-# A '$' inside CMD belongs to make first, so double it to reach the container
-# shell:  make exec CMD='echo $$ROS_DISTRO'   (a single $ROS_DISTRO expands to
-# nothing here and the command silently sees a truncated string).
+# The paved path for automation. Goes through the entrypoint's --env mode, so a
+# bare binary, `sh -c` or a Python process gets what an interactive session has
+# (rc hooks only ever reach bash). Falls back to bash on older images.
+#   make exec CMD='ros2 topic list'    make exec CMD='./install/bin/app'
+# Double any '$' — it belongs to make first: CMD='echo $$ROS_DISTRO'.
 exec:
 	$(call GUARD_HOST_ONLY)
 	@if [ -z "$$CMD" ]; then \
@@ -463,9 +450,8 @@ lint:
 	@$(MAKE) --no-print-directory exec CMD='mlint $(if $(filter 1 true,$(FIX)),--fix,)'
 
 ## @target term : Launch in-container Terminator GUI window (2x2 grid layout)
-# The display probe uses xdpyinfo (x11-utils), not xset (x11-xserver-utils, which
-# the image does not install) — with xset the target reported "no display" even
-# on a working WSLg/X11 host, so the GUI never launched.
+# Probes with xdpyinfo (x11-utils), not xset: the image ships no
+# x11-xserver-utils, and xset reported "no display" on a working WSLg host.
 term:
 	$(call GUARD_HOST_ONLY)
 	@$(MAKE) xauth >/dev/null 2>&1 || true
@@ -659,11 +645,9 @@ clean-cache:
 	@echo -e "  $(OK) Cache directory cleaned."
 
 ## @target clean-all : Reset containers, named volumes, output & cache
-# Order matters: containers must come down BEFORE the cache is wiped, or
-# clean-cache's running-container guard aborts the whole target. Named volumes
-# hold build artifacts, so this asks first unless FORCE=1 / CI=true.
-# KEEP_VENV=1 keeps the virtualenv AND the install volume that holds it, so a
-# rebuild reconnects to a ready environment instead of re-running mksync.
+# Containers first, cache second — clean-cache aborts while one is running.
+# Asks unless FORCE=1/CI=true. KEEP_VENV=1 keeps the venv and its volume, so a
+# rebuild reconnects instead of re-running mksync.
 clean-all: KEEP_VENV := $(if $(filter 1 true yes,$(KEEP_VENV)),1,0)
 clean-all:
 	$(call GUARD_HOST_ONLY)
@@ -686,9 +670,8 @@ clean-all:
 	@echo -e "  $(OK) Full project reset complete (containers, volumes & cache)."
 
 ## @target docker-clean : Remove dangling Docker images, build cache & unused volumes
-# HOST-WIDE and not limited to this project: an unused volume belonging to a
-# different, merely-stopped project is fair game for `prune --volumes`. Always
-# show what is at stake and ask, unless FORCE=1 / CI=true.
+# HOST-WIDE: `prune --volumes` also takes volumes of other, merely-stopped
+# projects. Shows what is at stake and asks, unless FORCE=1 / CI=true.
 docker-clean:
 	@echo -e "  $(WARN) This prunes Docker data for EVERY project on this host, not just $(COMPOSE_PROJECT_NAME)."
 	@docker system df 2>/dev/null | sed 's/^/    /' || true
@@ -705,10 +688,8 @@ docker-clean:
 # =============================================================================
 # Deprecated target names (pre-streamline spellings)
 # =============================================================================
-# DevKit is a base kit: renaming an entry point breaks the CI of every project
-# built on it. These forward to the current target and say where to go — once.
-# Deliberately absent from .PHONY and `make help`, so tab completion and the
-# guide only ever advertise the current name.
+# Renaming an entry point breaks the CI of every project built on this kit, so
+# these forward and say where to go. Absent from .PHONY and help on purpose.
 DEPRECATED = @echo -e "  $(WARN) 'make $(1)' is deprecated — use 'make $(2)'." >&2
 
 ## deprecated: check-host, env-check → check

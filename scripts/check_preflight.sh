@@ -1,17 +1,10 @@
 #!/bin/bash
 # =============================================================================
-# scripts/check_preflight.sh
-# Host toolchain preflight for `make build`.
-#
-# Purpose: fail fast with a CLEAR, actionable message instead of a cryptic error
-# deep inside `docker compose` / BuildKit when host prerequisites are missing.
-# This project hard-requires Docker + Compose v2 + BuildKit; on a fresh/minimal,
-# older, or podman-only host `make build` would otherwise die with something like
-# "docker: 'compose' is not a command" or "unknown flag: --mount".
-#
-# Exit codes: 0 = ok (warnings allowed), 1 = blocking prerequisite missing.
-# GPU/NVIDIA specifics are intentionally left to `make check` to avoid
-# duplicating that logic here.
+# scripts/check_preflight.sh — host toolchain preflight for `make build`.
+# Docker + Compose v2 + BuildKit are hard requirements; without this check a
+# minimal or podman-only host dies deep inside compose ("'compose' is not a
+# command"). Exit 0 = ok (warnings allowed), 1 = blocking. GPU checks live in
+# `make check`.
 # =============================================================================
 
 set -uo pipefail

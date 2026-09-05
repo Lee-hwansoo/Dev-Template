@@ -1,10 +1,7 @@
 #!/bin/bash
 # =============================================================================
-# scripts/util_gpu_detect.sh
-# Shared GPU hardware detection helpers
-#
-# Provides portable detection functions for GPU vendors and device nodes.
-# Sourced by: setup_gpu.sh, check_hardware.sh
+# scripts/util_gpu_detect.sh — GPU vendor and device-node detection.
+# Sourced by setup_gpu.sh and check_hardware.sh.
 # =============================================================================
 
 trim_ws() {
@@ -91,10 +88,8 @@ has_any_dri() {
     [ -d /dev/dri ] && has_glob_match "/dev/dri/renderD*"
 }
 
-# get_drm_driver: kernel DRM driver name(s), e.g. i915 amdgpu nvidia panfrost
-# freedreno v3d etnaviv msm. This is vendor-agnostic on purpose — SoC GPUs are
-# registered as *platform* devices and therefore have no PCI `device/vendor`
-# file, so has_drm_vendor() cannot see them at all. The driver name always works.
+# Kernel DRM driver name(s), e.g. i915 amdgpu nvidia panfrost v3d. Works for SoC
+# GPUs too: they are platform devices with no PCI vendor file for has_drm_vendor.
 get_drm_driver() {
     local uevent names=""
     for uevent in /sys/class/drm/*/device/uevent; do
@@ -114,7 +109,7 @@ has_tegra() {
 
 # AMD ROCm runtime
 has_rocm() {
-    command -v rocm-smi &>/dev/null || [ -d "/opt/rocm" ]
+    command -v rocm-smi >/dev/null 2>&1 || [ -d "/opt/rocm" ]
 }
 
 # WSL2 Paravirtualized Graphics (D3D12 / DirectX)
@@ -124,13 +119,9 @@ has_dxg() {
 }
 
 # =============================================================================
-# Rendering Stack Probes (OpenGL / GLX / EGL / Vulkan / D3D12)
-# -----------------------------------------------------------------------------
-# Each probe prints `key=value` lines and stays silent when its tool or display
-# is unavailable, so callers can consume them without branching on tool presence.
-#
-# All probes are timeout-guarded: glxinfo/eglinfo/vulkaninfo block indefinitely
-# against a DISPLAY that is set but unreachable, which would hang `hwcheck`.
+# Rendering probes (OpenGL / GLX / EGL / Vulkan / D3D12). Each prints key=value
+# and stays silent without its tool, so callers need no branching. All are
+# timeout-guarded: these block forever on a set-but-unreachable DISPLAY.
 # =============================================================================
 GPU_PROBE_TIMEOUT="${GPU_PROBE_TIMEOUT:-3}"
 
@@ -225,15 +216,13 @@ probe_gl_libs() {
 }
 
 # =============================================================================
-# GPU Metadata Providers (SSOT: Single Source of Truth)
+# get_cuda_metadata <key> — one source for CUDA-related version strings.
 # =============================================================================
-# Provides standardized version strings for CUDA-related components.
-# Usage: get_cuda_metadata <key>
 get_cuda_metadata() {
     local key="$1"
     case "$key" in
         cuda_ver)
-            if command -v nvcc &>/dev/null; then
+            if command -v nvcc >/dev/null 2>&1; then
                 local nvcc_out
                 nvcc_out=$(nvcc --version 2>/dev/null)
                 while read -r line; do

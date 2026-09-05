@@ -4,6 +4,19 @@
 
 ---
 
+## 📚 이 가이드와 나머지 문서
+
+| 문서 | 내용 |
+| --- | --- |
+| **이 문서** | SSOT 아키텍처, 일상 워크플로우(`mksync`·품질 루프·셸 환경), 템플릿 수명주기, CI |
+| [DEPENDENCIES.md](DEPENDENCIES.md) | Python·C++/ROS·APT 세 레이어의 의존성 제어 |
+| [DEPLOY.md](DEPLOY.md) | Apptainer SIF, 소스 비유출, 재현성, 보안 제약 |
+| [DIAGNOSTICS.md](DIAGNOSTICS.md) | 호스트/컨테이너 진단 명령 (`make check`·`hwcheck`·`gpus`) |
+| [SLURM.md](SLURM.md) | 원격 서버·SLURM 클러스터 운영 절차 |
+| [DEBUGGING.md](DEBUGGING.md) | VS Code 디버거(GDB/debugpy)와 태스크 |
+
+---
+
 ## 🏛️ 아키텍처: 단일 진실 공급원 (SSOT)
 
 DevKit은 모든 워크스페이스 경로 및 환경 설정에 **Single Source of Truth (SSOT)** 원칙을 강제합니다. 전체 환경은 `${WORKSPACE_PATH}` (기본값: `/workspace`)를 기준으로 결합됩니다.
@@ -274,215 +287,10 @@ make verify && make build && make test
 
 ## 📄 라이선스 및 사용 지침 (License & Usage)
 
-본 **DevKit** 보일러플레이트 코드 및 설정 파일은 **[MIT-0 (MIT No Attribution)](LICENSE)** 라이선스로 제공됩니다.
+본 **DevKit** 보일러플레이트 코드 및 설정 파일은 **[MIT-0 (MIT No Attribution)](../LICENSE)** 라이선스로 제공됩니다.
 
 - **출처 표기 의무 없음**: 템플릿 사용 시 원작자나 출처를 명시할 필요가 없으며, 상용·개인·기업 내부망 등 어떤 목적이든 자유롭게 활용 가능합니다.
 - **자유로운 라이선스 변경**: 새 프로젝트에 이 템플릿을 사용할 때 루트의 `LICENSE` 파일을 자유롭게 삭제하거나 본인 프로젝트의 라이선스로 덮어쓸 수 있습니다.
-
----
-
-## 📦 프로덕션 & 이식성 (Apptainer SIF)
-
-HPC 및 클러스터 환경 배포를 위해 워크스페이스를 단일 이진 파일인 **SIF (Singularity Image File)**로 추출합니다.
-
-### 🧊 SIF 생성 및 실행 명령어 가이드
-
-| 작업 구분 | CLI 명령어 | 결과 및 특징 |
-| :--- | :--- | :--- |
-| **Bake Dev Snapshot** | `make bake-dev ENV=ros\|dev` | 독립 가상환경을 포함한 개발용 SIF 스냅샷 생성 |
-| **Bake Dev Shared** | `make bake-dev ENV=ros\|dev SHARE=1` | 시스템 site-packages를 공유하는 개발용 SIF 스냅샷 생성 |
-| **Bake Production** | `make bake-prod ENV=ros\|dev [PROD_FULL_CUDA=1]` | `install/` 및 런타임 의존성만 포함하는 최적화 운영 SIF 생성 |
-| **Run Dev** | `make run-sif SIF_MODE=dev` | 소스 바인드 상태로 개발용 SIF 실행 |
-| **Run Production** | `make run-sif SIF_MODE=prod ENV=ros\|dev RUN_ARGS='cmd'` | 소스 바인드 없이 산출물 격리 실행 |
-| **Run SLURM** | `make run-sif SIF_MODE=slurm ENV=ros\|dev RUN_ARGS='cmd'` | SLURM 배치 스케줄러 노드에 작업 제출 |
-| **SLURM Control** | `make slurm-status` / `make slurm-cancel` | 활성/대기 중인 SLURM 배치 작업 조회 및 취소 |
-
-**Bake 단계에서 인식하는 추가 변수** (모두 `docker build --build-arg`로 전달됩니다):
-
-| 변수 | 기본값 | 설명 |
-| :--- | :--- | :--- |
-| **`SHARE=1`** | *(없음)* | `bake-dev` 전용. 스냅샷 내부 `mksync --share` 수행 (ROS 1 Noetic) |
-| **`PROD_FULL_CUDA=1`** | `false` | 런타임 CUDA를 최소 셋이 아닌 전체 툴킷으로 포함 (`FULL_CUDA` 빌드 인자) |
-| **`IMAGE_TAG=`** | `latest` | 릴리스 메타데이터(`/etc/devkit/devkit-release.json`)에 기록될 태그 |
-| **`SOURCE_DATE_EPOCH=`** | *(없음)* | 재현 가능 빌드용 고정 타임스탬프 |
-
----
-
-## 🛡️ 배포 시 소스 비유출 (Source Protection)
-
-프로덕션 이미지는 `install/`만 복사하고 `src/`는 넣지 않습니다. **그러나 그것이 "소스가 안 나간다"는 뜻은 아닙니다** —
-colcon은 `ament_python` 패키지의 `.py`를 `install/<pkg>/lib/pythonX.Y/site-packages/`로 **원본 그대로 복사**합니다.
-
-`check_deps.sh`(프로덕션 빌더에서 자동 실행)가 이를 감사하고, 선택적으로 제거합니다:
-
-| 환경변수 | 동작 |
-| :--- | :--- |
-| *(기본)* | 노출 현황만 보고 — `Source exposure: N python module(s), M launch script(s)` |
-| **`DEVKIT_STRIP_SOURCE=1`** | `.py` → `.pyc` 바이트컴파일 후 **원본 삭제** (`__pycache__`도 정리) |
-| **`DEVKIT_FAIL_ON_SOURCE=1`** | 평문 소스가 남아 있으면 **빌드 실패** (CI 게이트용) |
-
-```bash
-DEVKIT_STRIP_SOURCE=1 DEVKIT_FAIL_ON_SOURCE=1 make bake-prod ENV=ros
-```
-
-**제외 대상 (의도적)**
-
-- `install/.venv/**` — 서드파티 패키지이지 프로젝트 소스가 아닙니다.
-- `**/launch/*.py` — ROS 2 launch 시스템이 **소스로 읽어** 실행하므로 바이트컴파일하면 `ros2 launch`가 깨집니다.
-  런치 파일에 비밀이 들어가지 않도록 설계하고, 파라미터는 YAML이나 환경변수로 분리하세요.
-
-> [!WARNING]
-> **바이트컴파일은 난독화이지 암호화가 아닙니다.** 실제 이미지에서 `.pyc`를 열어 확인한 결과,
-> 다음은 **그대로 남습니다**:
->
-> ```
-> DEVKIT_SECRET_MARKER_9F3A                              ← 문자열 상수 전체
-> PROPRIETARY_CONSTANT                                    ← 식별자·함수명
-> /workspace/install/.../leaktest/core.py                 ← 원본 파일 경로
-> ```
->
-> 즉 **하드코딩된 비밀값(API 키, 토큰, 알고리즘 상수)은 전혀 보호되지 않습니다** — 그런 값은
-> 코드가 아니라 환경변수나 시크릿 저장소로 분리하세요. `.pyc`가 가리는 것은 구현 로직의 가독성뿐이며,
-> `uncompyle6`류로 디컴파일도 가능합니다.
-> 실제 보호가 필요하면 **네이티브 컴파일**(C++ 노드, 또는 Nuitka·Cython)로 가야 하며,
-> 이 경우 `install()` 규칙으로 바이너리만 설치되게 하면 소스는 전혀 나가지 않습니다.
-
----
-
-## 🔒 재현성 (Reproducibility) — 현재 보장 범위
-
-빌드 재현성은 **입력을 몇 겹까지 고정했는지**로 결정됩니다. DevKit이 제공하는 메커니즘과, 사용자가 직접 고정해야 하는 부분을 구분합니다.
-
-| 입력 계층 | 고정 수단 | 상태 |
-| :--- | :--- | :--- |
-| Ubuntu APT 패키지 | `APT_SNAPSHOT_DATE=YYYYMMDDTHHMMSSZ` → `snapshot.ubuntu.com` 시점 미러 고정 | ✅ 구현됨 |
-| APT 서명키 | `ROS_GPG_FINGERPRINT` 상수 대조 (`STRICT_GPG_CHECK=true` 시 불일치 중단) | ✅ 구현됨 |
-| 빌드 타임스탬프 | `SOURCE_DATE_EPOCH` → 릴리스 메타데이터 `build_date` | ✅ 구현됨 |
-| 외부 소스 저장소 | `dependencies.repos`의 `version:`에 **태그·커밋 해시** 지정 | ⚠️ 사용자 책임 (**`sync_deps`가 브랜치 참조를 경고**) |
-| 빌드 산출물 자체 포함성 | prod 빌더는 `--symlink-install` 미사용 (`DEVKIT_BUILD_TYPE=prod`) | ✅ 구현됨 |
-| 설치 결과 감사 | `dpkg-query`/`pip freeze` 매니페스트 + SHA-256을 이미지에 동봉 | ✅ 구현됨 |
-| Python 의존성 | `src/uv.lock` (최초 `mksync` 후 생성) | ⚠️ **파생 프로젝트 책임** (템플릿은 lock을 배포하지 않음) |
-| 베이스 이미지 | `.env`에 `BASE_IMAGE=ubuntu@sha256:<digest>` 로 다이제스트 고정 | ⚠️ 사용자 책임 (기본은 가변 태그 `ubuntu:22.04`) |
-| ROS APT 패키지 | packages.ros.org에는 스냅샷 서비스가 **없음** | ❌ 불가 (아래 참조) |
-| `rosdep install` | 해석 결과가 시점에 따라 달라짐 | ❌ 불가 |
-
-**완전 재현이 필요한 경우의 권장 절차**
-
-```bash
-# 1) Python 의존성 잠금 — 파생 프로젝트에서 최초 1회 후 커밋
-#    DevKit 자체는 lock을 커밋하지 않습니다: 템플릿이 특정 시점의 해석 결과를
-#    배포하면 모든 fork가 그 스냅샷을 물려받습니다. lock은 제품이 되는 저장소의
-#    것이므로, 이 저장소를 복제한 뒤 여기서 커밋하세요.
-mksync && git add src/uv.lock && git commit -m "chore: pin python dependencies"
-
-# 2) 베이스 이미지 다이제스트 고정 (.env)
-docker buildx imagetools inspect ubuntu:22.04 | grep Digest   # → sha256:...
-echo 'BASE_IMAGE=ubuntu@sha256:<digest>' >> .env
-
-# 3) APT 스냅샷 + 타임스탬프 고정 후 빌드
-APT_SNAPSHOT_DATE=20260801T000000Z SOURCE_DATE_EPOCH=1785542400 make bake-prod ENV=ros
-```
-
-> [!IMPORTANT]
-> **ROS APT 계층은 시점 고정이 불가능합니다.** packages.ros.org는 스냅샷 미러를 제공하지 않으므로
-> `ros-humble-*` 패키지 버전은 빌드 시점에 따라 달라질 수 있습니다. 비트 단위 재현이 필요하다면
-> ① `dependencies/apt_ros.txt`에 `패키지=버전`으로 명시하거나, ② 검증된 이미지를 **`make bake-prod`로 SIF에 봉인**해
-> 그 아티팩트를 배포하세요. SIF는 그 자체로 완전한 동결 스냅샷입니다.
-
-### 고정 불가 계층의 대안 — 빌드 매니페스트 (감사 및 사후 고정)
-
-고정할 수 없는 계층은 **무엇이 설치되었는지 기록**해 감사 가능하게 만듭니다. 모든 프로덕션 이미지의
-`/etc/devkit/`에 다음이 동봉됩니다:
-
-| 파일 | 내용 |
-| :--- | :--- |
-| `devkit-release.json` | `base_image`, `apt_snapshot`, `source_date_epoch`, `build_type`, `git_commit`, 매니페스트 **SHA-256** |
-| `devkit-apt-manifest.txt` | 설치된 전체 APT 패키지 `이름=버전` (정렬됨) |
-| `devkit-pip-manifest.txt` | venv의 `pip freeze` 결과 (정렬됨) |
-
-```bash
-# 두 빌드 사이에 무엇이 움직였는지 확인
-docker run --rm img-a cat /etc/devkit/devkit-apt-manifest.txt > a.txt
-docker run --rm img-b cat /etc/devkit/devkit-apt-manifest.txt > b.txt
-diff a.txt b.txt
-
-# 검증된 빌드와 동일한 의존성 집합인지 한 값으로 확인
-docker run --rm img cat /etc/devkit/devkit-release.json | grep sha256
-```
-
-매니페스트 한 줄을 그대로 `dependencies/apt_ros.txt`에 붙여넣으면(`ros-humble-rclcpp=16.0.10-1jammy.20260801`)
-해당 패키지가 그 시점으로 **사후 고정**됩니다.
->
-> 스냅샷 서버가 불통이면 빌드는 **중단**됩니다 — 롤링 미러로 조용히 넘어가면 재현성이 무의미해지기 때문입니다.
-> 의도적으로 넘어가려면 `APT_SNAPSHOT_FALLBACK=1`을 명시하세요. (`make verify` [reproducibility]이 이 메커니즘의 존재를 강제합니다.)
-
----
-
-## 🏥 진단 유틸리티 & 헬스 체크
-
-### 🖥️ 1. 호스트 측 진단 명령어 (Host Utilities)
-* **`make gpus`**: 호스트 PC의 GPU (NVIDIA/iGPU) 가속 및 VRAM 상태 조회.
-* **`make check`**: Docker CLI/데몬 · Compose v2 · BuildKit 사전 점검, `.env` ↔ `.env.example` 키 누락 대조,
-  WSL2 진단, NVIDIA Container Toolkit 미설정 감지(해결 명령 동반). `build`/`start`의 선행 의존성입니다.
-* **`make status`**: 프로젝트 요약 + **`[Detected Host Wiring]`** (GPU 디바이스, WSL 라이브러리, 디스플레이,
-  XDG/Xauthority, ssh-agent, git 신원, 컨테이너 UID/GID) — 자동 감지 결과를 한눈에 확인.
-* **`make clean-cache`**: 호스트 감지 캐시(`.docker_cache/detected-env.mk`) 무효화 → 다음 `make` 실행 시 재감지.
-* **`make verify`**: 24개 계약을 실행으로 검증 (아래 표, 약 0.5초).
-
-| # | 검증 계약 | 회귀 시 증상 |
-| :-- | :--- | :--- |
-| 1–3 | 필수 파일·실행 권한, `bash -n` 문법, `.PHONY` ↔ 룰 일치 | 파일 누락, 문법 오류, 미정의 타겟 |
-| 4 | `find ... -quit`에 `-print` 동반 | 탐색 결과가 항상 비어 감지가 조용히 무력화 |
-| 5 | compose가 쓰는 `HOST_*`/`WSL_*`를 `check_env.sh`가 모두 방출 | GPU·X11·Wayland·ssh-agent 패스스루 소실 |
-| 6 | APT 태그 필터 계약 (`all`/`builder`/`runtime`, ros1/ros2) | 비-ROS 스테이지 빌드 실패, 운영 이미지 비대화 |
-| 7 | `setup_gpu.sh`의 `GPU_ENV_FILE` 영속화 | `make shell` 세션에서 GPU 환경변수 유실 |
-| 8 | `cbuild`/`mbuild`/`mksync`가 함수 | `docker build` 중 `command not found` |
-| 9 | 감지 캐시 원자적 쓰기 + 실패 시 즉시 중단 | 부분 캐시가 영구 재사용되어 모든 마운트 소실 |
-| 10 | 도움말/MOTD가 광고하는 숏컷이 실제로 정의됨 | `command not found` (예: `check_deps`) |
-| 11 | 런타임 환경이 로그인·대화형·비대화형 셸 모두에 도달 + rosdep 캐시 시딩 | 스크립트 셸에서 ROS/venv 유실, `mksync` 실패 |
-| 12 | ROS GPG 지문 핀 + `make update-gpg` 대상 일치 | 서명키 검증 소실(공급망), 업데이터 파손 |
-| 13 | 문서화된 노브에 동작하는 소비자 존재 | 공개 API를 죽은 코드로 오인해 삭제 (`DEBUG_MODE`) |
-| 14 | `make clean`이 venv 보존 + 링크·빈 `install/` 제거 + `clean-all`이 이미지 제거 | 가상환경 파괴, 끊어진 링크·GB 단위 이미지 잔존 |
-| 15 | 문서화된 환경 노브에 구현이 존재 | 광고만 되고 동작하지 않는 스위치 |
-| 16 | 렌더링 프로브가 `timeout` 보호 + errexit 안전 | 도달 불가 `DISPLAY`에서 진단이 무한 정지 |
-| 17 | 리다이렉트/`NO_COLOR` 시 ANSI 미출력 | CI 로그·파일 캡처가 제어문자로 오염 |
-| 18 | 재현성 수단(APT 스냅샷·`SOURCE_DATE_EPOCH`·GPG 핀) 배선 | 재현 빌드 불가 |
-| 19–22 | 프로덕션 엔트리포인트 계약, 탭 완성 ↔ `.PHONY`, VS Code JSON 확장, Dockerfile 패키지 정책 | 배포·자동완성·IntelliSense·이미지 비대화 |
-| 23 | SIF 파이프라인: 빌드 인자 전달(`CUDA_VERSION` 등)·CUDA repo 배선·잘못된 플래그/ENV 거부·`SYNC_TARGET_DIR`·ROS 바인딩 검사 환경 | CUDA 없는 SIF 침묵 생성, 오타 입력 무시, 스테이징 격리 소실 |
-| 24 | 보안 기본값·가드: fail-closed GPG 핀(ROS+NVIDIA)·비특권 컨테이너·TLS 스냅샷(전칭)·범위 제한 xhost·사용자명 새니타이즈·`rm -rf` 가드·빈 배열 관용구·캐시 주입 프로브 | 키 교체 침묵 수용, 컨테이너 탈출 표면, 롤백 공격, 프로젝트명 파손, 데이터 손실, SLURM 노드 즉사, make 코드 주입 |
-
-### 🐳 2. 컨테이너 내부 진단 숏컷 (In-Container Utilities)
-
-#### `hwcheck` — 6개 섹션 종합 스캔 (약 0.8초, `--brief`로 경고만 출력)
-
-| 섹션 | 내용 |
-| :--- | :--- |
-| 1/6 System | CPU 모델·코어·SIMD, RAM 사용률, 디스크 여유 |
-| 2/6 Network & ROS | IP, 인터페이스 MTU, 시각 동기화, ROS 배포판/RMW/Domain ID |
-| 3/6 GPU | `/dev/nvidiactl` · `/dev/dri` · `/dev/dxg` 노드, NVIDIA VRAM, ROCm |
-| 4/6 Display & GUI | X11 소켓·Xauthority, Wayland, XDG, **OpenGL 렌더러·Mesa 버전·가속 여부**, **Vulkan 디바이스**, **로더 경로**(`libGL`/`libEGL`/`libvulkan`/`libcuda`) |
-| 5/6 Identity & Permissions | **uid/gid·소속 그룹**, 워크스페이스/`build`/`install`/`/cache` **소유권·쓰기 가능 여부**, GPU 디바이스 접근 권한, root 실행 경고 |
-| 6/6 Dev Toolchain | Python, uv/colcon/rosdep/ccache/vcs, venv, 시리얼·CAN 주변장치 |
-
-> 5/6 섹션은 컨테이너에서 가장 흔한 두 가지 실패를 직접 판정합니다 —
-> **바인드 마운트 UID/GID 불일치**(`Permission denied`)와 **`video`/`render` 그룹 미가입**(GPU 디바이스 접근 불가).
-> 불일치 시 해결 명령(`make clean-cache && make build`)까지 함께 출력합니다.
-
-#### `gpus` — 렌더링 스택 전체 리포트 (약 2초)
-
-`[Hardware]`(NVIDIA/CUDA/cuDNN, DRI 노드, WSL2 D3D12 + `/usr/lib/wsl/lib` 마운트 여부) ·
-`[Display]`(X11/Wayland 소켓, XDG) · `[OpenGL / GLX]`(vendor/renderer/version/Mesa/direct/가속/VRAM, **llvmpipe 소프트웨어 렌더링 경고**) ·
-`[EGL]` · `[Vulkan]`(디바이스/타입/API/드라이버) · `[Loader]`(실제 해석된 라이브러리 경로) ·
-`[Active configuration]`(GPU_MODE, `MESA_*`/`__GLX_*`/`LIBGL_*` 전체, `LD_LIBRARY_PATH`, 영속화 파일 상태).
-
-* **`gpu <mode>`**: 렌더링 모드 전환 (`auto`/`nvidia`/`intel`/`amd`/`igpu`/`cpu`).
-  결과가 `~/.gpu_env.sh`에 기록되어 이후 새 셸에도 동일하게 적용됩니다.
-* **`gpu_check` / `vulkan_check`**: 한 줄짜리 빠른 렌더러 확인.
-* **`check_deps`**: `install/` 내 누락된 `*.so` 라이브러리를 `ldd`로 탐지.
-
-> 진단 프로브(`glxinfo`/`eglinfo`/`vulkaninfo`)는 모두 `timeout` 보호됩니다 — `DISPLAY`가 설정되었지만
-> 서버에 닿지 못하는 상황에서 진단이 멈추지 않도록 하기 위함이며, `make verify` [render-probes]이 이를 강제합니다.
-> `eglinfo`는 모든 플랫폼을 초기화하느라 ~1.8초가 걸려 `hwcheck`에서는 제외하고 `gpus`에서만 조회합니다.
 
 ---
 
@@ -492,13 +300,13 @@ docker run --rm img cat /etc/devkit/devkit-release.json | grep sha256
 
 | 워크플로 | 트리거 | 내용 | 실작업 |
 | :--- | :--- | :--- | :--- |
-| `verify.yml` | 모든 push · PR | `make verify`(계약 31개) + `docker build --check`(레이어 없이 멀티스테이지 린트) | **~2.2초** |
+| `verify.yml` | 모든 push · PR | `make verify`(계약 전체) + `docker build --check`(레이어 없이 멀티스테이지 린트) | **수 초** |
 | `images.yml` | `docker/**`·`dependencies/**`·apt 헬퍼 변경 시 + 주간 cron + 수동 | ROS 1/ROS 2 apt 키 경로(컨테이너 안, tty 없음) · CUDA 저장소 핀 · `base`/`build-core` 실제 빌드 | 수 분 |
 | `images.yml` → `runtime-smoke` | **cron · 수동 전용** | 전체 이미지 빌드 → `make start` → 비-bash 프로세스에서 `import rclpy` · `xdpyinfo` 존재 · `mksync` 후 venv 활성/명명 · `check_deps` | ~20분 |
 
 > 두 워크플로 모두 `concurrency: cancel-in-progress` 로 이전 실행을 자동 취소합니다.
 > `config/**` 변경은 런타임 잡을 트리거하지 않습니다 — 대신 그 부류의 회귀(`LD_LIBRARY_PATH` 오염,
-> venv 미활성, tty 없는 MOTD)는 각각 호스트에서 도는 계약으로 고정돼 있어 fast 티어가 1.4초에 잡습니다.
+> venv 미활성, tty 없는 MOTD)는 각각 호스트에서 도는 계약으로 고정돼 있어 fast 티어가 바로 잡습니다.
 > 병합 전에는 `runtime-smoke` 를 수동으로 한 번 돌리는 것을 권장합니다.
 
 ---
@@ -528,3 +336,28 @@ DevKit은 베이스 키트이므로 진입점 이름을 바꾸면 그 위에 올
 1. **환경 소싱 (`s`)**: 빌드 후 또는 새 터미널을 열었을 때 `s` 알리애스 (`source install/setup.bash`) 실행.
 2. **파이썬 가상환경 진입**: `activate` 알리애스를 통해 isolated venv 진입.
 3. **스마트 빌드**: ROS 패키지는 `cbuild`, Pure C++ 프로젝트는 `mbuild` 사용.
+4. **커밋 규약**: [Conventional Commits](https://www.conventionalcommits.org/) —
+   `type(scope): subject`. 히스토리가 곧 변경 기록이므로(별도 파일 없음) 제목 한 줄이
+   **무엇이 왜 바뀌었는지**를 말해야 합니다.
+
+   | type | 쓰임 |
+   | --- | --- |
+   | `feat` / `fix` | 기능 추가 / 버그 수정 |
+   | `refactor` / `perf` | 동작 동일한 정리 / 성능 |
+   | `docs` / `test` / `ci` / `chore` | 문서 / 계약·테스트 / 파이프라인 / 잡무 |
+
+   커밋 전 `make verify`가 통과해야 합니다. 계약을 하나 추가했다면 **뮤테이션 테스트**로
+   "깨지면 잡히는지"를 확인하세요 — 이 저장소의 검사는 전부 그렇게 도입되었습니다.
+5. **주석 규칙**: 설명성 주석은 **핵심 1~2줄**로 씁니다. 코드가 이미 말하는 것을 되풀이하지
+   않고, "왜 이렇게 했는가"만 남깁니다. 반대로 **사용법은 충분히** 적습니다 — 사용자가
+   직접 호출하는 함수·스크립트는 시그니처와 인자·옵션을 docstring 형식으로 남기세요.
+
+   ```bash
+   # mlint [--fix]
+   #   ruff (Python) and clang-format (C/C++ when installed) in check mode; --fix
+   #   applies what can be applied. Same rules the editor uses on save.
+   mlint() { ... }
+
+   # 설명성 주석은 한 줄로
+   # Prepend, never assign: this is written before ROS is sourced.
+   ```

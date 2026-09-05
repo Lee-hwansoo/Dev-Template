@@ -32,19 +32,15 @@ esac
 SIF_IMAGE="${1:?Usage: slurm_run.sh <sif-image> [command [args...]]}"
 shift || true
 
-# Command handling — two call shapes, two semantics:
-#   1 arg   (apptainer_run.sh pre-joined string) → `bash -c` so its internal
-#           quoting survives;
-#   N args  (direct `sbatch slurm_run.sh img python3 train.py --flag`) → exec
-#           verbatim as argv; re-parsing through bash -c would re-interpret
-#           metacharacters (`&`, `(`, `$`) inside legitimate arguments.
+# Two call shapes: 1 arg (a pre-joined string from apptainer_run.sh) goes
+# through `bash -c` to keep its quoting; N args exec verbatim, since re-parsing
+# would re-interpret `&`, `(` and `$` inside legitimate arguments.
 if [ $# -eq 1 ]; then CMD=( bash -c "$1" )
 elif [ $# -gt 1 ]; then CMD=( "$@" )
 else CMD=( bash ); fi
 
-# --cleanenv strips everything except APPTAINERENV_*/SINGULARITYENV_*: forward
-# the ROS/DDS knobs so a directly-submitted job (sbatch scripts/slurm_run.sh …)
-# keeps them, not only jobs routed through apptainer_run.sh.
+# --cleanenv keeps only APPTAINERENV_*/SINGULARITYENV_*, so forward the ROS/DDS
+# knobs here too — a job submitted directly never passes through apptainer_run.
 for v in ROS_DISTRO ROS_DOMAIN_ID RMW_IMPLEMENTATION ROS_MASTER_URI ROS_LOCALHOST_ONLY; do
     if [ -n "${!v:-}" ]; then
         export "APPTAINERENV_${v}=${!v}" "SINGULARITYENV_${v}=${!v}"

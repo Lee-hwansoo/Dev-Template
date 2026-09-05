@@ -1,14 +1,10 @@
 {
   // =========================================================================
-  // .vscode/tasks.json
-  // Build, test, and utility tasks for DevKit projects
+  // .vscode/tasks.json — build, test and utility tasks (ROS 1/2 and CMake).
   //
-  // Supports ROS 1/2 workspace builds and CMake projects.
-  // ROS version is auto-detected via the ROS_DISTRO environment variable.
-  //
-  // Execution Strategy:
-  //   - When inside a Dev Container: tasks run directly in the container shell
-  //   - When on the host: tasks use `docker exec` to reach the running container
+  // Every task runs in the shell VS Code is attached to, so run them from
+  // inside the container; the build tasks source config/util_aliases.sh for
+  // cbuild/mbuild/mtest/mlint. From the host use `make exec CMD='<command>'`.
   // =========================================================================
   "version": "2.0.0",
   "inputs": [

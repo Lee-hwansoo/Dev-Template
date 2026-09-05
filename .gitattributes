@@ -1,6 +1,6 @@
 # =============================================================================
-# .gitattributes
-# All-in-One DevKit Universal Project Attributes
+# .gitattributes — LF everywhere. A CRLF shell script fails in the container
+# with "bad interpreter: /bin/bash^M", which is unreadable as a symptom.
 # =============================================================================
 
 # Default: All files
