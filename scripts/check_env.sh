@@ -1,9 +1,16 @@
 #!/bin/bash
 # =============================================================================
-# scripts/check_env.sh
-# Diagnostic engine for host environment detection (Linux, macOS, WSL2, GPU)
+# scripts/check_env.sh — host detection (Linux, macOS, WSL2, GPU, display) as
+# key=value output. Every key here is consumed by docker-compose*.yml, and
+# check [host-detect-contract] asserts none goes missing.
 # =============================================================================
 set -euo pipefail
+
+# The path SSOT, for devkit_env_value. Sourced like every other script here; it
+# defines no HOST_* name this detector emits.
+source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || { echo "  [ERROR] Cannot load config/util_paths.sh (broken checkout?)" >&2; exit 1; }
+devkit_require "util_logging.sh"
+LOG_PREFIX="[Env Detect]"
 
 OUTPUT_MODE="${1:-env}"
 
@@ -24,7 +31,7 @@ EOF
 case "$OUTPUT_MODE" in
     env|--makefile) ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "check_env.sh: unknown option: $OUTPUT_MODE" >&2; usage >&2; exit 2 ;;
+    *) log_error "Unknown option: $OUTPUT_MODE"; usage >&2; exit 2 ;;
 esac
 
 emit_env() {
@@ -109,10 +116,10 @@ if [ -n "${DOCKER_DEV_CACHE_DIR:-}" ]; then
     _cache_root="${DOCKER_DEV_CACHE_DIR%/}"
     case "$DOCKER_DEV_CACHE_DIR" in
         /*) ;;
-        *)  echo "check_env.sh: DOCKER_DEV_CACHE_DIR must be an absolute path: ${DOCKER_DEV_CACHE_DIR}" >&2; exit 2 ;;
+        *)  log_error "DOCKER_DEV_CACHE_DIR must be an absolute path: ${DOCKER_DEV_CACHE_DIR}"; exit 2 ;;
     esac
     if [ -z "$_cache_root" ] || [ "$_cache_root" = "${HOST_WORKSPACE_PATH%/}" ]; then
-        echo "check_env.sh: DOCKER_DEV_CACHE_DIR must not be '/' or the workspace root." >&2
+        log_error "DOCKER_DEV_CACHE_DIR must not be '/' or the workspace root."
         exit 2
     fi
     HOST_CACHE_DIR="$_cache_root"
@@ -124,10 +131,10 @@ fi
 # reads ROS/GPU facts and must keep working from a read-only CWD.
 if ! mkdir -p "$HOST_CACHE_DIR" 2>/dev/null; then
     if [ "$OUTPUT_MODE" = "--makefile" ]; then
-        echo "check_env.sh: cannot create cache directory: ${HOST_CACHE_DIR}" >&2
+        log_error "Cannot create the cache directory: ${HOST_CACHE_DIR}"
         exit 2
     fi
-    echo "check_env.sh: warning: cannot create ${HOST_CACHE_DIR}; placeholder mounts unavailable." >&2
+    log_warn "Cannot create ${HOST_CACHE_DIR}; placeholder mounts unavailable."
 fi
 
 # placeholder <name> [--file] : a stable stand-in path for an absent host resource.
@@ -222,12 +229,8 @@ fi
 # value gets cached in .docker_cache/detected-env.mk.
 # Read, never source: .env is data, not code.
 DEVKIT_ENV_FILE="${DEVKIT_ENV_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.env}"
-env_file_value() {
-    [ -f "$DEVKIT_ENV_FILE" ] || return 0
-    sed -n "s/^[[:space:]]*$1=//p" "$DEVKIT_ENV_FILE" | tail -n 1 | tr -d '"'"'"'\r'
-}
-ROS_DISTRO="${ROS_DISTRO:-$(env_file_value ROS_DISTRO)}"
-BASE_IMAGE="${BASE_IMAGE:-$(env_file_value BASE_IMAGE)}"
+ROS_DISTRO="${ROS_DISTRO:-$(devkit_env_value ROS_DISTRO "$DEVKIT_ENV_FILE")}"
+BASE_IMAGE="${BASE_IMAGE:-$(devkit_env_value BASE_IMAGE "$DEVKIT_ENV_FILE")}"
 ROS_DISTRO="${ROS_DISTRO:-humble}"
 if [ -z "${BASE_IMAGE:-}" ]; then
     case "$ROS_DISTRO" in

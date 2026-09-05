@@ -14,6 +14,25 @@ DevKit은 모든 워크스페이스 경로 및 환경 설정에 **Single Source 
   1. `${WORKSPACE_PATH}/scripts/...` (공식 SSOT 경로)
   2. `$(dirname "${BASH_SOURCE[0]}")/...` (로컬 fallback)
 
+### 📚 공유 라이브러리 — 규칙이 한 번만 정의되는 곳
+이 목록은 **파생 프로젝트가 쓰라고 제공하는 API**입니다 — 인트리 호출자가 없는 심볼도
+기능이며, check [provided-api]가 경로 집합과 로그 동사를 실행으로 검증합니다.
+새 로직을 추가할 때는 아래 파일 중 해당 규칙의 소유자를 먼저 확인하세요. 복사본이 갈라지면
+호출 지점마다 다르게 동작합니다(실제로 `apptainer_run.sh`가 런타임을 못 찾고 `singularity:
+command not found`로 죽은 원인이었습니다). `scripts/verify_repo.sh`가 이 목록과 실제 파일
+집합의 일치를 검사합니다.
+
+| 파일 | 단일 정의 대상 |
+| --- | --- |
+| `config/util_paths.sh` | 워크스페이스 경로 전체(`WS_ROOT`·`WS_SRC`·`WS_CONFIG`·`WS_SCRIPTS`·`WS_DEPS`·`WS_BUILD`·`WS_INSTALL`·`WS_LOGS`·`WS_VENV`·`WS_VENV_PY`), `.env` 값 읽기(`devkit_env_value`), `devkit_require`, 로그 스텁 |
+| `scripts/util_logging.sh` | 로그 동사(`log_ok`/`log_warn`/`log_detail`…), 배너·섹션, 스트림별 색상 판정 |
+| `scripts/util_sif_common.sh` | SIF 런타임 바이너리, 아티팩트 이름, 호스트 환경 임포트, 엔트리포인트 경유 |
+| `scripts/util_gpu_detect.sh` | GPU 벤더·디바이스 노드 감지 |
+| `scripts/util_apt_helper.sh` | 빌드 타임 APT 저장소 신뢰 앵커 및 태그 필터 설치 |
+| `scripts/util_cuda_apt.sh` | CUDA/cuDNN apt 프로파일 설치 |
+| `scripts/util_setup_links.sh` | 워크스페이스 심볼릭 링크(`colcon.meta`, `.venv`, `compile_commands.json`) |
+| `scripts/util_release_metadata.sh` | 릴리스 메타데이터 및 APT/pip 매니페스트 생성 |
+
 ---
 
 ## 🏁 통합 개발 워크플로우

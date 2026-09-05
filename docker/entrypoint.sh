@@ -59,7 +59,8 @@ if declare -F _log_resolve_file >/dev/null 2>&1; then
         && : > "${__DEVKIT_LOG_PATH}"; } 2>/dev/null || true
 fi
 
-# Fallback loggers if util_logging.sh not available
+# PID 1 must not die on a missing helper: these cover a broken mount where
+# neither util_paths.sh (whose stubs come first) nor util_logging.sh loaded.
 declare -F log_info  >/dev/null 2>&1 || log_info()  { echo "  [INFO] $*"; }
 declare -F log_ok    >/dev/null 2>&1 || log_ok()    { echo "  [OK]   $*"; }
 declare -F log_warn  >/dev/null 2>&1 || log_warn()  { echo "  [WARN] $*" >&2; }

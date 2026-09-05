@@ -29,8 +29,20 @@ export WS_LOGS="${WS_ROOT}/log"
 # install volume and docker/prod_entrypoint.sh all hardcode install/.venv, so a
 # relocation knob here would move the shell half only.
 export WS_VENV="${WS_INSTALL}/.venv"
+# The venv interpreter, composed ONCE — five call sites spelled it themselves.
+export WS_VENV_PY="${WS_VENV}/bin/python3"
 export WS_CCACHE_DIR="/cache/ccache"
 export WS_UV_CACHE_DIR="/cache/uv"
+
+# devkit_env_value <key> [env_file] — the last assignment of <key> in .env,
+# with the quotes and CR compose tolerates stripped. READ, never source: .env is
+# data, not code, and make's `export` does not reach $(shell …), so every caller
+# that needs a value before compose runs has to read the file itself.
+devkit_env_value() {
+    local key="$1" file="${2:-${WS_ROOT}/.env}"
+    [ -f "$file" ] || return 0
+    sed -n "s/^[[:space:]]*${key}=//p" "$file" | tail -n 1 | tr -d '"'"'"'\r'
+}
 
 configure_git_safe_directory() {
     export GIT_CONFIG_COUNT=1

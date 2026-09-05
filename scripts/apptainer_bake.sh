@@ -31,12 +31,8 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-case "$MODE" in dev|prod) ;; *)
-    echo -e "  \033[31m[ERROR]\033[0m --mode must be 'dev' or 'prod' (got: ${MODE})" >&2; exit 2 ;;
-esac
-case "$ENV_NAME" in ros|dev) ;; *)
-    echo -e "  \033[31m[ERROR]\033[0m --env must be 'ros' or 'dev' (got: ${ENV_NAME})" >&2; exit 2 ;;
-esac
+sif_require_choice --mode "$MODE" dev prod || exit 2
+sif_require_choice --env "$ENV_NAME" ros dev || exit 2
 if [ "$SHARE_MODE" = "true" ] && [ "$MODE" = "prod" ]; then
     log_error "--share is a dev-snapshot option; prod builds always install a self-contained venv."
     exit 2

@@ -6,15 +6,18 @@
 set -euo pipefail
 
 WS_ROOT="${WORKSPACE_PATH:-/workspace}"
+# Spelled here, not sourced from config/util_paths.sh: the artifact copies
+# install/ only, so this file is the whole path SSOT it has.
+WS_VENV="${WS_ROOT}/install/.venv"
 ROS_SETUP="/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
 INSTALL_SETUP="${WS_ROOT}/install/setup.bash"
-VENV_ACTIVATE="${WS_ROOT}/install/.venv/bin/activate"
+VENV_ACTIVATE="${WS_VENV}/bin/activate"
 
 export WORKSPACE_PATH="$WS_ROOT"
 export LANG="${LANG:-C.UTF-8}"
 export LC_ALL="${LC_ALL:-${LANG}}"
-export PATH="${WS_ROOT}/install/.venv/bin:${WS_ROOT}/install/bin:${PATH}"
-export VIRTUAL_ENV="${WS_ROOT}/install/.venv"
+export PATH="${WS_VENV}/bin:${WS_ROOT}/install/bin:${PATH}"
+export VIRTUAL_ENV="${WS_VENV}"
 
 source_runtime_file() {
     local file="$1"

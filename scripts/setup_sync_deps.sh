@@ -15,32 +15,24 @@
 # =============================================================================
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Normalized (cd/pwd), not "${SCRIPT_DIR}/..": the --force safety fence below
-# compares user paths against this prefix, and '/repo/scripts/..' matches nothing.
-WS_ROOT="${WORKSPACE_PATH:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
-DEPS_DIR="${WS_ROOT}/dependencies"
-REPOS_FILE="${DEPS_DIR}/dependencies.repos"
-OVERLAY_DIR="${DEPS_DIR}/overlay"
-# SYNC_TARGET_DIR overrides where third-party sources land; the Dockerfile
-# builder stages import into /tmp/staging to keep the image's src/ clean.
-# Documented (and compose-defaulted) as a workspace-relative path, so anchor it
-# to WS_ROOT: left relative it would follow the caller's cwd, and the --force
-# fence below — which compares against ${WS_ROOT}/* — would reject it outright.
-TARGET_DIR="${SYNC_TARGET_DIR:-src/thirdparty}"
-case "$TARGET_DIR" in /*) ;; *) TARGET_DIR="${WS_ROOT}/${TARGET_DIR}" ;; esac
-
-# --- Logging: the shared SSOT. Every caller (entrypoint, `sync_deps`, the
-# --- Dockerfile ros stage) runs from a tree that carries config/ and scripts/,
-# --- and util_paths.sh stubs the verbs if util_logging.sh is ever absent.
-source "${WS_ROOT}/config/util_paths.sh" 2>/dev/null || true
-source "${WS_ROOT}/scripts/util_logging.sh" 2>/dev/null || true
+# The path SSOT first: WS_ROOT must not come from WORKSPACE_PATH directly (make
+# exports the CONTAINER path to host recipes too), and the --force fence below
+# compares user paths against it, so it also has to be normalized — both of
+# which util_paths.sh already gets right.
+source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || { echo "  [ERROR] Cannot load config/util_paths.sh (broken checkout?)" >&2; exit 1; }
+devkit_require "util_logging.sh"
 LOG_PREFIX="[Sync Deps]"
 # Strip colour when piped/redirected or NO_COLOR is set (see util_logging.sh).
 declare -F devkit_auto_color >/dev/null 2>&1 && devkit_auto_color
-declare -F log_info >/dev/null 2>&1 || { log_info() { echo "  [INFO] $*"; }; log_ok() { echo "  [OK] $*"; }
-    log_warn() { echo "  [WARN] $*" >&2; }; log_error() { echo "  [ERROR] $*" >&2; }
-    print_section() { echo "  [ $* ]"; }; }
+
+DEPS_DIR="${WS_ROOT}/dependencies"
+REPOS_FILE="${DEPS_DIR}/dependencies.repos"
+OVERLAY_DIR="${DEPS_DIR}/overlay"
+# SYNC_TARGET_DIR is documented workspace-relative, so anchor it to WS_ROOT:
+# left relative it follows the caller's cwd and the --force fence below (which
+# compares against ${WS_ROOT}/*) rejects it.
+TARGET_DIR="${SYNC_TARGET_DIR:-src/thirdparty}"
+case "$TARGET_DIR" in /*) ;; *) TARGET_DIR="${WS_ROOT}/${TARGET_DIR}" ;; esac
 
 _truthy() { case "${1,,}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac; }
 

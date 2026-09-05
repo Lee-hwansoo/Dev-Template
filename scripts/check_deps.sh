@@ -1,19 +1,19 @@
 #!/bin/bash
 # =============================================================================
-# scripts/check_deps.sh
-# Pre-ship inspection of an install tree: missing shared libraries (ldd),
-# active ROS Python bindings (rospy/rclpy), and shipped source exposure.
-#
-# Usage: check_deps.sh [target_dir]
-#
-# Environment:
-#   DEVKIT_STRIP_SOURCE=1    Byte-compile .py to .pyc and delete the .py source
-#   DEVKIT_FAIL_ON_SOURCE=1  Exit non-zero if plaintext project source remains
+# scripts/check_deps.sh — pre-ship inspection of an install tree: missing shared
+# libraries (ldd), the ROS Python bindings, and plaintext source exposure.
+# `check_deps.sh --help` carries the arguments and the knobs.
 # =============================================================================
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WS_ROOT="${WORKSPACE_PATH:-${SCRIPT_DIR}/..}"
+# WS_ROOT / WS_VENV_PY from the path SSOT (it ignores a WORKSPACE_PATH that is
+# not a tree here). Before the flag parse, so the log verbs exist.
+source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || { echo "  [ERROR] Cannot load config/util_paths.sh (broken checkout?)" >&2; exit 1; }
+devkit_require "util_logging.sh" 2>/dev/null || true
+LOG_PREFIX="[Check Deps]"
+# Colour boundary: this script's ldd/sed passthrough is not routed through the
+# log verbs, so the escapes those lines carry are stripped here when redirected.
+declare -F devkit_auto_color >/dev/null 2>&1 && devkit_auto_color
 
 usage() {
     cat <<'EOF'
@@ -35,24 +35,20 @@ EOF
 # would otherwise fail with "Target directory '--help' does not exist".
 case "${1:-}" in
     -h|--help) usage; exit 0 ;;
-    --*) echo -e "  \033[31m[ERROR]\033[0m Unknown option: $1" >&2; usage >&2; exit 2 ;;
+    --*) log_error "Unknown option: $1"; usage >&2; exit 2 ;;
 esac
-
-# Colour boundary only (this script prints its own SGR literals).
-source "${WS_ROOT}/scripts/util_logging.sh" 2>/dev/null || true
-declare -F devkit_auto_color >/dev/null 2>&1 && devkit_auto_color
 
 TARGET_DIR="${1:-${WS_ROOT}/install}"
 
 # A missing install tree must fail: this script gates the prod builder stages,
 # and a build that produced nothing would otherwise pass the gate silently.
 if [ ! -d "$TARGET_DIR" ]; then
-    echo -e "  \033[31m[ERROR]\033[0m Target directory '$TARGET_DIR' does not exist."
-    echo -e "  \033[36m[Hint]\033[0m Build your workspace first (e.g. 'cbuild' or 'mksync')."
+    log_error "Target directory '$TARGET_DIR' does not exist."
+    log_detail "Build your workspace first (e.g. 'cbuild' or 'mksync')." >&2
     exit 1
 fi
 
-echo -e "  \033[34m[Check Deps]\033[0m Scanning ELF binaries in ${TARGET_DIR}..."
+log_info "Scanning ELF binaries in ${TARGET_DIR}..."
 
 missing=0
 # Candidate filter (executables + shared objects, no scripts) keeps the per-file
@@ -60,7 +56,7 @@ missing=0
 while IFS= read -r -d '' binary; do
     if file "$binary" 2>/dev/null | grep -qE "ELF.*(executable|shared object)"; then
         if ldd "$binary" 2>/dev/null | grep -q "not found"; then
-            echo -e "  \033[31m[MISSING]\033[0m $binary:"
+            log_error "Missing libraries in ${binary}:"
             ldd "$binary" 2>/dev/null | grep "not found" | sed 's/^/    /'
             missing=$((missing + 1))
         fi
@@ -70,7 +66,7 @@ done < <(find "$TARGET_DIR" -type f \( -perm -u+x -o -name '*.so*' \) \
 
 # Check ROS Python bindings
 if [ -n "${ROS_DISTRO:-}" ]; then
-    echo -e "  \033[34m[Check Deps]\033[0m Verifying ROS (${ROS_DISTRO}) Python bindings..."
+    log_info "Verifying ROS (${ROS_DISTRO}) Python bindings..."
     # Plain RUN layers (prod builders) have no ROS environment, so the import
     # below would fail spuriously. setup.bash is neither `set -u`- nor
     # `set -e`-clean (its chain can end on a false test), so relax both.
@@ -78,23 +74,23 @@ if [ -n "${ROS_DISTRO:-}" ]; then
         set +eu; source "/opt/ros/${ROS_DISTRO}/setup.bash" || true; set -eu
     fi
     py_bin="python3"
-    [ -x "${WS_ROOT}/install/.venv/bin/python3" ] && py_bin="${WS_ROOT}/install/.venv/bin/python3"
+    [ -x "${WS_VENV_PY:-}" ] && py_bin="${WS_VENV_PY}"
 
     case "$ROS_DISTRO" in
         noetic)
             if ! "$py_bin" -c "import rospy" 2>/dev/null; then
-                echo -e "  \033[31m[ERROR]\033[0m ROS 1 (noetic) 'rospy' module not found in $py_bin"
-                echo -e "  \033[36m[Hint]\033[0m Run 'mksync --share' to enable system site-packages."
+                log_error "ROS 1 (noetic) 'rospy' module not found in $py_bin"
+                log_detail "Run 'mksync --share' to enable system site-packages." >&2
                 missing=$((missing + 1))
             else
-                echo -e "  \033[32m[OK]\033[0m ROS 1 'rospy' module verified."
+                log_ok "ROS 1 'rospy' module verified."
             fi
             ;;
         *)
             if ! "$py_bin" -c "import rclpy" 2>/dev/null; then
-                echo -e "  \033[33m[WARN]\033[0m ROS 2 (${ROS_DISTRO}) 'rclpy' module not found in $py_bin"
+                log_warn "ROS 2 (${ROS_DISTRO}) 'rclpy' module not found in $py_bin"
             else
-                echo -e "  \033[32m[OK]\033[0m ROS 2 'rclpy' module verified."
+                log_ok "ROS 2 'rclpy' module verified."
             fi
             ;;
     esac
@@ -123,7 +119,7 @@ project_py() {
 mapfile -t py_files < <(project_py)
 launch_count="$(find "$TARGET_DIR" -path "*/.venv" -prune -o -type f -name '*.py' -path "*/launch/*" -print 2>/dev/null | wc -l)"
 
-echo -e "  \033[34m[Check Deps]\033[0m Source exposure: ${#py_files[@]} python module(s), ${launch_count} launch script(s)."
+log_info "Source exposure: ${#py_files[@]} python module(s), ${launch_count} launch script(s)."
 
 case "${DEVKIT_STRIP_SOURCE:-}" in
     1|true|yes|on)
@@ -136,32 +132,32 @@ case "${DEVKIT_STRIP_SOURCE:-}" in
                     [ -f "${f%.py}.pyc" ] && { rm -f "$f"; stripped=$((stripped + 1)); }
                 done
                 find "$TARGET_DIR" -path "*/.venv" -prune -o -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
-                echo -e "  \033[32m[OK]\033[0m Stripped ${stripped}/${#py_files[@]} module(s) to bytecode (obfuscation, not encryption)."
+                log_ok "Stripped ${stripped}/${#py_files[@]} module(s) to bytecode (obfuscation, not encryption)."
             else
-                echo -e "  \033[31m[ERROR]\033[0m Byte-compilation failed; refusing to delete source."
+                log_error "Byte-compilation failed; refusing to delete source."
                 missing=$((missing + 1))
             fi
         fi
         ;;
     *)
         [ "${#py_files[@]}" -gt 0 ] && \
-            echo -e "  \033[36m[Hint]\033[0m Set DEVKIT_STRIP_SOURCE=1 to ship bytecode instead of .py source."
+            log_detail "Set DEVKIT_STRIP_SOURCE=1 to ship bytecode instead of .py source."
         ;;
 esac
 
 remaining="$(project_py | wc -l)"
 if [ "$remaining" -gt 0 ]; then
-    echo -e "  \033[33m[WARN]\033[0m ${remaining} plaintext python file(s) will ship in this artifact."
+    log_warn "${remaining} plaintext python file(s) will ship in this artifact."
     case "${DEVKIT_FAIL_ON_SOURCE:-}" in
         1|true|yes|on)
-            echo -e "  \033[31m[ERROR]\033[0m DEVKIT_FAIL_ON_SOURCE is set — failing the build."
+            log_error "DEVKIT_FAIL_ON_SOURCE is set — failing the build."
             missing=$((missing + 1)) ;;
     esac
 fi
 
 if [ "$missing" -eq 0 ]; then
-    echo -e "  \033[32m[OK]\033[0m All shared library and binding dependencies satisfied!"
+    log_ok "All shared library and binding dependencies satisfied!"
 else
-    echo -e "  \033[31m[ERROR]\033[0m Found $missing issue(s)."
+    log_error "Found $missing issue(s)."
     exit 1
 fi

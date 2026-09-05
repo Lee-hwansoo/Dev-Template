@@ -446,7 +446,35 @@ palette="$(bash -c 'source scripts/util_logging.sh
     done' 2>/dev/null || true)"
 [ "$(wc -w <<< "$palette")" -eq 14 ] \
     || log_err "util_logging.sh exports $(wc -w <<< "$palette")/14 palette + status tags (\$INFO, \$DIM, … are provided API)."
-[ "$api_errors" -eq 0 ] && log_ok "util_logging.sh provided API intact (12 verbs, 4 banner types, exported palette)."
+# config/util_paths.sh is provided API too: a project's own scripts build on
+# these names, and WS_BUILD/WS_DEPS/WS_LOGS have no in-tree caller by design.
+path_api="$(bash -c 'source config/util_paths.sh >/dev/null 2>&1
+    for v in WS_ROOT WS_SCRIPTS WS_CONFIG WS_DEPS WS_INSTALL WS_SRC WS_BUILD WS_LOGS WS_VENV WS_VENV_PY; do
+        [ -n "${!v:-}" ] && printf "%s " "$v"
+    done
+    for fn in devkit_require devkit_env_value configure_git_safe_directory; do
+        declare -F "$fn" >/dev/null && printf "%s " "$fn"
+    done' 2>/dev/null || true)"
+[ "$(wc -w <<< "$path_api")" -eq 13 ] \
+    || { log_err "config/util_paths.sh exports $(wc -w <<< "$path_api")/13 path-API names (got: ${path_api})."; api_errors=1; }
+# By EXECUTION, because the reader is what every pre-compose caller depends on.
+env_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+printf 'K="v1"\r\nK=v2\n' > "$env_probe/.env"
+[ "$(bash -c "source config/util_paths.sh >/dev/null 2>&1; devkit_env_value K '$env_probe/.env'" 2>/dev/null)" = "v2" ] \
+    || { log_err "devkit_env_value must return the LAST assignment with quotes and CR stripped."; api_errors=1; }
+rm -rf "$env_probe"
+[ "$api_errors" -eq 0 ] && log_ok "Provided API intact (util_logging verbs and banners, util_paths path set and .env reader)."
+
+# The shared-library table in docs/DEVELOPMENT.md is the map a contributor uses
+# to find the owner of a rule before writing a second copy of it. A library that
+# is not listed there is one nobody will find.
+undocumented_libs=""
+for lib in config/util_paths.sh scripts/util_*.sh; do
+    grep -qF "\`${lib}\`" docs/DEVELOPMENT.md || undocumented_libs="${undocumented_libs} ${lib}"
+done
+[ -z "$undocumented_libs" ] \
+    && log_ok "Shared libraries are all listed in the docs/DEVELOPMENT.md SSOT table." \
+    || log_err "shared libraries missing from the docs/DEVELOPMENT.md SSOT table:${undocumented_libs}"
 
 # =============================================================================
 # [clean-semantics] `make clean` must not destroy the virtualenv. install/ holds both build

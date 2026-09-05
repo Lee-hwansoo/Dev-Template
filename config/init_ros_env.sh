@@ -21,8 +21,8 @@ else
 
     # Auto-configure CycloneDDS defaults (Unicast Fallback for Bridge Networks)
     if [ "$RMW_IMPLEMENTATION" = "rmw_cyclonedds_cpp" ] && [ -z "${CYCLONEDDS_URI:-}" ]; then
-        if [ -f "${WORKSPACE_PATH:-/workspace}/config/cyclonedds.xml" ]; then
-            export CYCLONEDDS_URI="file://${WORKSPACE_PATH:-/workspace}/config/cyclonedds.xml"
-        fi
+        devkit_dds_cfg="${WS_CONFIG:-${WORKSPACE_PATH:-/workspace}/config}/cyclonedds.xml"
+        [ -f "$devkit_dds_cfg" ] && export CYCLONEDDS_URI="file://${devkit_dds_cfg}"
+        unset devkit_dds_cfg
     fi
 fi

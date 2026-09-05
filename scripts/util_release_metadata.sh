@@ -1,10 +1,18 @@
 #!/bin/bash
 # =============================================================================
-# scripts/util_release_metadata.sh
-# Generate production release metadata for baked/runtime artifacts.
+# scripts/util_release_metadata.sh — the manifest a baked artifact carries:
+# template revision, reproducibility inputs and the resolved apt/pip sets.
 # =============================================================================
 
 set -euo pipefail
+
+# The path SSOT (WS_VENV_PY, WS_ROOT) and the log verbs, before anything that
+# reports. Sourced explicitly: a `docker build` RUN layer runs before the
+# entrypoint writes the BASH_ENV file, so nothing has exported these yet.
+# Best-effort — metadata must never fail a build; util_paths.sh stubs the verbs.
+source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || true
+devkit_require "util_logging.sh" 2>/dev/null || true
+LOG_PREFIX="[Release Meta]"
 
 usage() {
     cat <<'EOF'
@@ -18,14 +26,14 @@ EOF
 
 case "${1:-}" in
     -h|--help) usage; exit 0 ;;
-    --*) echo "[ERROR] Unknown option: $1" >&2; usage >&2; exit 2 ;;
+    --*) log_error "Unknown option: $1"; usage >&2; exit 2 ;;
 esac
 
 OUTPUT_FILE="${1:-${WORKSPACE_PATH:-/workspace}/release/devkit-release.json}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-    echo "[ERROR] Python is required to generate release metadata: $PYTHON_BIN" >&2
+    log_error "Python is required to generate release metadata: $PYTHON_BIN"
     exit 127
 fi
 
@@ -52,9 +60,8 @@ if command -v dpkg-query >/dev/null 2>&1; then
     APT_COUNT="$(wc -l < "$APT_MANIFEST" 2>/dev/null || echo 0)"
 fi
 
-VENV_PY="${WS_VENV:-${WORKSPACE_PATH:-/workspace}/install/.venv}/bin/python3"
-if [ -x "$VENV_PY" ]; then
-    "$VENV_PY" -m pip freeze 2>/dev/null | LC_ALL=C sort > "$PIP_MANIFEST" || true
+if [ -x "${WS_VENV_PY:-}" ]; then
+    "${WS_VENV_PY}" -m pip freeze 2>/dev/null | LC_ALL=C sort > "$PIP_MANIFEST" || true
 elif command -v uv >/dev/null 2>&1; then
     uv pip freeze 2>/dev/null | LC_ALL=C sort > "$PIP_MANIFEST" || true
 fi

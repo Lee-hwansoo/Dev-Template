@@ -279,12 +279,12 @@ uvs() {
         # `docker build` this runs before /etc/devkit/shell-env.sh exists, so the
         # export is absent and uv would create src/.venv next to pyproject.toml.
         UV_PROJECT_ENVIRONMENT="$venv" \
-            uv sync --project "${WS_SRC:-${WS_ROOT}/src}" --python "${venv}/bin/python" \
+            uv sync --project "${WS_SRC:-${WS_ROOT}/src}" --python "${WS_VENV_PY}" \
                 "${extra_args[@]}" "${sync_flags[@]}" "$@"
     elif [ -f "$req_file" ] && grep -qv '^[[:space:]]*#' "$req_file" 2>/dev/null; then
-        uv pip install --python "${venv}/bin/python" -r "$req_file" "$@"
+        uv pip install --python "${WS_VENV_PY}" -r "$req_file" "$@"
     else
-        echo -e "  \033[34m[INFO]\033[0m No Python dependency manifest found. Skipping uv sync."
+        log_info "No Python dependency manifest found. Skipping uv sync."
     fi
 }
 
@@ -369,8 +369,112 @@ mksync() {
             log_info "Pure C++ project detected — running mbuild..."
             mbuild ;;
         *)
-            echo -e "  \033[32m[OK]\033[0m Pure Python project — no build step needed." ;;
+            log_ok "Pure Python project — no build step needed." ;;
     esac
+}
+
+# --- Quality loop (test / lint) -----------------------------------------------
+# mtest [<runner args>…]
+#   ROS → colcon test + test-result, CMake → ctest, Python → pytest. The runner
+#   comes from the same project-type detection mksync uses.
+mtest() {
+    local project_type
+    project_type=$(__detect_project_type)
+    case "$project_type" in
+        ROS) cbt "$@" && cbtr ;;
+        CPP)
+            if [ ! -d "${WS_ROOT}/build" ]; then
+                log_error "No build directory — run 'mbuild' first."
+                return 1
+            fi
+            # --test-dir keeps this working from any cwd; ctest is a no-op with a
+            # clear message when the project registers no tests.
+            __require_cmd ctest || return 1
+            ctest --test-dir "${WS_ROOT}/build" --output-on-failure "$@" ;;
+        *)  __pytest "$@" ;;
+    esac
+}
+
+# The venv's pytest (from the dev group). "No tests ran" and "no runner
+# installed" are different answers — say which.
+__pytest() {
+    local tests_dir="${WS_SRC:-${WS_ROOT}/src}"
+    if [ ! -x "${WS_VENV_PY:-}" ]; then
+        log_error "No virtualenv — run 'mksync' first."
+        return 1
+    fi
+    if ! "${WS_VENV_PY}" -m pytest --version >/dev/null 2>&1; then
+        log_error "pytest is not installed in ${WS_VENV_PY}."
+        log_detail "It ships in the 'dev' dependency-group of src/pyproject.toml; run 'uvs' to install it." >&2
+        return 1
+    fi
+    local rc=0
+    "${WS_VENV_PY}" -m pytest "$tests_dir" "$@" || rc=$?
+    # Exit 5 = nothing collected. A project without tests yet is not failing,
+    # and a template that goes red on a fresh clone teaches people to ignore it.
+    if [ "$rc" -eq 5 ]; then
+        log_info "No tests collected under ${tests_dir} — add test_*.py files there."
+        return 0
+    fi
+    return "$rc"
+}
+
+# mlint [--fix]
+#   ruff (Python) and clang-format (C/C++ when installed) in check mode; --fix
+#   applies what can be applied. Same rules the editor uses on save
+#   (.editorconfig → [tool.ruff] and .clang-format).
+mlint() {
+    local fix=false src="${WS_SRC:-${WS_ROOT}/src}" rc=0 checked=0
+    case "${1:-}" in
+        --fix)  fix=true; shift ;;
+        -h|--help) echo "Usage: mlint [--fix]   (ruff for Python, clang-format for C/C++)"; return 0 ;;
+        "") ;;
+        *) log_error "mlint: unknown option: $1"; return 2 ;;
+    esac
+
+    if [ -x "${WS_VENV_PY:-}" ] && "${WS_VENV_PY}" -m ruff --version >/dev/null 2>&1; then
+        checked=1
+        if [ "$fix" = true ]; then
+            "${WS_VENV_PY}" -m ruff check --fix "$src" || rc=1
+            "${WS_VENV_PY}" -m ruff format "$src" || rc=1
+        else
+            "${WS_VENV_PY}" -m ruff check "$src" || rc=1
+            "${WS_VENV_PY}" -m ruff format --check "$src" || rc=1
+        fi
+    else
+        log_warn "ruff is not installed — skipping the Python half."
+        log_detail "It ships in the 'dev' dependency-group of src/pyproject.toml; run 'mksync' or 'uvs'." >&2
+    fi
+
+    # clang-format is opt-in (it pulls libllvm); the editor uses the copy
+    # bundled with the C/C++ extension.
+    local cpp_files=()
+    mapfile -t cpp_files < <(find "$src" -path '*/thirdparty' -prune -o -type f \
+        \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \) \
+        -print 2>/dev/null)
+    if [ "${#cpp_files[@]}" -gt 0 ]; then
+        if command -v clang-format >/dev/null 2>&1; then
+            checked=1
+            if [ "$fix" = true ]; then
+                clang-format -i "${cpp_files[@]}" || rc=1
+            else
+                clang-format --dry-run --Werror "${cpp_files[@]}" || rc=1
+            fi
+        else
+            log_warn "clang-format is not installed — skipping the C/C++ half."
+            log_detail "Uncomment 'clang-format # dev' in dependencies/apt.txt, then 'make build'." >&2
+        fi
+    fi
+
+    # "Clean" must mean something ran: reporting success with no checker present
+    # is the worst possible answer for a CI gate.
+    if [ "$checked" -eq 0 ]; then
+        log_error "Nothing was checked — no linter is available for this workspace."
+        log_detail "Run 'mksync' (installs ruff from the dev dependency-group), or add sources under ${src}." >&2
+        return 1
+    fi
+    [ "$rc" -eq 0 ] && log_ok "Lint clean." || log_error "Lint reported findings."
+    return "$rc"
 }
 
 # pyv: one-glance answer to "which python am I actually running?"
@@ -382,9 +486,8 @@ pyv() {
 }
 
 uvpython() {
-    local venv_py="${WS_VENV:-${WS_ROOT}/install/.venv}/bin/python3"
-    if [ -f "$venv_py" ]; then
-        "$venv_py" "$@"
+    if [ -x "${WS_VENV_PY:-}" ]; then
+        "${WS_VENV_PY}" "$@"
     else
         python3 "$@"
     fi
@@ -447,7 +550,7 @@ gpu_test() {
 # torch_check / pyt: the first question after a GPU setup is whether the ML
 # stack actually sees the device. Reports gracefully when torch is absent.
 torch_check() {
-    local py="${WS_VENV:-${WS_ROOT}/install/.venv}/bin/python3"
+    local py="${WS_VENV_PY:-}"
     [ -x "$py" ] || py=python3
     "$py" - <<'PY' 2>/dev/null || log_warn "PyTorch not installed (run: uvs, or set UV_EXTRA=gpu)."
 import torch

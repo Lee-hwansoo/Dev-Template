@@ -6,14 +6,15 @@
 # =============================================================================
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WS_ROOT="${WORKSPACE_PATH:-${SCRIPT_DIR}/..}"
-
-# util_paths.sh also stubs log_*, so no local fallbacks are needed; this
-# script's own output goes through the _hw_* helpers below.
-source "${WS_ROOT}/config/util_paths.sh"      2>/dev/null || true
-source "${WS_ROOT}/scripts/util_logging.sh"   2>/dev/null || true
-source "${WS_ROOT}/scripts/util_gpu_detect.sh" 2>/dev/null || true
+# WS_ROOT comes from the path SSOT, never from WORKSPACE_PATH directly: make
+# exports the CONTAINER path to host recipes too, and util_paths.sh is the one
+# place that knows to ignore it when it is not a DevKit tree here.
+# It also stubs log_*, so no local fallbacks are needed; this script's own
+# output goes through the _hw_* helpers below.
+source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || { echo "  [ERROR] Cannot load config/util_paths.sh (broken checkout?)" >&2; exit 1; }
+devkit_require "util_logging.sh"
+devkit_require "util_gpu_detect.sh"
+LOG_PREFIX="[HW Check]"
 
 # Strip colour when piped/redirected or NO_COLOR is set (see util_logging.sh).
 declare -F devkit_auto_color >/dev/null 2>&1 && devkit_auto_color
