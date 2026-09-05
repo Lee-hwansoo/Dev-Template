@@ -30,6 +30,21 @@ jobs:
       - uses: actions/checkout@v4
       # 33 contracts, ~1.4 s. Needs neither docker nor .env.
       - run: make verify
+      # The docker-build shell has no terminal and no BASH_ENV, and the prod
+      # builder stages source config/util_aliases.sh in exactly that shell —
+      # a host run passes even when that path is broken.
+      - name: container shell bootstrap (no tty, no BASH_ENV)
+        run: |
+          docker run --rm -v "$PWD:/w:ro" -w /w -e WORKSPACE_PATH=/w ubuntu:22.04 bash -c '
+            set -e
+            source /w/config/util_aliases.sh
+            for fn in mksync cbuild mbuild uvs mkenv log_ok log_detail; do
+              declare -F "$fn" >/dev/null || { echo "missing function: $fn"; exit 1; }
+            done
+            [ -n "$WS_VENV_PY" ] || { echo "WS_VENV_PY unset"; exit 1; }
+            log_warn probe 2>&1 | cat -v | grep -q "\^\[" && { echo "ANSI escape in a build log"; exit 1; }
+            mkdir -p /tmp/w/install/x && : > /tmp/w/install/x/f
+            bash /w/scripts/check_deps.sh /tmp/w/install'
       # --check lints and resolves every stage; nothing is built.
       - name: docker build --check
         run: |

@@ -60,7 +60,6 @@ ENV LANG=${LANG} \
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
-    --mount=type=bind,source=dependencies/,target=${WORKSPACE_PATH}/dependencies/ \
     bash /tmp/util_apt_helper.sh init-apt && \
     bash /tmp/util_apt_helper.sh configure-snapshot "${APT_SNAPSHOT_DATE}" && \
     if [ "$HAS_NVIDIA" = "true" ] && [ -n "$CUDA_VERSION" ]; then \

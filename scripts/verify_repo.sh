@@ -78,6 +78,35 @@ done < <(find . \( -name "*.sh" -o -name "*.bash" \) -not -path "*/.*" -print0)
 [ "$sh_errors" -eq 0 ] && log_ok "All shell scripts passed syntax check (bash -n)."
 
 # =============================================================================
+# [ci-workflows] A workflow's `run: |` body is shell that no local check ever
+#     runs: an unterminated quote there only fails on the runner, minutes in.
+# =============================================================================
+# The GitHub expression syntax ${{ … }} is not shell, so it is substituted out.
+wf_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+for wf in .github/workflows/*.yml; do
+    awk -v out="$wf_probe" -v base="$(basename "$wf" .yml)" '
+        function esc(s) { gsub(/\$\{\{[^}]*\}\}/, "X", s); return s }
+        /^[[:space:]]*(- )?run: \|/ { match($0,/[^ ]/); ind=RSTART; n++
+            f=sprintf("%s/%s.%02d.sh", out, base, n); inblk=1; next }
+        inblk {
+            if ($0 ~ /^[[:space:]]*$/) { print "" > f; next }
+            match($0,/[^ ]/)
+            if (RSTART <= ind) { inblk=0 } else { print esc(substr($0, ind+1)) > f; next }
+        }' "$wf"
+done
+wf_blocks="$(find "$wf_probe" -name '*.sh' | wc -l)"
+# Anti-vacuous: an extraction that yields nothing would pass silently.
+[ "$wf_blocks" -ge 8 ] \
+    || log_err "workflow 'run:' extraction collapsed (${wf_blocks} blocks) — did the indentation style change?"
+wf_errors=0
+for wf_block in "$wf_probe"/*.sh; do
+    bash -n "$wf_block" 2>/dev/null \
+        || { log_err "shell syntax error in a workflow run block: ${wf_block##*/}"; wf_errors=1; }
+done
+rm -rf "$wf_probe"
+[ "$wf_errors" -eq 0 ] && log_ok "Every workflow 'run:' block is valid shell (${wf_blocks} blocks)."
+
+# =============================================================================
 # [phony-targets] Makefile dry-run: every .PHONY target must be resolvable
 # =============================================================================
 # The awk below assumes a single-line .PHONY; a wrapped declaration would make
