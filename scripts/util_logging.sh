@@ -27,40 +27,74 @@ TEAL='\033[38;2;45;212;191m'
 LOG_SHOW_TIME="${LOG_SHOW_TIME:-false}"
 DEBUG_MODE="${DEBUG_MODE:-false}"
 
+# _log_plain [fd] — true when colour must be dropped for that stream.
+# THE single definition of that rule: the verbs below use it, and so do the
+# in-container shell functions, which cannot call devkit_auto_color.
+_log_plain() { [ -n "${NO_COLOR:-}" ] || [ ! -t "${1:-1}" ]; }
+
+# _log_resolve_file — resolve LOG_FILE once per process into __DEVKIT_LOG_PATH
+# (empty when unset or unusable). Once, not per line: dirname + mkdir on every
+# line costs two forks before anything is printed.
+_log_resolve_file() {
+    [ "${__DEVKIT_LOG_SEEN-unset}" = "${LOG_FILE:-}" ] && return 0
+    __DEVKIT_LOG_SEEN="${LOG_FILE:-}"; __DEVKIT_LOG_PATH=""
+    # off/none/false/0 turn file logging off. An empty value cannot carry that
+    # meaning: compose defines LOG_FILE for every service, so a caller with its
+    # own default (the entrypoint's boot log) would see empty as "unset".
+    case "${LOG_FILE:-}" in
+        ""|off|none|false|0|OFF|NONE|FALSE) return 0 ;;
+    esac
+    case "$LOG_FILE" in
+        /*) __DEVKIT_LOG_PATH="$LOG_FILE" ;;
+        *)  __DEVKIT_LOG_PATH="${WORKSPACE_PATH:-/workspace}/${LOG_FILE}" ;;
+    esac
+    # Best-effort: logging must never crash the caller, so an unusable path
+    # silently disables the file half.
+    mkdir -p "${__DEVKIT_LOG_PATH%/*}" 2>/dev/null || __DEVKIT_LOG_PATH=""
+}
+
+# _log_write <fd> <line> <plain-line> — the single exit point for every verb:
+# console on the given stream, LOG_FILE gets the colourless form. The plain
+# string is BUILT by the caller, never stripped here: `echo | sed` would cost
+# two more forks per line, and the entrypoint logs every boot line to a file.
+_log_write() {
+    if [ "$1" = 2 ]; then echo -e "$2" >&2; else echo -e "$2"; fi
+    _log_resolve_file
+    [ -n "${__DEVKIT_LOG_PATH:-}" ] || return 0
+    # The FILE always carries a date and time, whatever LOG_SHOW_TIME says: that
+    # knob is about console noise, while this file accumulates across container
+    # restarts. printf's %()T is a builtin — no `date` fork per line.
+    local when; printf -v when '%(%F %T)T' -1
+    echo -e "${when} $3" >> "$__DEVKIT_LOG_PATH" 2>/dev/null
+    return 0
+}
+
 _log_base() {
     local type="$1" color="$2" symbol="$3" msg="$4"
 
-    # 1. Resolve Log Path & Ensure Directory (Once per function call)
-    local log_out=""
-    if [[ -n "${LOG_FILE:-}" ]]; then
-        log_out="${LOG_FILE}"
-        [[ "${log_out}" != /* ]] && log_out="${WORKSPACE_PATH:-/workspace}/${log_out}"
-        # Best-effort: logging must never crash the caller (e.g. under `set -e`).
-        # If the directory cannot be created, silently disable file logging.
-        mkdir -p "$(dirname "$log_out")" 2>/dev/null || log_out=""
+    # Colour follows the stream this line lands on, so `cmd 2> err.log` and
+    # `cmd | tee out.log` are both plain. WARN, ERROR and DEBUG are
+    # diagnostics: they go to stderr, where they cannot corrupt piped data.
+    local nc="${NC}" cyan="${CYAN}" fd=1
+    case "$type" in ERROR|WARN|DEBUG) fd=2 ;; esac
+    _log_plain "$fd" && { color=""; nc=""; cyan=""; }
+
+    local stamp="" prefix="" prefix_plain=""
+    if [[ "${LOG_SHOW_TIME}" == "true" ]]; then
+        local now; printf -v now '%(%H:%M:%S)T' -1
+        stamp="${cyan}[${now}]${nc} "
+    fi
+    if [[ -n "${LOG_PREFIX:-}" ]]; then
+        prefix="${cyan}${LOG_PREFIX}${nc} "; prefix_plain="${LOG_PREFIX} "
     fi
 
-    # 2. Metadata Pre-calculation
-    local timestamp="" prefix=""
-    [[ "${LOG_SHOW_TIME}" == "true" ]] && timestamp="${CYAN}[$(date '+%H:%M:%S')]${NC} "
-    [[ -n "${LOG_PREFIX:-}" ]] && prefix="${CYAN}${LOG_PREFIX}${NC} "
-
-    # 3. Stream Processing (Clean & Fast)
+    # A multi-line message gets the tag on every line, so a captured command's
+    # output stays attributable. Two spaces at the START — content sits at two,
+    # headings at column 0 (print_section), a nested hint at four (log_detail).
     while IFS= read -r line || [[ -n "$line" ]]; do
-        local content="${color}[${type}]${NC}${symbol:+ ${symbol}}${line:+ $line}"
-        local full_msg="${timestamp}${prefix}${content}"
-
-        # Output to Console
-        if [[ "$type" == "ERROR" || "$type" == "WARN" ]]; then
-            echo -e "$full_msg" >&2
-        else
-            echo -e "$full_msg"
-        fi
-
-        # Robust File Logging (ANSI Strip) — best-effort, never abort the caller.
-        if [[ -n "$log_out" ]]; then
-            echo -e "$full_msg" | sed 's/\x1b\[[0-9;]*m//g' >> "$log_out" 2>/dev/null || true
-        fi
+        local tail="${symbol:+ ${symbol}}${line:+ $line}"
+        _log_write "$fd" "  ${stamp}${prefix}${color}[${type}]${nc}${tail}" \
+                         "${prefix_plain}[${type}]${tail}"
     done <<< "$msg"
 }
 
@@ -78,12 +112,14 @@ log_debug() {
 
 # log_detail [message] - Indented auxiliary information (a hint under a finding)
 log_detail() {
-    echo -e "    ${CYAN}→${NC} $1"
+    local c="${CYAN}" n="${NC}"; _log_plain && { c=""; n=""; }
+    _log_write 1 "    ${c}→${n} $1" "    → $1"
 }
 
-# log_step_done [message] - Completion of a step
+# log_step_done [message] — completion of a step.
 log_step_done() {
-    echo -e "  ${GREEN}✓${NC} $1"
+    local c="${GREEN}" n="${NC}"; _log_plain && { c=""; n=""; }
+    _log_write 1 "  ${c}✓${n} $1" "  ✓ $1"
 }
 
 # devkit_enable_error_trap

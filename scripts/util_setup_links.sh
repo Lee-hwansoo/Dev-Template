@@ -1,11 +1,13 @@
 #!/bin/bash
 # =============================================================================
-# scripts/util_setup_links.sh
-# Centralized management for workspace symlinks (colcon.meta, dependencies, etc.)
+# scripts/util_setup_links.sh — the workspace convenience symlinks
+# (colcon.meta, .venv, compile_commands.json). `make clean` drops them; an
+# interactive shell recreates them.
 # =============================================================================
 
 source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || source "/tmp/util_paths.sh"
 devkit_require "util_logging.sh"
+LOG_PREFIX="[Links]"
 
 usage() {
     cat <<'EOF'

@@ -88,7 +88,7 @@ __gpu_nvidia_native() {
         export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
         export LIBGL_ALWAYS_INDIRECT=0
         __gpu_path_prepend "/usr/lib/wsl/lib"
-        echo -e "  \033[32m[GPU]\033[0m NVIDIA active — CUDA native, OpenGL via D3D12 bridge (adapter: NVIDIA)"
+        LOG_PREFIX="[GPU]" log_ok "NVIDIA active — CUDA native, OpenGL via D3D12 bridge (adapter: NVIDIA)"
         return 0
     fi
 
@@ -108,7 +108,7 @@ __gpu_nvidia_native() {
         export QT_QPA_PLATFORM="wayland;xcb"
         export GDK_BACKEND="wayland,x11"
     fi
-    echo -e "  \033[32m[GPU]\033[0m NVIDIA hardware acceleration active (OpenGL + Vulkan + EGL)"
+    LOG_PREFIX="[GPU]" log_ok "NVIDIA hardware acceleration active (OpenGL + Vulkan + EGL)"
 }
 
 # WSL2 renders every vendor through the Mesa D3D12 (Dozen) bridge.
@@ -125,7 +125,7 @@ __gpu_wsl_d3d12() {
     [ -n "$adapter" ] && export MESA_D3D12_DEFAULT_ADAPTER_NAME="$adapter"
     __gpu_path_prepend "/usr/lib/wsl/lib"
     has_nvidia 2>/dev/null && GPU_UV_EXTRA="gpu"
-    echo -e "  \033[32m[GPU]\033[0m WSL2 Mesa/D3D12 bridge active${adapter:+ (adapter: ${adapter})}"
+    LOG_PREFIX="[GPU]" log_ok "WSL2 Mesa/D3D12 bridge active${adapter:+ (adapter: ${adapter})}"
 }
 
 __gpu_mesa() {
@@ -135,7 +135,7 @@ __gpu_mesa() {
         export MESA_LOADER_DRIVER_OVERRIDE="$driver"
         export GALLIUM_DRIVER="$driver"
     fi
-    echo -e "  \033[32m[GPU]\033[0m ${label}"
+    LOG_PREFIX="[GPU]" log_ok "${label}"
 }
 
 # NVIDIA Jetson / Tegra: the integrated GPU is driven by the vendor L4T stack
@@ -146,19 +146,19 @@ __gpu_tegra() {
     __gpu_path_prepend "/usr/lib/aarch64-linux-gnu/tegra"
     __gpu_path_prepend "/usr/lib/aarch64-linux-gnu/tegra-egl"
     GPU_UV_EXTRA="gpu"
-    echo -e "  \033[32m[GPU]\033[0m NVIDIA Tegra/Jetson integrated GPU active (L4T stack)"
+    LOG_PREFIX="[GPU]" log_ok "NVIDIA Tegra/Jetson integrated GPU active (L4T stack)"
 }
 
 __gpu_software() {
     export LIBGL_ALWAYS_SOFTWARE=1
     export GALLIUM_DRIVER=llvmpipe
     export QT_XCB_FORCE_SOFTWARE_OPENGL=1
-    echo -e "  \033[33m[GPU]\033[0m CPU software rendering (llvmpipe)"
+    LOG_PREFIX="[GPU]" log_warn "CPU software rendering (llvmpipe)"
     # Apple Silicon / Intel macOS: Docker Desktop runs a Linux VM with no GPU
     # passthrough, so this is a platform ceiling rather than a misconfiguration.
     if [ "${IS_MACOS:-false}" = "true" ] || [ "${DEVKIT_HOST_IS_MACOS:-false}" = "true" ]; then
-        echo -e "  \033[36m[Hint]\033[0m macOS containers have no Metal/MPS access — this is expected."
-        echo -e "  \033[36m[Hint]\033[0m For Apple Silicon GPU (MPS), run PyTorch natively on the host, not in this container."
+        log_detail "macOS containers have no Metal/MPS access — this is expected." >&2
+        log_detail "For Apple Silicon GPU (MPS), run PyTorch natively on the host." >&2
     fi
 }
 

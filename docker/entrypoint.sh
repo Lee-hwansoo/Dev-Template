@@ -48,9 +48,16 @@ source "${WS_ROOT}/scripts/util_logging.sh" 2>/dev/null || true
 # inherit it and interleave their output into it.
 # Truncate past 1 MB — the file accretes across every container start.
 LOG_FILE="${LOG_FILE:-log/entrypoint.log}"
-_lf="$LOG_FILE"; [ "${_lf#/}" = "$_lf" ] && _lf="${WS_ROOT}/${_lf}"
-{ [ "$(stat -c %s "$_lf" 2>/dev/null || echo 0)" -gt 1048576 ] && : > "$_lf"; } 2>/dev/null || true
-unset _lf
+# Boot lines land in `docker logs` beside the application's own output, so they
+# say who is speaking. Not exported: a user shell must not inherit the tag.
+LOG_PREFIX="[Entrypoint]"
+# The workspace-relative rule lives in util_logging.sh; ask it rather than
+# resolving the path a second time and truncating the wrong file one day.
+if declare -F _log_resolve_file >/dev/null 2>&1; then
+    _log_resolve_file
+    { [ "$(stat -c %s "${__DEVKIT_LOG_PATH:-}" 2>/dev/null || echo 0)" -gt 1048576 ] \
+        && : > "${__DEVKIT_LOG_PATH}"; } 2>/dev/null || true
+fi
 
 # Fallback loggers if util_logging.sh not available
 declare -F log_info  >/dev/null 2>&1 || log_info()  { echo "  [INFO] $*"; }

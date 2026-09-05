@@ -45,6 +45,9 @@ for v in ROS_DISTRO ROS_DOMAIN_ID RMW_IMPLEMENTATION ROS_MASTER_URI ROS_LOCALHOS
     fi
 done
 
+# Relative on purpose: the #SBATCH --output/--error paths above are resolved by
+# SLURM against the submission cwd, so this must use the same reference.
+# apptainer_run.sh passes --chdir=${WS_ROOT}, which makes that the workspace.
 mkdir -p logs
 
 JOB_ID="${SLURM_JOB_ID:-LOCAL_TEST}"

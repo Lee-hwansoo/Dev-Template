@@ -75,6 +75,8 @@ if ! declare -F log_info >/dev/null 2>&1; then
     log_ok()         { echo "[OK] $*"; }
     log_warn()       { echo "[WARN] $*" >&2; }
     log_error()      { echo "[ERROR] $*" >&2; }
+    log_detail()     { echo "  -> $*"; }
     print_section()  { echo "[ $* ]"; }
     log_step_done()  { echo "[OK] $*"; }
+    _log_plain()     { return 0; }
 fi

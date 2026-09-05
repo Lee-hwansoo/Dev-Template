@@ -5,6 +5,9 @@
 # =============================================================================
 
 source "${WORKSPACE_PATH:-/workspace}/config/util_paths.sh" 2>/dev/null || true
+# The shared log verbs, so `mksync | tee build.log` comes out plain.
+# util_paths.sh leaves colourless stubs, so log_* always resolve.
+declare -F devkit_require >/dev/null 2>&1 && devkit_require "util_logging.sh" 2>/dev/null || true
 
 export SYS_PYTHON_EXE=${SYS_PYTHON_EXE:-/usr/bin/python3}
 
@@ -28,8 +31,8 @@ __cmake_extra_args() {
 # A missing build tool means the wrong image, not a broken workspace — say which.
 __require_cmd() {
     command -v "$1" >/dev/null 2>&1 && return 0
-    echo -e "  \033[31m[ERROR]\033[0m '$1' not found in this image." >&2
-    echo -e "  \033[36m[Hint]\033[0m  ROS builds need ENV=ros; plain CMake projects use 'mbuild'." >&2
+    log_error "'$1' not found in this image."
+    log_detail "ROS builds need ENV=ros; plain CMake projects use 'mbuild'." >&2
     return 1
 }
 
@@ -61,25 +64,34 @@ __parse_build_flags() {
             --pkg)
                 shift
                 if [ $# -eq 0 ] || [[ "$1" == --* ]]; then
-                    echo -e "  \033[31m[ERROR]\033[0m --pkg requires at least one package name." >&2
+                    log_error "--pkg requires at least one package name."
                     return 2
                 fi
                 case "$gen" in
                     2) DEVKIT_BUILD_SELECT+=(--packages-select) ;;
                     1) DEVKIT_BUILD_SELECT+=(--only-pkg-with-deps) ;;
-                    *) echo -e "  \033[31m[ERROR]\033[0m --pkg applies to ROS builds only." >&2; return 2 ;;
+                    *) log_error "--pkg applies to ROS builds only."; return 2 ;;
                 esac
                 while [ $# -gt 0 ] && [[ "$1" != --* ]]; do DEVKIT_BUILD_SELECT+=("$1"); shift; done ;;
             --meta)
                 if [ "$gen" = "2" ]; then
                     DEVKIT_BUILD_SELECT+=(--metas "${WS_CONFIG:-${WS_ROOT}/config}/colcon.meta")
                 else
-                    echo -e "  \033[33m[WARN]\033[0m --meta is a colcon option; ignored here." >&2
+                    log_warn "--meta is a colcon option; ignored here."
                 fi; shift ;;
             --) shift; DEVKIT_BUILD_PASSTHRU+=("$@"); break ;;
             *)  DEVKIT_BUILD_PASSTHRU+=("$1"); shift ;;
         esac
     done
+}
+
+# A prod image copies install/ only, so a build that installs nothing ships
+# nothing. $1 names the missing install rule (catkin and CMake spell it apart).
+__require_install_artifacts() {
+    [ -n "$(find "${WS_ROOT}/install" -mindepth 2 -type f -print -quit 2>/dev/null)" ] && return 0
+    log_error "Production build installed no artifacts into ${WS_ROOT}/install."
+    log_detail "Add ${1} rules; the production runtime image copies install/ only." >&2
+    return 1
 }
 
 # Parse --share flag; auto-enable for ROS 1 Noetic (tied to system Python ABI)
@@ -107,7 +119,7 @@ check_deps() { bash "${WS_SCRIPTS}/check_deps.sh" "$@"; }
 # hw_check: pre-streamline spelling of `hwcheck`. A base kit must not break the
 # scripts already calling it, so it forwards and points at the current name.
 hw_check() {
-    echo -e "  \033[33m[WARN]\033[0m 'hw_check' is deprecated — use 'hwcheck'." >&2
+    log_warn "'hw_check' is deprecated — use 'hwcheck'."
     bash "${WS_SCRIPTS}/check_hardware.sh" "$@"
 }
 
@@ -115,8 +127,8 @@ __print_container_help() {
     # Same discipline as devkit_auto_color, but as locals: this runs in the
     # user's interactive shell, where `exec >` would redirect it permanently.
     local T='\033[38;2;45;212;191m' S='\033[0;36m' G='\033[32m' Y='\033[33m' C='\033[36m' P='\033[35m' N='\033[0m'
-    if [ -n "${NO_COLOR:-}" ] || [ ! -t 1 ]; then T='' S='' G='' Y='' C='' P='' N=''; fi
-    echo -e "\n  ${T}DevKit Container Shortcuts & Aliases${N}"
+    _log_plain && { T=''; S=''; G=''; Y=''; C=''; P=''; N=''; }
+    echo -e "\n${T}DevKit Container Shortcuts & Aliases${N}\n"
 
     echo -e "${S}[ Quick Start & Build ] =============================${N}"
     printf "  ${G}%-20s${N} : %s\n" "mksync [--share]" "Initialize workspace; --share for system-site-packages"
@@ -156,12 +168,12 @@ __print_container_help() {
 __smart_source() {
     if [ -f "${WS_ROOT}/install/setup.bash" ]; then
         source "${WS_ROOT}/install/setup.bash"
-        echo -e "  \033[32m[OK]\033[0m Sourced ${WS_ROOT}/install/setup.bash"
+        log_ok "Sourced ${WS_ROOT}/install/setup.bash"
     elif [ -f "/opt/ros/${ROS_DISTRO:-humble}/setup.bash" ]; then
         source "/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
-        echo -e "  \033[32m[OK]\033[0m Sourced /opt/ros/${ROS_DISTRO:-humble}/setup.bash"
+        log_ok "Sourced /opt/ros/${ROS_DISTRO:-humble}/setup.bash"
     else
-        echo -e "  \033[31m[ERROR]\033[0m No ROS setup.bash found!"
+        log_error "No ROS setup.bash found!"
     fi
 }
 
@@ -219,12 +231,7 @@ else
         if [ "${DEVKIT_BUILD_TYPE:-dev}" = "prod" ]; then
             ( cd "${WS_ROOT}" && catkin_make install "${DEVKIT_BUILD_SELECT[@]}" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
                 -DCMAKE_INSTALL_PREFIX="${WS_ROOT}/install" "${DEVKIT_CMAKE_EXTRA[@]}" "${extra[@]}" "$@" ) || return 1
-            if [ -z "$(find "${WS_ROOT}/install" -mindepth 2 -type f -print -quit 2>/dev/null)" ]; then
-                echo -e "  \033[31m[ERROR]\033[0m Production build installed no artifacts into ${WS_ROOT}/install."
-                echo -e "  \033[36m[Hint]\033[0m  Add install() rules to your catkin CMakeLists.txt;"
-                echo -e "  \033[36m[Hint]\033[0m  the production runtime image copies install/ only."
-                return 1
-            fi
+            __require_install_artifacts "install() (catkin CMakeLists.txt)" || return 1
         else
             ( cd "${WS_ROOT}" && catkin_make "${DEVKIT_BUILD_SELECT[@]}" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
                 "${DEVKIT_CMAKE_EXTRA[@]}" "${extra[@]}" "$@" ) || return 1
@@ -319,7 +326,7 @@ mkenv() {
         python3 -m venv "${share[@]}" --prompt "$prompt" "$venv_dir" || return 1
     fi
     __refresh_links   # ${WS_ROOT}/.venv should point at the new environment now
-    echo -e "  \033[32m[OK]\033[0m ${label} venv '${prompt}' created: ${venv_dir}"
+    log_ok "${label} venv '${prompt}' created: ${venv_dir}"
     source "${venv_dir}/bin/activate"
 }
 
@@ -331,9 +338,9 @@ activate() {
         # `deactivate nondestructive` first, restoring PATH before re-prefixing.
         # Same normalisation as config/init_bash.sh: one pair of parens either way.
         VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT#\(}"; VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT%\) }"
-        echo -e "  \033[32m[OK]\033[0m Activated virtualenv: ${venv_dir}"
+        log_ok "Activated virtualenv: ${venv_dir}"
     else
-        echo -e "  \033[33m[WARN]\033[0m Virtualenv not found at ${venv_dir}. Run 'mkenv' first."
+        log_warn "Virtualenv not found at ${venv_dir}. Run 'mkenv' first."
     fi
 }
 
@@ -356,10 +363,10 @@ mksync() {
     project_type=$(__detect_project_type)
     case "$project_type" in
         "ROS")
-            echo -e "  \033[34m[INFO]\033[0m ROS workspace detected — building..."
+            log_info "ROS workspace detected — building..."
             cbuild && __smart_source ;;
         "CPP")
-            echo -e "  \033[34m[INFO]\033[0m Pure C++ project detected — running mbuild..."
+            log_info "Pure C++ project detected — running mbuild..."
             mbuild ;;
         *)
             echo -e "  \033[32m[OK]\033[0m Pure Python project — no build step needed." ;;
@@ -423,16 +430,16 @@ alias vulkan_check='vulkaninfo --summary 2>/dev/null | head -20 || echo "Vulkan 
 # between "configured" and "working". Vendor- and framework-agnostic.
 gpu_test() {
     if ! command -v glxgears >/dev/null 2>&1; then
-        echo -e "  \033[33m[WARN]\033[0m glxgears not installed (apt: mesa-utils)."; return 1
+        log_warn "glxgears not installed (apt: mesa-utils)."; return 1
     fi
     if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
-        echo -e "  \033[33m[WARN]\033[0m No DISPLAY/WAYLAND_DISPLAY — cannot render."; return 1
+        log_warn "No DISPLAY/WAYLAND_DISPLAY — cannot render."; return 1
     fi
-    echo -e "  \033[34m[INFO]\033[0m Rendering for 5s..."
+    log_info "Rendering for 5s..."
     local out
     out="$(timeout 6 glxgears -info 2>&1 | grep -E "GL_RENDERER|frames in" | head -3 || true)"
     if [ -z "$out" ]; then
-        echo -e "  \033[31m[ERROR]\033[0m No frames rendered — check 'gpus' and 'make xauth'."; return 1
+        log_error "No frames rendered — check 'gpus' and 'make xauth'."; return 1
     fi
     echo "$out" | sed 's/^/    /'
 }
@@ -442,7 +449,7 @@ gpu_test() {
 torch_check() {
     local py="${WS_VENV:-${WS_ROOT}/install/.venv}/bin/python3"
     [ -x "$py" ] || py=python3
-    "$py" - <<'PY' 2>/dev/null || echo -e "  \033[33m[WARN]\033[0m PyTorch not installed (run: uvs, or set UV_EXTRA=gpu)."
+    "$py" - <<'PY' 2>/dev/null || log_warn "PyTorch not installed (run: uvs, or set UV_EXTRA=gpu)."
 import torch
 print(f"    torch      {torch.__version__}")
 print(f"    CUDA build {torch.version.cuda or 'cpu-only'}")
@@ -465,7 +472,7 @@ mbuild() {
         src_dir="${WS_SRC:-${WS_ROOT}/src}"
     fi
     if [ ! -f "${src_dir}/CMakeLists.txt" ]; then
-        echo -e "  \033[31m[ERROR]\033[0m No CMakeLists.txt found in ${WS_ROOT} or ${src_dir}."
+        log_error "No CMakeLists.txt found in ${WS_ROOT} or ${src_dir}."
         return 1
     fi
     __require_cmd cmake || return 1
@@ -477,16 +484,9 @@ mbuild() {
         && cmake --build "${WS_ROOT}/build" -j"$(nproc 2>/dev/null || echo 4)" || return 1
     __refresh_links
 
-    # Production images copy install/ and never build/, so a prod build MUST
-    # install. Without this a C++ prod image ships no executable at all.
     if [ "${DEVKIT_BUILD_TYPE:-dev}" = "prod" ]; then
         cmake --install "${WS_ROOT}/build" || return 1
-        if [ -z "$(find "${WS_ROOT}/install" -mindepth 2 -type f -print -quit 2>/dev/null)" ]; then
-            echo -e "  \033[31m[ERROR]\033[0m Production build installed no artifacts into ${WS_ROOT}/install."
-            echo -e "  \033[36m[Hint]\033[0m  Add install(TARGETS ... DESTINATION bin/lib) rules to your CMakeLists.txt;"
-            echo -e "  \033[36m[Hint]\033[0m  the production runtime image copies install/ only."
-            return 1
-        fi
+        __require_install_artifacts "install(TARGETS ... DESTINATION bin/lib)" || return 1
     fi
 }
 
@@ -505,11 +505,11 @@ mclean() {
     fi
     rm -rf "${dirs[@]}" 2>/dev/null || true
     if [ -n "$(find "${dirs[@]}" -mindepth 1 -print -quit 2>/dev/null)" ]; then
-        echo -e "  \033[31m[ERROR]\033[0m Some entries could not be removed (root-owned? permissions?)."
-        echo -e "  \033[36m[Hint]\033[0m  Inspect with: ls -la ${WS_ROOT:?}/build ${WS_ROOT:?}/install"
+        log_error "Some entries could not be removed (root-owned? permissions?)."
+        log_detail "Inspect with: ls -la ${WS_ROOT:?}/build ${WS_ROOT:?}/install" >&2
         return 1
     fi
-    echo -e "  \033[32m[OK]\033[0m Emptied ${what}."
+    log_ok "Emptied ${what}."
 }
 
 # --- Tab Completions ---------------------------------------------------------

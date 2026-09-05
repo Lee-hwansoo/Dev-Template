@@ -1,11 +1,16 @@
 #!/bin/bash
 # =============================================================================
-# scripts/show_welcome.sh
-# Container Welcome Message (MOTD) and quick-start guide
+# scripts/show_welcome.sh — the container MOTD. Its rows are advertised surface:
+# check [advertised-shortcuts] resolves every name printed here.
 # =============================================================================
 
 source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || source "/tmp/util_paths.sh"
 devkit_require "util_logging.sh"
+LOG_PREFIX="[Welcome]"
+# The banner, sections and rows below are built from the exported palette, not
+# from the log verbs, so the strip happens at the output boundary: `bash
+# scripts/show_welcome.sh > motd.txt` must not capture escapes.
+declare -F devkit_auto_color >/dev/null 2>&1 && devkit_auto_color
 
 case "${1:-}" in
     ""|-h|--help) ;;

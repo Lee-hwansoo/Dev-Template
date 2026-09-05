@@ -312,8 +312,12 @@ knob_consumer_errors=0
 if grep -q '^DEBUG_MODE=' .env.example; then
     grep -q '^log_debug()' scripts/util_logging.sh \
         || { log_err "DEBUG_MODE is documented in .env.example but log_debug() no longer exists."; knob_consumer_errors=1; }
-    ( set -euo pipefail; source scripts/util_logging.sh; DEBUG_MODE=true; log_debug probe ) 2>/dev/null | grep -q probe \
+    # 2>&1: debug is a diagnostic and goes to stderr, where it cannot corrupt
+    # the stdout of a script that emits data (check_env.sh --makefile).
+    ( set -euo pipefail; source scripts/util_logging.sh; DEBUG_MODE=true; log_debug probe ) 2>&1 | grep -q probe \
         || { log_err "DEBUG_MODE=true does not produce log_debug output."; knob_consumer_errors=1; }
+    ( set -euo pipefail; source scripts/util_logging.sh; DEBUG_MODE=true; log_debug probe ) 2>/dev/null | grep -q probe \
+        && { log_err "log_debug writes to stdout; a data-emitting script would ship debug lines as data."; knob_consumer_errors=1; }
 fi
 [ "$knob_consumer_errors" -eq 0 ] && log_ok "Documented knobs still have a working consumer (DEBUG_MODE → log_debug)."
 
@@ -370,6 +374,61 @@ banner_probe="$(bash -c 'source scripts/util_logging.sh
 { [ "$(grep -c "█" <<< "$banner_probe")" -eq 4 ] \
   && [ "$(cut -d: -f2- <<< "$banner_probe" | sort -u | wc -l)" -eq 4 ]; } \
     || { log_err "print_banner lost a wordmark — WELCOME/DIAG/SETUP/GUIDE must each render distinct block art, not the generic box."; api_errors=1; }
+# LOG_FILE must capture what a post-mortem needs — the hint under a finding and
+# the step markers, not just the tagged verbs — and it must never contain the
+# escapes the console got. Both were true only for _log_base before.
+file_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+bash -c "source scripts/util_logging.sh
+    export LOG_FILE='$file_probe/run.log'; LOG_PREFIX='[T]'
+    log_error finding; log_detail explanation; log_step_done step" >/dev/null 2>&1
+for want in finding explanation step; do
+    grep -qF "$want" "$file_probe/run.log" 2>/dev/null \
+        || { log_err "LOG_FILE lost the '${want}' line; a captured log must hold hints and steps too."; api_errors=1; }
+done
+# Every file line carries a date and time whatever LOG_SHOW_TIME says: the file
+# accumulates across container restarts, so an undated entry places nothing.
+[ "$(grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} ' "$file_probe/run.log" 2>/dev/null)" -eq 3 ] \
+    || { log_err "LOG_FILE lines are not all timestamped (expected 3 dated lines)."; api_errors=1; }
+# …and it must be switchable off: compose defines LOG_FILE for every service, so
+# an empty value cannot mean "off" for a caller that has its own default.
+# WORKSPACE_PATH points at the probe, so an unhonoured sentinel WOULD leave a
+# file there — without it the check passes for the wrong reason.
+bash -c "source scripts/util_logging.sh
+    export WORKSPACE_PATH='$file_probe' LOG_FILE=off; log_ok probe" >/dev/null 2>&1
+[ ! -e "$file_probe/off" ] \
+    || { log_err "LOG_FILE=off is treated as a path; file logging cannot be switched off."; api_errors=1; }
+rm -rf "$file_probe"
+# The file half must append the PLAIN argument. Not asserted by reading the
+# file: this suite never runs on a terminal, so the console string carries no
+# colour to leak there — only the structure can be checked.
+grep -qE '\$3" >> "\$__DEVKIT_LOG_PATH"' scripts/util_logging.sh \
+    || { log_err "_log_write no longer appends its plain argument to LOG_FILE; a captured log would carry ANSI."; api_errors=1; }
+
+# Every executed script that logs says WHO is speaking: its lines land in
+# `docker logs`, a make run or a boot log next to other components' output.
+# The exemptions are structural, not oversights:
+#   sourced-only libraries inherit the caller's prefix;
+#   verify_repo.sh and util_apt_helper.sh carry private verbs (they cannot
+#     depend on this file, or only one file is bind-mounted in their layer);
+#   util_aliases.sh is sourced into the USER's shell, where a top-level
+#     assignment would tag every later line and the commands are the user's own.
+for prefix_file in scripts/*.sh docker/*.sh config/*.sh; do
+    grep -qE '\blog_(ok|info|warn|error|debug) ' "$prefix_file" || continue
+    case "$prefix_file" in
+        scripts/util_logging.sh|scripts/util_gpu_detect.sh|scripts/util_sif_common.sh) continue ;;
+        scripts/verify_repo.sh|scripts/util_apt_helper.sh) continue ;;
+        config/util_paths.sh|config/util_aliases.sh) continue ;;
+    esac
+    grep -q 'LOG_PREFIX=' "$prefix_file" \
+        || { log_err "${prefix_file} logs without a LOG_PREFIX; its lines cannot be attributed."; api_errors=1; }
+done
+# Values are bracketed Title Case, so a line reads as "[Component] [OK] …".
+# --exclude this file: the pattern below is a check, not a prefix.
+bad_prefix="$(grep -rhoE --exclude=verify_repo.sh 'LOG_PREFIX="[^"]*"' scripts/*.sh docker/*.sh \
+              | grep -vE 'LOG_PREFIX="\[[A-Z][A-Za-z0-9]*( [A-Z$][A-Za-z0-9{}:_-]*)*\]"' || true)"
+[ -z "$bad_prefix" ] \
+    || { log_err "LOG_PREFIX must be bracketed Title Case: ${bad_prefix}"; api_errors=1; }
+
 # The palette and status tags are exported so project scripts can build their own
 # lines; a missing one splices an empty string into their output.
 palette="$(bash -c 'source scripts/util_logging.sh
@@ -515,11 +574,24 @@ fi
 if bash -c 'source scripts/util_logging.sh; devkit_auto_color; log_warn probe' 2>&1 >/dev/null | grep -q $'\033'; then
     log_err "devkit_auto_color leaves ANSI on stderr — log_warn/log_error pollute redirected logs."; color_errors=1
 fi
-# The in-container help runs inside the user's shell, so it cannot use
-# devkit_auto_color (exec > would redirect that shell for good) — it must switch
-# its own colours off. `h | tee log` is the case that catches a regression.
-# The function, not the `h` alias: an alias defined in the same command string
-# is not expanded at parse time, and the resulting 127 would abort this suite.
+# The log verbs must be plain off-TTY on their OWN, without devkit_auto_color:
+# the in-container shell functions (config/util_aliases.sh) cannot call it, so
+# this is what keeps `mksync | tee build.log` free of escapes. stdout and stderr
+# are asserted separately — each verb resolves colour against the stream it uses.
+if bash -c 'source scripts/util_logging.sh; log_ok probe; log_detail probe; log_step_done probe' 2>/dev/null | grep -q $'\033'; then
+    log_err "log_ok/log_detail/log_step_done emit ANSI into a pipe without devkit_auto_color."; color_errors=1
+fi
+if bash -c 'source scripts/util_logging.sh; log_error probe' 2>&1 >/dev/null | grep -q $'\033'; then
+    log_err "log_error emits ANSI into a redirected stderr without devkit_auto_color."; color_errors=1
+fi
+# …and the in-container commands must go through those verbs, not hand-rolled
+# escapes, or the guarantee above stops covering the output a user actually pipes.
+# __require_cmd, not a build entry point: it exercises log_error + log_detail
+# together and touches no filesystem, so this stays safe in a real project tree.
+alias_msg="$(bash --norc -c "WORKSPACE_PATH='${ROOT_DIR}' source config/util_aliases.sh >/dev/null 2>&1; __require_cmd devkit-no-such-tool" 2>&1 || true)"
+{ grep -q '\[ERROR\]' <<< "$alias_msg" && grep -q '→' <<< "$alias_msg" \
+  && ! grep -q $'\033' <<< "$alias_msg"; } \
+    || { log_err "config/util_aliases.sh prints raw escapes (or nothing) on failure — use log_error/log_warn/log_detail."; color_errors=1; }
 help_piped="$(bash --norc -c "WORKSPACE_PATH='${ROOT_DIR}' source config/util_aliases.sh >/dev/null 2>&1; __print_container_help" 2>/dev/null || true)"
 { [ -n "$help_piped" ] && ! grep -q $'\033' <<< "$help_piped"; } \
     || { log_err "in-container 'h' emits ANSI escapes into a pipe (or printed nothing) — it must drop colour off-TTY."; color_errors=1; }
