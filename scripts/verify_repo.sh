@@ -759,6 +759,38 @@ if grep -rqE '\$\{[A-Za-z_][A-Za-z0-9_]*:-' .vscode .devcontainer 2>/dev/null; t
 else
     log_ok "VS Code JSON files: no shell default expansion found."
 fi
+# =============================================================================
+# [style-config] One declared style. Neither ruff nor clang-format reads
+# =============================================================================
+style_errors=0
+ec_section_value() {   # ec_section_value <section-prefix> <key>
+    awk -v sec="$1" -v key="$2" '
+        index($0, sec) == 1 { inside = 1; next }
+        /^\[/              { inside = 0 }
+        inside && $1 == key { print $3; exit }' .editorconfig
+}
+ec_py="$(ec_section_value '[*.{py' max_line_length)"
+ec_cpp="$(ec_section_value '[*.{c,cpp' max_line_length)"
+ec_cpp_indent="$(ec_section_value '[*.{c,cpp' indent_size)"
+# Anti-vacuous: an empty parse would make every comparison below pass.
+{ [ -n "$ec_py" ] && [ -n "$ec_cpp" ] && [ -n "$ec_cpp_indent" ]; } \
+    || { log_err ".editorconfig parse yielded no widths (py='${ec_py}' cpp='${ec_cpp}' indent='${ec_cpp_indent}')."; style_errors=1; }
+ruff_cols="$(grep -oE '^line-length[[:space:]]*=[[:space:]]*[0-9]+' src/pyproject.toml | grep -oE '[0-9]+' || true)"
+[ "${ruff_cols:-}" = "$ec_py" ] \
+    || { log_err "ruff line-length is '${ruff_cols:-unset}' but .editorconfig says ${ec_py} — format-on-save fights the declared style."; style_errors=1; }
+clang_cols="$(grep -oE '^ColumnLimit:[[:space:]]*[0-9]+' .clang-format 2>/dev/null | grep -oE '[0-9]+' || true)"
+[ "${clang_cols:-}" = "$ec_cpp" ] \
+    || { log_err ".clang-format ColumnLimit is '${clang_cols:-unset/missing}' but .editorconfig says ${ec_cpp}."; style_errors=1; }
+clang_indent="$(grep -oE '^IndentWidth:[[:space:]]*[0-9]+' .clang-format 2>/dev/null | grep -oE '[0-9]+' || true)"
+[ "${clang_indent:-}" = "$ec_cpp_indent" ] \
+    || { log_err ".clang-format IndentWidth is '${clang_indent:-unset/missing}' but .editorconfig says ${ec_cpp_indent}."; style_errors=1; }
+# The rulers a developer sees must be exactly those two limits.
+for style_col in "$ec_py" "$ec_cpp"; do
+    grep -qE "\"editor.rulers\": \[[^]]*\b${style_col}\b" .vscode/settings.json \
+        || { log_err "editor.rulers does not include ${style_col}, the width .editorconfig declares."; style_errors=1; }
+done
+[ "$style_errors" -eq 0 ] \
+    && log_ok "Style config agrees across .editorconfig, ruff, clang-format and the editor rulers (py ${ec_py}, c++ ${ec_cpp})."
 
 # =============================================================================
 # [dockerfile-policy] Dockerfile package policy (no libboost-all-dev / software-properties-common)

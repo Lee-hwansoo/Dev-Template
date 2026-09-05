@@ -1,0 +1,15 @@
+# =============================================================================
+# .clang-format — the C/C++ half of the style set .editorconfig declares.
+# clang-format reads no .editorconfig, so the widths are copied here and
+# check [style-config] asserts the copies never drift.
+# =============================================================================
+BasedOnStyle: Google
+IndentWidth: 4
+ColumnLimit: 120
+# Access specifiers sit at member indentation (.editorconfig:
+# cpp_indent_access_specifiers = true); Google's -1 outdents them.
+AccessModifierOffset: 0
+# Fixed, not inferred: Google derives `*` placement per file, so a fresh tree
+# formats inconsistently until enough code exists to infer from.
+DerivePointerAlignment: false
+PointerAlignment: Left

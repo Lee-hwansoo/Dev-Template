@@ -25,6 +25,20 @@ name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
+[tool.ruff]
+# .editorconfig is the style SSOT (python: max_line_length = 100) and
+# .vscode/settings.json draws a ruler there, but ruff reads neither — VS Code's
+# format-on-save was wrapping at ruff's default 88. Kept here rather than in a
+# ruff.toml so a derived project inherits it with the dependency manifest.
+line-length = 100
+
+[tool.ruff.lint]
+# Declared, not inherited: ruff's default rule set changes between releases, so
+# a fresh clone could go red on an upgrade that touched nothing here. E/F/I is
+# the conservative floor — pycodestyle errors, pyflakes, import order. Add rule
+# families (e.g. "B", "UP", "PL") as your project decides to enforce them.
+select = ["E", "F", "I"]
+
 [tool.uv]
 conflicts = [
     [ { extra = "cpu" }, { extra = "gpu" } ]
