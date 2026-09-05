@@ -33,7 +33,7 @@ _hw_warn()   { DIAG_WARNINGS=$((DIAG_WARNINGS+1)); echo -e "  \033[33m⚠\033[0m
 _hw_err()    { DIAG_ERRORS=$((DIAG_ERRORS+1));    echo -e "  \033[31m✗\033[0m $*"; }
 _hw_detail() { $BRIEF_MODE || echo "$*"; }
 _hw_skip()   { $BRIEF_MODE || echo "  ○ $*"; }
-_hw_section(){ $BRIEF_MODE || echo -e "\n  \033[1;36m[$*]\033[0m"; }
+_hw_section(){ $BRIEF_MODE || echo -e "\n\033[1;36m[$*]\033[0m"; }
 
 # =============================================================================
 # [1/6] System: CPU, RAM, Disk

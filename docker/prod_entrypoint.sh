@@ -37,8 +37,8 @@ source_runtime_file "/etc/profile.d/devkit-gpu.sh"
 if [ -d "$WS_ROOT" ]; then
     cd "$WS_ROOT"
 else
-    echo "[ERROR] Workspace path does not exist: $WS_ROOT" >&2
-    exit 72
+    echo "  [ERROR] Workspace path does not exist: $WS_ROOT" >&2
+    exit 1
 fi
 
 if [ "$#" -gt 0 ]; then
@@ -53,5 +53,5 @@ if [ -n "${APP_COMMAND:-}" ]; then
     exec bash -lc "$APP_COMMAND"
 fi
 
-echo "[ERROR] No production command configured. Set ROS_LAUNCH_COMMAND, APP_COMMAND, or pass an explicit command after the image." >&2
-exit 64
+echo "  [ERROR] No production command configured. Set ROS_LAUNCH_COMMAND, APP_COMMAND, or pass an explicit command after the image." >&2
+exit 2

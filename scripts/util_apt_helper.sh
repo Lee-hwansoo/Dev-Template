@@ -331,7 +331,7 @@ Usage: util_apt_helper.sh <command> [args...]
 EOF
         ;;
     *)
-        echo "Unknown command: $COMMAND" >&2
-        exit 1
+        log_error "Unknown command: $COMMAND"
+        exit 2
         ;;
 esac

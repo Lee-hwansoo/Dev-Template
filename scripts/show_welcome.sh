@@ -55,7 +55,7 @@ for row in "${WELCOME_ROWS[@]}"; do
     else
         name="${row%%|*}"
         desc="${row#*|}"
-        printf "    ${GREEN}%-*s${NC} : %s\n" "$welcome_col" "$name" "$desc"
+        printf "  ${GREEN}%-*s${NC} : %s\n" "$welcome_col" "$name" "$desc"
     fi
 done
 

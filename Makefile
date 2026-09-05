@@ -185,7 +185,10 @@ endef
 
 ## @target help : Show this command guide
 help:
-	@echo -e "\n  $(TEAL)DevKit Makefile Targets & Arguments$(NC)"
+	@echo -e "\n$(TEAL)DevKit Makefile Targets & Arguments$(NC)"
+	@echo -e "$(BCYAN)Start here — five commands is the whole loop$(NC)"
+	@echo -e "  $(GREEN)make setup$(NC) → $(GREEN)make build$(NC) → $(GREEN)make start$(NC) → $(GREEN)make shell$(NC), then $(GREEN)mksync$(NC) inside the container"
+	@echo -e "  Add $(CYAN)ENV=ros$(NC) (default) or $(CYAN)ENV=dev$(NC) to pick the environment. In-container help: $(GREEN)h$(NC)\n"
 	@echo -e "$(CYAN)[ Host Workflows & Setup ] ==========================$(NC)"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "setup" "Initialize .env and host prerequisites"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "status / check" "Diagnose project, container & host status"
@@ -237,7 +240,7 @@ setup:
 ## @target status : Diagnose project and container status
 status: check
 	$(call GUARD_HOST_ONLY)
-	@echo -e "\n  $(BCYAN)[Project Configuration Summary]$(NC)"
+	@echo -e "\n$(BCYAN)[Project Configuration Summary]$(NC)"
 	@printf "  %-19s %s\n" "Host User:"          "$$(whoami)"
 	@printf "  %-19s %s\n" "Host OS:"            "$(if $(filter true,$(IS_MACOS)),macOS Darwin ($(HOST_ARCH)),$(if $(filter true,$(IS_WSL)),Windows WSL2,Linux Native))"
 	@printf "  %-19s %s\n" "Project Name:"       "$(COMPOSE_PROJECT_NAME)"
@@ -245,7 +248,7 @@ status: check
 	@printf "  %-19s %s\n" "ROS Version:"        "$(ROS_DISTRO)"
 	@$(RESOLVE_SVC_MODE); \
 	printf "  %-19s %s\n" "GPU Mode:" "$${GPU_MODE:-auto} → $$TARGET_SVC"
-	@echo -e "\n  $(BCYAN)[Detected Host Wiring]$(NC)  (refresh: make clean-cache)"
+	@echo -e "\n$(BCYAN)[Detected Host Wiring]$(NC)  (refresh: make clean-cache)"
 	@printf "  %-19s %s\n" "GPU devices:"  "$(HOST_DRI_MOUNT) | $(HOST_DXG_MOUNT)"
 	@printf "  %-19s %s\n" "WSL libs:"     "$(WSL_LIB_DIR_MOUNT)"
 	@printf "  %-19s %s\n" "Display:"      "$(DISPLAY_TYPE) | X11=$(HOST_X11_DIR) | WAYLAND=$(if $(HOST_WAYLAND_DISPLAY),$(HOST_WAYLAND_DISPLAY),-)"
@@ -254,7 +257,7 @@ status: check
 	@printf "  %-19s %s\n" "ssh-agent:"    "$(if $(HOST_SSH_AUTH_SOCK),$(HOST_SSH_AUTH_SOCK),- (not forwarded))"
 	@printf "  %-19s %s\n" "git identity:" "$(HOST_GITCONFIG)"
 	@printf "  %-19s %s\n" "Container user:" "$(CONTAINER_USER) ($(HOST_UID):$(HOST_GID))"
-	@echo -e "\n  $(BCYAN)[Running Containers]$(NC)  (project-wide; other targets act on ENV=$(ENV))"
+	@echo -e "\n$(BCYAN)[Running Containers]$(NC)  (project-wide; other targets act on ENV=$(ENV))"
 	@docker ps --filter "label=com.docker.compose.project=$(COMPOSE_PROJECT_NAME)" || true
 
 ## @target check : Validate host environment
@@ -307,7 +310,7 @@ xauth:
 ## @target verify : Run fast repository validation checks
 verify:
 	$(call GUARD_HOST_ONLY)
-	@echo -e "\n  $(BCYAN)[Repository Validation]$(NC)"
+	@echo -e "\n$(BCYAN)[Repository Validation]$(NC)"
 	@bash scripts/verify_repo.sh
 
 # =============================================================================

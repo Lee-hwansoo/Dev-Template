@@ -429,6 +429,15 @@ bad_prefix="$(grep -rhoE --exclude=verify_repo.sh 'LOG_PREFIX="[^"]*"' scripts/*
 [ -z "$bad_prefix" ] \
     || { log_err "LOG_PREFIX must be bracketed Title Case: ${bad_prefix}"; api_errors=1; }
 
+# One indentation rule across every screen: content at two columns, a heading at
+# zero, a nested hint at four. log_ok printed at zero while log_step_done — in
+# the same file — printed at two, so `make check` interleaved both.
+indent_probe="$(bash -c 'source scripts/util_logging.sh
+    LOG_PREFIX="[T]"; log_ok content; log_step_done step; log_detail hint
+    print_section Heading' 2>/dev/null | grep -vE '^$' | sed -E 's/[^ ].*//' | awk '{print length}' | tr '\n' ' ')"
+[ "$indent_probe" = "2 2 4 0 " ] \
+    || { log_err "output indentation drifted (content/step/hint/heading columns: ${indent_probe}expected 2 2 4 0)."; api_errors=1; }
+
 # The palette and status tags are exported so project scripts can build their own
 # lines; a missing one splices an empty string into their output.
 palette="$(bash -c 'source scripts/util_logging.sh
@@ -560,6 +569,13 @@ done
 # End-to-end on a real script: NO_COLOR must win even on a terminal.
 NO_COLOR=1 bash scripts/check_wsl.sh 2>/dev/null | grep -q $'\033' \
     && { log_err "NO_COLOR=1 still yields ANSI from scripts/check_wsl.sh (devkit_auto_color not reached)."; color_errors=1; }
+# bash's `echo` does not interpret \033 — the escape reaches the screen as
+# literal text. `gpus` printed '\033[33m(/usr/lib/wsl/lib MISSING)' that way.
+# `sed 's/#.*//'` first: this rule's own explanation names `echo` and \033.
+raw_echo="$(grep -rn --exclude=verify_repo.sh -F '\033' Makefile scripts config docker \
+             | sed 's/#.*//' | grep -E 'echo ([^-]|-[^e])' || true)"
+[ -z "$raw_echo" ] \
+    || { log_err "'echo' without -e cannot emit an escape (use printf): $(cut -d: -f1,2 <<< "$raw_echo" | tr '\n' ' ')"; color_errors=1; }
 grep -q 'MAKE_TERMOUT' Makefile || { log_err "Makefile must drop colours when stdout is not a terminal (MAKE_TERMOUT)."; color_errors=1; }
 # End-to-end, because the guard only covers recipes that USE the colour
 # variables: a recipe hardcoding \033 ignores it and pollutes `make help > log`.
@@ -673,12 +689,20 @@ fi
 # =============================================================================
 # [prod-entrypoint] Production entrypoint contract
 # =============================================================================
-if (WORKSPACE_PATH="/workspace/nonexistent_path_test" docker/prod_entrypoint.sh true 2>&1 || true) \
-        | grep -q "Workspace path does not exist"; then
-    log_ok "Production entrypoint contract check passed."
-else
-    log_err "prod_entrypoint.sh failed contract check for missing workspace path."
-fi
+# Both refusals, by exit code as well as message: this is PID 1 of the shipped
+# artifact, so a supervisor reads the code, and the house convention is 1 for a
+# failure and 2 for a usage error (not the sysexits values it once returned).
+prod_errors=0
+prod_rc=0
+prod_out="$(WORKSPACE_PATH="/workspace/nonexistent_path_test" docker/prod_entrypoint.sh true 2>&1)" || prod_rc=$?
+{ [ "$prod_rc" -eq 1 ] && grep -q "Workspace path does not exist" <<< "$prod_out"; } \
+    || { log_err "prod_entrypoint.sh must exit 1 and say so on a missing workspace (got ${prod_rc}: ${prod_out%%$'\n'*})."; prod_errors=1; }
+prod_rc=0
+prod_out="$(env -u APP_COMMAND -u ROS_LAUNCH_COMMAND WORKSPACE_PATH="$ROOT_DIR" \
+    docker/prod_entrypoint.sh 2>&1)" || prod_rc=$?
+{ [ "$prod_rc" -eq 2 ] && grep -q "No production command configured" <<< "$prod_out"; } \
+    || { log_err "prod_entrypoint.sh must exit 2 when no command is configured (got ${prod_rc}: ${prod_out%%$'\n'*})."; prod_errors=1; }
+[ "$prod_errors" -eq 0 ] && log_ok "Production entrypoint refuses a missing workspace (1) and a missing command (2)."
 
 # =============================================================================
 # [tab-completion] Tab completion: targets derived from Makefile .PHONY, no dead knobs

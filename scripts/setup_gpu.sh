@@ -219,7 +219,11 @@ case "$__gpu_req_mode" in
         __dri_nodes="$(list_glob_basenames '/dev/dri/renderD*' 2>/dev/null || true)"
         __gpu_row "DRI nodes" "${__dri_nodes:-none}"
         if has_dxg 2>/dev/null; then
-            __gpu_row "WSL2 D3D12" "/dev/dxg present$([ -d /usr/lib/wsl/lib ] && echo '  (/usr/lib/wsl/lib mounted)' || echo '  \033[33m(/usr/lib/wsl/lib MISSING)\033[0m')"
+            # printf, not echo: bash's echo leaves \033 literal, and the missing
+            # host library mount is exactly the line that must stand out.
+            __gpu_row "WSL2 D3D12" "/dev/dxg present$([ -d /usr/lib/wsl/lib ] \
+                && printf '  (/usr/lib/wsl/lib mounted)' \
+                || printf '  \033[33m(/usr/lib/wsl/lib MISSING)\033[0m')"
         fi
         [ -z "${__dri_nodes:-}" ] && ! has_nvidia 2>/dev/null && ! has_dxg 2>/dev/null \
             && echo -e "    \033[33mNo GPU device nodes — software rendering only.\033[0m"
