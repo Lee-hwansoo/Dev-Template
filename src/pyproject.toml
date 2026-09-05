@@ -1,8 +1,13 @@
 [project]
-name = "DevKit"
+# `make adopt NAME=… DESC=…` rewrites the two lines below; the shipped default
+# already satisfies the [a-z0-9][a-z0-9_-]* rule adopt enforces. `version` is
+# YOUR project's — the template's revision lives in the top-level VERSION file.
+name = "devkit"
 version = "0.1.0"
-description = "Add your description here"
-requires-python = ">=3.8"
+description = "Your project. Run: make adopt NAME=my-robot DESC='One line about it'"
+# The image installs UV_PYTHON (3.10 by default) and the extras below need it;
+# ruff also derives its target syntax from this line.
+requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]

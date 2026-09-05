@@ -760,6 +760,48 @@ else
     log_ok "VS Code JSON files: no shell default expansion found."
 fi
 # =============================================================================
+# [adopt] `make adopt` hands a fork the identity it owns. It edits tracked files,
+#      so it must be surgical: a bare `sed s/^name = /` also renamed the
+#      [[tool.uv.index]] entries and left [tool.uv.sources] pointing at indexes
+#      that no longer existed.
+# =============================================================================
+adopt_errors=0
+# Recipe comment lines (\t@#) dropped: the explanation below mentions
+# [project] and would satisfy the grep on its own.
+adopt_recipe="$(awk '/^adopt:/{inside=1} inside && /^[a-z]/ && !/^adopt:/{inside=0} inside' Makefile \
+                | grep -v $'^\t@#')"
+grep -q '\[project\]' <<< "$adopt_recipe" \
+    || { log_err "'make adopt' does not scope its pyproject edit to the [project] table."; adopt_errors=1; }
+grep -q 'origin NAME' Makefile \
+    || { log_err "'make adopt' trusts an inherited NAME; the environment carries one (WSL exports NAME=<hostname>)."; adopt_errors=1; }
+rc=0; make adopt >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] \
+    || { log_err "'make adopt' without NAME must exit 2 (got ${rc})."; adopt_errors=1; }
+# Every index [tool.uv.sources] names must exist — this is what a sloppy rename
+# breaks, and uv fails only later, at sync time.
+# …and the shipped default must already satisfy the rule adopt enforces: a fork
+# that never runs adopt still has to `uv sync`.
+uv_index_ok="$(python3 - <<'PYINDEX' 2>/dev/null || true
+import re, tomllib, pathlib
+d = tomllib.loads(pathlib.Path('src/pyproject.toml').read_text())
+uv = d.get('tool', {}).get('uv', {})
+index = {i['name'] for i in uv.get('index', [])}
+refs = {e['index'] for v in uv.get('sources', {}).values() for e in v if 'index' in e}
+name = d.get('project', {}).get('name', '')
+if refs - index:
+    print(f"[tool.uv.sources] names a missing index: {sorted(refs - index)}")
+elif not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', name):
+    print(f"[project] name '{name}' fails the rule 'make adopt' enforces")
+else:
+    print('ok')
+PYINDEX
+)"
+[ "$uv_index_ok" = "ok" ] \
+    || { log_err "src/pyproject.toml: ${uv_index_ok}."; adopt_errors=1; }
+[ "$adopt_errors" -eq 0 ] \
+    && log_ok "Adoption is surgical (scoped pyproject edit, explicit NAME, uv indexes intact)."
+
+# =============================================================================
 # [style-config] One declared style. Neither ruff nor clang-format reads
 # =============================================================================
 style_errors=0

@@ -87,6 +87,15 @@ _devkit_make_completion() {
         exec)
             opts="CMD="
             ;;
+        adopt)
+            opts="NAME= DESC="
+            ;;
+        test)
+            opts="ENV=ros ENV=dev"
+            ;;
+        lint)
+            opts="FIX=1 ENV=ros ENV=dev"
+            ;;
         clean)
             opts="KEEP_VENV=0 KEEP_VENV=1"
             ;;

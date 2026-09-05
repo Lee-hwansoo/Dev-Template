@@ -47,6 +47,18 @@ ifdef USER_GPU_MODE
 GPU_MODE := $(USER_GPU_MODE)
 endif
 
+# Template revision. VERSION is committed, so it travels with a fork even when
+# the project was created from the GitHub template button and carries none of
+# DevKit's history; the short commit is best-effort on top of it.
+DEVKIT_VERSION := $(shell cat VERSION 2>/dev/null || echo unknown)
+DEVKIT_COMMIT  := $(shell git -C $(CURDIR) rev-parse --short HEAD 2>/dev/null)
+
+# `make adopt` inputs, honoured ONLY from the command line: NAME and DESC are
+# ordinary environment variables (WSL exports NAME=<hostname>) and make imports
+# the environment, so an inherited value would silently adopt the wrong name.
+ADOPT_NAME := $(if $(filter command line,$(origin NAME)),$(NAME),)
+ADOPT_DESC := $(if $(filter command line,$(origin DESC)),$(DESC),)
+
 HOST_WORKSPACE_PATH ?= $(CURDIR)
 WORKSPACE_PATH      ?= /workspace
 COMPOSE_PROJECT_NAME?= devkit
@@ -59,11 +71,9 @@ export
 # =============================================================================
 # Host Environment Detection (cached, atomic, fail-fast)
 # =============================================================================
-# Pure help/teardown/validation targets only need .env + compose, so they skip
-# detection entirely and never pay the nvidia-smi / docker-info probe.
-# (Exception: `setup` is exempt but its xauth step consumes HOST_XAUTHORITY,
-# so `make setup` still triggers one detection via the xauth sub-invocation.)
-DETECTOR_EXEMPT := help setup verify stop down logs clean clean-cache clean-all docker-clean slurm-status slurm-cancel completion completion-install check-host env-check
+# Help/teardown/validation targets skip detection and never pay the
+# nvidia-smi / docker-info probe.
+DETECTOR_EXEMPT := help setup adopt verify stop down logs clean clean-cache clean-all docker-clean slurm-status slurm-cancel completion completion-install check-host env-check
 # A bare `make` runs the default target (help), so it must not pay for
 # detection either — substitute 'help' before filtering.
 NEEDS_DETECTOR  := $(filter-out $(DETECTOR_EXEMPT),$(or $(MAKECMDGOALS),help))
@@ -89,12 +99,10 @@ endif
 -include $(DETECTED_ENV_FILE)
 endif
 
-# Fail fast on inputs that would otherwise select a wrong compose profile
-# silently. Scoped to every target that CONSUMES ENV/SERVICE_PREFIX — crucially
-# including stop/down/clean-all, where `make down ENV=ros2` would otherwise
-# tear down (and volume-delete) the wrong profile without a word. Only targets
-# that never touch a service skip it, so a broken .env can't block help/verify.
-ENV_EXEMPT := help h setup verify clean clean-cache docker-clean update-gpg xauth gpus slurm-status slurm-cancel completion completion-install
+# Fail fast on input that would silently pick the wrong compose profile.
+# Scoped to every target consuming ENV — including down/clean-all, where
+# `make down ENV=ros2` would volume-delete the wrong profile without a word.
+ENV_EXEMPT := help h setup adopt verify clean clean-cache docker-clean update-gpg xauth gpus slurm-status slurm-cancel completion completion-install
 ifneq ($(filter-out $(ENV_EXEMPT),$(or $(MAKECMDGOALS),help)),)
 ifeq ($(filter ros dev,$(ENV)),)
 $(error ENV must be 'ros' or 'dev' (got: '$(ENV)'))
@@ -221,6 +229,7 @@ help:
 	@echo -e "  Add $(CYAN)ENV=ros$(NC) (default) or $(CYAN)ENV=dev$(NC) to pick the environment. In-container help: $(GREEN)h$(NC)\n"
 	@echo -e "$(CYAN)[ Host Workflows & Setup ] ==========================$(NC)"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "setup" "Initialize .env and host prerequisites"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "adopt NAME=my-robot" "Make this checkout your project (identity files)"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "status / check" "Diagnose project, container & host status"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "gpus" "Monitor host-side GPU (NVIDIA/iGPU) status"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "verify" "Run fast repository validation checks"
@@ -264,6 +273,43 @@ setup:
 	fi
 	@bash config/devkit_make_completion.bash --install
 	@$(MAKE) xauth
+
+## @target adopt : Make this checkout YOUR project (NAME=my-robot [DESC='...'])
+# The identity a fork owns, in one step: the Python package name, the compose
+# project name, and the two files only you can decide. Idempotent, and every
+# edit is a normal working-tree change you can review with `git diff`.
+adopt:
+	$(call GUARD_HOST_ONLY)
+	@if [ -z "$(ADOPT_NAME)" ]; then \
+		echo -e "  $(ERROR) Usage: make adopt NAME=my-robot [DESC='One line about it']" >&2; exit 2; \
+	fi
+	@# compose and PEP 508 both want [a-z0-9][a-z0-9_-]*; refuse rather than
+	@# silently mangle a name that would break `docker compose` later.
+	@printf '%s' "$(ADOPT_NAME)" | grep -qE '^[a-z0-9][a-z0-9_-]*$$' || { \
+		echo -e "  $(ERROR) NAME must match [a-z0-9][a-z0-9_-]* (got: '$(ADOPT_NAME)')" >&2; exit 2; }
+	@if [ -n "$$(git status --porcelain 2>/dev/null)" ]; then \
+		echo -e "  $(ERROR) Working tree is not clean; commit or stash first." >&2; \
+		echo -e "  $(INFO) Adoption rewrites tracked files — keep the diff reviewable." >&2; exit 1; \
+	fi
+	@# Scoped to the [project] table: a bare `sed s/^name = /` also renamed the
+	@# [[tool.uv.index]] entries, and [tool.uv.sources] then pointed at indexes
+	@# that no longer existed. Atomic via mv, like setup's .env write.
+	@awk -v n='$(ADOPT_NAME)' -v d='$(ADOPT_DESC)' ' \
+		/^\[/            { inproj = ($$0 == "[project]") } \
+		inproj && /^name = /                  { print "name = \"" n "\""; next } \
+		inproj && d != "" && /^description = / { print "description = \"" d "\""; next } \
+		{ print }' src/pyproject.toml > src/pyproject.toml.tmp \
+		&& mv src/pyproject.toml.tmp src/pyproject.toml
+	@if [ -f .env ]; then \
+		sed -i 's/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=$(ADOPT_NAME)/' .env; \
+	fi
+	@sed -i 's/^COMPOSE_PROJECT_NAME=myproject$$/COMPOSE_PROJECT_NAME=$(ADOPT_NAME)/' .env.example
+	@echo -e "  $(OK) Adopted as '$(ADOPT_NAME)': src/pyproject.toml, .env, .env.example"
+	@echo -e "  $(INFO) Two files are yours to decide — DevKit cannot guess them:"
+	@echo -e "  $(INFO)   README.md   this front page still describes DevKit"
+	@echo -e "  $(INFO)   LICENSE     MIT-0 lets you relicense (docs/DEVELOPMENT.md)"
+	@echo -e "  $(INFO) The kit's own guides stay in docs/ — keep or delete them."
+	@echo -e "  $(INFO) Review with: git diff"
 
 ## @target status : Diagnose project and container status
 status: check
