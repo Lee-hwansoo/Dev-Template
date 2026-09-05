@@ -1,15 +1,17 @@
 #!/bin/bash
 # =============================================================================
-# scripts/apptainer_bake.sh
-# Bake development snapshot or production runtime into an Apptainer SIF file.
+# scripts/apptainer_bake.sh — bake a development snapshot or a production
+# runtime into an Apptainer SIF artifact.
 # Usage: apptainer_bake.sh [--mode dev|prod] [--env ros|dev] [--share]
 # =============================================================================
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Host-side script: WORKSPACE_PATH is the CONTAINER path (and the Makefile
-# exports it), so the repository root can only come from this file's location.
-WS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# WS_ROOT comes from util_paths.sh, which ignores a WORKSPACE_PATH that is not a
+# DevKit tree on THIS machine — the Makefile exports the container path.
+source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || { echo "  [ERROR] Cannot load config/util_paths.sh (broken checkout?)" >&2; exit 1; }
+devkit_require "util_logging.sh"
+devkit_require "util_sif_common.sh"
+LOG_PREFIX="[Bake]"
 
 MODE="dev"
 ENV_NAME="${ENV:-ros}"
@@ -17,15 +19,15 @@ SHARE_MODE="false"
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --mode) [ $# -ge 2 ] || { echo -e "  \033[31m[ERROR]\033[0m --mode needs a value (dev|prod)" >&2; exit 2; }
+        --mode) [ $# -ge 2 ] || { log_error "--mode needs a value (dev|prod)"; exit 2; }
                 MODE="$2"; shift 2 ;;
-        --env)  [ $# -ge 2 ] || { echo -e "  \033[31m[ERROR]\033[0m --env needs a value (ros|dev)" >&2; exit 2; }
+        --env)  [ $# -ge 2 ] || { log_error "--env needs a value (ros|dev)"; exit 2; }
                 ENV_NAME="$2"; shift 2 ;;
         --share) SHARE_MODE="true"; shift ;;
         -h|--help)
             echo "Usage: apptainer_bake.sh [--mode dev|prod] [--env ros|dev] [--share]"
             exit 0 ;;
-        *) echo -e "  \033[31m[ERROR]\033[0m Unknown option: $1" >&2; exit 2 ;;
+        *) log_error "Unknown option: $1"; exit 2 ;;
     esac
 done
 
@@ -36,34 +38,13 @@ case "$ENV_NAME" in ros|dev) ;; *)
     echo -e "  \033[31m[ERROR]\033[0m --env must be 'ros' or 'dev' (got: ${ENV_NAME})" >&2; exit 2 ;;
 esac
 if [ "$SHARE_MODE" = "true" ] && [ "$MODE" = "prod" ]; then
-    echo -e "  \033[31m[ERROR]\033[0m --share is a dev-snapshot option; prod builds always install a self-contained venv." >&2
+    log_error "--share is a dev-snapshot option; prod builds always install a self-contained venv."
     exit 2
 fi
 
-RUNTIME="apptainer"
-if ! command -v apptainer >/dev/null 2>&1; then
-    if command -v singularity >/dev/null 2>&1; then
-        RUNTIME="singularity"
-    else
-        echo -e "  \033[31m[ERROR]\033[0m Neither apptainer nor singularity found!" >&2
-        exit 1
-    fi
-fi
-
-# Import detected environment settings. check_env.sh calls `exit` on a fatal
-# misconfiguration, so it must run as a child process — sourcing it would kill
-# this script with the error message suppressed.
-if env_out="$(bash "${WS_ROOT}/scripts/check_env.sh")"; then
-    eval "$env_out"
-else
-    echo -e "  \033[31m[ERROR]\033[0m Host environment detection failed. Run 'bash scripts/check_env.sh' to see why." >&2
-    exit 1
-fi
-
-# Project name: env (make export) → .env (direct script invocation) → devkit.
-# All three SIF consumers (bake / run / slurm docs) must derive the same name.
-COMPOSE_PROJECT="${COMPOSE_PROJECT_NAME:-$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "${WS_ROOT}/.env" 2>/dev/null | tail -1 | tr -d "\r\"'")}"
-COMPOSE_PROJECT="${COMPOSE_PROJECT:-devkit}"
+RUNTIME="$(sif_runtime)" || exit 1
+sif_import_host_env || exit 1
+COMPOSE_PROJECT="$(sif_project_name)"
 # --share bakes a different artifact (system-site-packages venv): give it its
 # own filename so the two dev variants stop overwriting each other.
 SHARE_SUFFIX=""
@@ -111,7 +92,7 @@ if [ "$MODE" = "dev" ]; then
     SYNC_FLAG=""
     [ "$SHARE_MODE" = "true" ] && SYNC_FLAG="--share"
 
-    echo -e "  \033[34m[Bake Dev]\033[0m Building dev snapshot image (target=${BASE_TARGET})..."
+    log_info "Building dev snapshot image (target=${BASE_TARGET})..."
     docker build \
         -f "${WS_ROOT}/docker/Dockerfile" \
         --target "$BASE_TARGET" \
@@ -128,7 +109,7 @@ else
     PROD_TARGET="prod-${ENV_NAME}-runtime"
     DOCKER_IMG="${COMPOSE_PROJECT}_${ENV_NAME}_prod:latest"
 
-    echo -e "  \033[34m[Bake Prod]\033[0m Building production runtime image (target=${PROD_TARGET})..."
+    log_info "Building production runtime image (target=${PROD_TARGET})..."
     docker build \
         -f "${WS_ROOT}/docker/Dockerfile" \
         --target "$PROD_TARGET" \
@@ -136,8 +117,8 @@ else
         -t "$DOCKER_IMG" "${WS_ROOT}"
 fi
 
-echo -e "  \033[34m[Bake]\033[0m Converting Docker image to SIF artifact: ${SIF_FILE}..."
+log_info "Converting Docker image to SIF artifact: ${SIF_FILE}..."
 docker save -o "$TEMP_ARCHIVE" "$DOCKER_IMG"
 "$RUNTIME" build --force "$SIF_FILE" "docker-archive://${TEMP_ARCHIVE}"
 
-echo -e "  \033[32m[OK]\033[0m SIF artifact baked successfully: ${SIF_FILE}"
+log_ok "SIF artifact baked successfully: ${SIF_FILE}"

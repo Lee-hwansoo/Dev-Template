@@ -782,9 +782,36 @@ grep -qE '^WS_ROOT="\$\{WORKSPACE_PATH' scripts/apptainer_bake.sh scripts/apptai
 # `apptainer exec` does not run the image ENTRYPOINT, so both run paths must
 # route the command through /entrypoint.sh or the job starts with no ROS/venv
 # environment at all — verified against a real SIF, where `import rclpy` failed.
+sif_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+cat > "${sif_probe}/rt" <<'STUB'
+#!/bin/sh
+# Stands in for `apptainer exec <sif> …`: the image has an entrypoint, and it
+# accepts --env only when DEVKIT_PROBE_DEV=1.
+case "$*" in
+    *"test -x /entrypoint.sh") exit 0 ;;
+    *grep*) [ "${DEVKIT_PROBE_DEV:-0}" = 1 ] && exit 0 || exit 1 ;;
+esac
+exit 1
+STUB
+chmod +x "${sif_probe}/rt"
+entry_probe() {
+    DEVKIT_PROBE_DEV="$1" bash -c "source scripts/util_sif_common.sh
+        sif_entry_args '${sif_probe}/rt' img.sif" 2>/dev/null
+}
+[ "$(entry_probe 1)" = "/entrypoint.sh --env" ] \
+    || { log_err "sif_entry_args drops the dev entrypoint's --env wrapper; a SIF command loses the ROS environment."; sif_errors=1; }
+[ "$(entry_probe 0)" = "/entrypoint.sh" ] \
+    || { log_err "sif_entry_args passes --env to a production entrypoint that does not accept it."; sif_errors=1; }
+rm -rf "$sif_probe"
 for sif_runner in scripts/apptainer_run.sh scripts/slurm_run.sh; do
-    grep -qE '^[^#]*ENTRY=\(/entrypoint\.sh' "$sif_runner" \
+    grep -qE '^[^#]*sif_entry_args' "$sif_runner" \
         || { log_err "${sif_runner} no longer routes the command through /entrypoint.sh; a SIF run loses the ROS environment."; sif_errors=1; }
+done
+# One runtime resolution for bake, run and the job script: the copies drifted
+# and run/slurm died with a bare "singularity: command not found".
+for sif_caller in scripts/apptainer_bake.sh scripts/apptainer_run.sh scripts/slurm_run.sh; do
+    grep -qE '^[^#]*sif_runtime' "$sif_caller" \
+        || { log_err "${sif_caller} resolves the apptainer/singularity binary itself instead of via sif_runtime."; sif_errors=1; }
 done
 # slurm submits the PRODUCTION artifact; probing for a *-slurm.sif never hits.
 grep -qE '^[^#]*ARTIFACT_MODE="prod"' scripts/apptainer_run.sh \

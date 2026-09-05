@@ -12,10 +12,17 @@
 #SBATCH --comment=submitter:devkit
 
 # =============================================================================
-# scripts/slurm_run.sh
-# SLURM cluster job submission script for DevKit Apptainer SIF execution
+# scripts/slurm_run.sh — the sbatch job script: bind the data/run roots, forward
+# the ROS/DDS env past --cleanenv, and exec the SIF through its entrypoint.
+# The #SBATCH block above holds the defaults; DEVKIT_SLURM_* override them.
 # =============================================================================
 set -euo pipefail
+
+# Runs on a compute node, from the repository the job was submitted from
+# (apptainer_run.sh passes --chdir), so the shared helpers are reachable.
+source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || { echo "  [ERROR] Cannot load config/util_paths.sh (broken checkout?)" >&2; exit 1; }
+devkit_require "util_logging.sh"
+devkit_require "util_sif_common.sh"
 
 case "${1:-}" in
     -h|--help) echo "Usage: slurm_run.sh <sif-image> [command [args...]]"; exit 0 ;;
@@ -51,11 +58,12 @@ done
 mkdir -p logs
 
 JOB_ID="${SLURM_JOB_ID:-LOCAL_TEST}"
-echo -e "  \033[32m[SLURM Job ${JOB_ID}]\033[0m Starting execution..."
-echo -e "  Node Count:   ${SLURM_JOB_NUM_NODES:-1}"
-echo -e "  CPUs/Task:    ${SLURM_CPUS_PER_TASK:-8}"
-echo -e "  SIF Artifact: ${SIF_IMAGE}"
-echo -e "  Command:      ${CMD[*]}"
+LOG_PREFIX="[SLURM Job ${JOB_ID}]"
+log_ok "Starting execution..."
+log_detail "Nodes:        ${SLURM_JOB_NUM_NODES:-1}"
+log_detail "CPUs/Task:    ${SLURM_CPUS_PER_TASK:-8}"
+log_detail "SIF Artifact: ${SIF_IMAGE}"
+log_detail "Command:      ${CMD[*]}"
 
 # Host → container bind roots (mount points are configurable; see .env.example)
 CONTAINER_DATA_ROOT="${CONTAINER_DATA_ROOT:-${WORKSPACE_PATH:-/workspace}/data}"
@@ -64,12 +72,12 @@ CONTAINER_RUN_ROOT="${CONTAINER_RUN_ROOT:-/runs}"
 BIND_OPTS=()
 if [ -n "${SLURM_DATA_ROOT:-}" ] && [ -d "${SLURM_DATA_ROOT}" ]; then
     BIND_OPTS+=( "--bind" "${SLURM_DATA_ROOT}:${CONTAINER_DATA_ROOT}:ro" )
-    echo -e "  Data (ro):    ${SLURM_DATA_ROOT} → ${CONTAINER_DATA_ROOT}"
+    log_detail "Data (ro):    ${SLURM_DATA_ROOT} → ${CONTAINER_DATA_ROOT}"
 fi
 if [ -n "${SLURM_RUN_ROOT:-}" ]; then
     mkdir -p "${SLURM_RUN_ROOT}"
     BIND_OPTS+=( "--bind" "${SLURM_RUN_ROOT}:${CONTAINER_RUN_ROOT}" )
-    echo -e "  Runs (rw):    ${SLURM_RUN_ROOT} → ${CONTAINER_RUN_ROOT}"
+    log_detail "Runs (rw):    ${SLURM_RUN_ROOT} → ${CONTAINER_RUN_ROOT}"
 fi
 
 GPU_FLAGS=()
@@ -77,18 +85,10 @@ if command -v nvidia-smi >/dev/null 2>&1 || [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; 
     GPU_FLAGS+=( "--nv" )
 fi
 
-RUNTIME="apptainer"
-command -v apptainer >/dev/null 2>&1 || RUNTIME="singularity"
-
-# `apptainer exec` skips the image ENTRYPOINT, so the job would run without the
-# ROS/venv environment the artifact was built with (`import rclpy` fails). Route
-# through /entrypoint.sh like scripts/apptainer_run.sh does; --env is the dev
-# entrypoint's exec-wrapper mode, absent from the production one.
-ENTRY=()
-if "$RUNTIME" exec "$SIF_IMAGE" test -x /entrypoint.sh 2>/dev/null; then
-    ENTRY=(/entrypoint.sh)
-    "$RUNTIME" exec "$SIF_IMAGE" grep -q '"--env"' /entrypoint.sh 2>/dev/null && ENTRY+=(--env)
-fi
+RUNTIME="$(sif_runtime)" || exit 1
+# Route the job through the image entrypoint (see sif_entry_args) — without it
+# the job runs with none of the ROS/venv environment the artifact was built with.
+read -r -a ENTRY <<< "$(sif_entry_args "$RUNTIME" "$SIF_IMAGE")"
 
 # ${arr[@]+...}: plain "${arr[@]}" on an empty array is fatal under set -u in
 # bash < 4.4 — the RHEL 7/8 bash that SLURM nodes actually run.

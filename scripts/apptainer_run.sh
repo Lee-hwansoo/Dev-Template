@@ -1,15 +1,16 @@
 #!/bin/bash
 # =============================================================================
-# scripts/apptainer_run.sh
-# Run SIF artifact locally (dev/prod) or submit to SLURM cluster.
+# scripts/apptainer_run.sh — run a SIF artifact locally, or submit it to SLURM.
 # Usage: apptainer_run.sh [--mode dev|prod|slurm] [--env ros|dev] [command...]
 # =============================================================================
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Host-side script: WORKSPACE_PATH is the CONTAINER path (and the Makefile
-# exports it), so the repository root can only come from this file's location.
-WS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# WS_ROOT comes from util_paths.sh, which ignores a WORKSPACE_PATH that is not a
+# DevKit tree on THIS machine — the Makefile exports the container path.
+source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || { echo "  [ERROR] Cannot load config/util_paths.sh (broken checkout?)" >&2; exit 1; }
+devkit_require "util_logging.sh"
+devkit_require "util_sif_common.sh"
+LOG_PREFIX="[Apptainer]"
 
 MODE="dev"
 ENV_NAME="${ENV:-ros}"
@@ -17,9 +18,9 @@ APP_CMD=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --mode) [ $# -ge 2 ] || { echo -e "  \033[31m[ERROR]\033[0m --mode needs a value (dev|prod|slurm)" >&2; exit 2; }
+        --mode) [ $# -ge 2 ] || { log_error "--mode needs a value (dev|prod|slurm)"; exit 2; }
                 MODE="$2"; shift 2 ;;
-        --env)  [ $# -ge 2 ] || { echo -e "  \033[31m[ERROR]\033[0m --env needs a value (ros|dev)" >&2; exit 2; }
+        --env)  [ $# -ge 2 ] || { log_error "--env needs a value (ros|dev)"; exit 2; }
                 ENV_NAME="$2"; shift 2 ;;
         -h|--help)
             echo "Usage: apptainer_run.sh [--mode dev|prod|slurm] [--env ros|dev] [--] [command...]"
@@ -27,7 +28,7 @@ while [ $# -gt 0 ]; do
         # `--` is the escape hatch for a command that itself starts with a dash;
         # without it a typo'd flag would silently become the container command.
         --) shift; APP_CMD="$*"; break ;;
-        -*) echo -e "  \033[31m[ERROR]\033[0m Unknown option: $1 (use '--' before a command starting with '-')" >&2; exit 2 ;;
+        -*) log_error "Unknown option: $1 (use '--' before a command starting with '-')"; exit 2 ;;
         *) APP_CMD="$*"; break ;;
     esac
 done
@@ -42,15 +43,7 @@ esac
 # APP_COMMAND is the env-var spelling of the trailing command (docs/SLURM.md).
 APP_CMD="${APP_CMD:-${APP_COMMAND:-}}"
 
-# Import detected environment settings. check_env.sh calls `exit` on a fatal
-# misconfiguration, so it must run as a child process — sourcing it would kill
-# this script with the error message suppressed.
-if env_out="$(bash "${WS_ROOT}/scripts/check_env.sh")"; then
-    eval "$env_out"
-else
-    echo -e "  \033[31m[ERROR]\033[0m Host environment detection failed. Run 'bash scripts/check_env.sh' to see why." >&2
-    exit 1
-fi
+sif_import_host_env || exit 1
 
 # Resolve SIF file. An explicitly given SIF_FILE is used as-is and MUST exist —
 # silently substituting a stale local artifact for a mistyped /scratch path
@@ -74,8 +67,8 @@ if [ -z "${SIF_FILE:-}" ]; then
     done
 fi
 if [ ! -f "$SIF_FILE" ]; then
-    echo -e "  \033[31m[ERROR]\033[0m SIF artifact not found: ${WS_ROOT}/${COMPOSE_PROJECT}-${ENV_NAME}-${ARTIFACT_MODE}.sif" >&2
-    echo -e "  \033[36m[Hint]\033[0m Run 'make bake-${ARTIFACT_MODE} ENV=${ENV_NAME}' first, or point SIF_FILE at an existing artifact." >&2
+    log_error "SIF artifact not found: ${WS_ROOT}/${COMPOSE_PROJECT}-${ENV_NAME}-${ARTIFACT_MODE}.sif"
+    log_detail "Run 'make bake-${ARTIFACT_MODE} ENV=${ENV_NAME}' first, or point SIF_FILE at an existing artifact." >&2
     exit 1
 fi
 
@@ -120,10 +113,10 @@ if [ "$MODE" = "slurm" ]; then
     if command -v sbatch >/dev/null 2>&1; then
         # ${arr[@]+...}: empty-array "${arr[@]}" is fatal under set -u in
         # bash < 4.4 (RHEL 7/8 SLURM nodes).
-        echo -e "  \033[34m[SLURM]\033[0m Submitting job (${SBATCH_OPTS[*]})..."
+        log_info "Submitting job (${SBATCH_OPTS[*]})..."
         exec sbatch ${SBATCH_OPTS[@]+"${SBATCH_OPTS[@]}"} "$SLURM_SCRIPT" "$SIF_FILE" ${APP_CMD:+"$APP_CMD"}
     else
-        echo -e "  \033[33m[WARN]\033[0m sbatch not found. Falling back to local execution:"
+        log_warn "sbatch not found. Falling back to local execution:"
         exec bash "$SLURM_SCRIPT" "$SIF_FILE" ${APP_CMD:+"$APP_CMD"}
     fi
 fi
@@ -157,20 +150,13 @@ if command -v nvidia-smi >/dev/null 2>&1 || [ "${HAS_NVIDIA:-false}" = "true" ];
     GPU_FLAGS+=( "--nv" )
 fi
 
-RUNTIME="apptainer"
-command -v apptainer >/dev/null 2>&1 || RUNTIME="singularity"
+RUNTIME="$(sif_runtime)" || exit 1
 
-echo -e "  \033[34m[Apptainer]\033[0m Executing ${SIF_FILE} (mode=${MODE})..."
+log_info "Executing ${SIF_FILE} (mode=${MODE})..."
 if [ -n "${APP_CMD:-}" ]; then
-# `apptainer exec` does NOT run the image's ENTRYPOINT, so a bare command starts
-# with no ROS/venv/GPU environment at all (`import rclpy` fails). Route it
-# through /entrypoint.sh, exactly like `make exec` does for docker: the dev
-# entrypoint takes `--env <cmd>`, the production one execs "$@" directly.
-ENTRY=()
-if "$RUNTIME" exec "$SIF_FILE" test -x /entrypoint.sh 2>/dev/null; then
-    ENTRY=(/entrypoint.sh)
-    "$RUNTIME" exec "$SIF_FILE" grep -q '"--env"' /entrypoint.sh 2>/dev/null && ENTRY+=(--env)
-fi
+    # Route the command through the image entrypoint (see sif_entry_args), the
+    # same way `make exec` does for docker.
+    read -r -a ENTRY <<< "$(sif_entry_args "$RUNTIME" "$SIF_FILE")"
     exec "$RUNTIME" exec ${GPU_FLAGS[@]+"${GPU_FLAGS[@]}"} ${BIND_OPTS[@]+"${BIND_OPTS[@]}"} \
         "$SIF_FILE" ${ENTRY[@]+"${ENTRY[@]}"} bash -c "${APP_CMD}"
 else
