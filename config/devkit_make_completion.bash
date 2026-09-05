@@ -95,10 +95,16 @@ _devkit_make_completion() {
             opts="FIX=1 ENV=ros ENV=dev"
             ;;
         clean)
-            opts="KEEP_VENV=0 KEEP_VENV=1"
+            opts="KEEP_VENV=0 KEEP_VENV=1 FORCE=1"
             ;;
         clean-all)
             opts="KEEP_VENV=1 FORCE=1"
+            ;;
+        clean-cache|docker-clean)
+            opts="FORCE=1"
+            ;;
+        slurm-cancel)
+            opts="JOB="
             ;;
         stop|down|shell|term|top|logs|stats|status|check)
             opts="ENV=ros ENV=dev"

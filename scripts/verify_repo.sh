@@ -792,6 +792,19 @@ if [ "$(echo "$completion_targets" | wc -w)" -eq "$(echo "$phony_targets" | wc -
 else
     log_err "Tab completion target list drifted from Makefile .PHONY (got: ${completion_targets})"
 fi
+# Every KEY= the completion offers must be consumed somewhere. An advertised
+# switch that does nothing is worse than no completion at all: it reads as a
+# documented feature. Extracted from the opts= strings only, so the script's own
+# local variables do not count as knobs.
+dead_knobs=""
+for knob in $(grep -oE 'opts="[^"]*"' config/devkit_make_completion.bash \
+              | grep -oE '[A-Z][A-Z0-9_]+=' | tr -d '=' | sort -u); do
+    grep -rqE "\b${knob}\b" Makefile scripts/ docker-compose.common.yml docker-compose.dev.yml .env.example \
+        || dead_knobs="${dead_knobs} ${knob}"
+done
+[ -z "$dead_knobs" ] \
+    && log_ok "Tab completion advertises no dead knobs." \
+    || log_err "tab completion offers knobs nothing consumes:${dead_knobs}"
 
 # =============================================================================
 # [vscode-json] VS Code JSON: no shell default expansion ${VAR:-default}
