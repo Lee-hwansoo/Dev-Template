@@ -42,6 +42,7 @@ for f in \
     config/util_aliases.sh config/util_paths.sh config/devkit_make_completion.bash \
     scripts/check_env.sh scripts/setup_gpu.sh scripts/util_apt_helper.sh \
     scripts/apptainer_bake.sh scripts/apptainer_run.sh scripts/slurm_run.sh \
+    scripts/util_sif_common.sh scripts/util_logging.sh \
     dependencies/apt.txt dependencies/apt_ros.txt \
     src/example/starter_node.cpp src/example/starter_node.py
 do
@@ -814,6 +815,49 @@ for ide_script in $(grep -ohE '(WS_SCRIPTS\}?|scripts)/[A-Za-z0-9_]+\.sh' .vscod
 done
 [ "$vscode_errors" -eq 0 ] \
     && log_ok "VS Code / devcontainer JSON: no shell expansion, every invoked symbol and script resolves."
+
+# =============================================================================
+# [template-version] A fork must be able to tell where it started: VERSION
+#      travels with the files (the template button copies no git history) and a
+#      baked artifact's manifest names it. What CHANGED is the git history —
+#      the annotated tags and the log between them — not a hand-synced copy.
+# =============================================================================
+version_errors=0
+devkit_version="$(tr -d '[:space:]' < VERSION 2>/dev/null || true)"
+printf '%s' "$devkit_version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+    || { log_err "VERSION must hold a single semantic version (got: '${devkit_version:-empty/missing}')."; version_errors=1; }
+# VERSION is the ONLY place the template version is written: everything else
+# derives it (make from the file, the manifest from the environment), so the
+# pieces cannot disagree by construction. src/ is exempt — a fork's
+# src/pyproject.toml carries its OWN application version.
+hardcoded_version="$(grep -rn --fixed-strings "$devkit_version" \
+    Makefile README.md docs config scripts docker docker-compose.common.yml \
+    docker-compose.dev.yml .env.example .github 2>/dev/null || true)"
+[ -z "$hardcoded_version" ] \
+    || { log_err "the template version is hardcoded outside VERSION: $(cut -d: -f1,2 <<< "$hardcoded_version" | tr '\n' ' ')"; version_errors=1; }
+# Asserted by EXECUTION: the manifest is what a deployed artifact carries, and
+# the value reaches it through a file the builder stages must actually copy.
+version_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+if bash scripts/util_release_metadata.sh "$version_probe/r.json" >/dev/null 2>&1; then
+    # Separator-agnostic: the generator emits compact JSON.
+    grep -qE "\"devkit_version\": ?\"${devkit_version}\"" "$version_probe/r.json" \
+        || { log_err "the release manifest does not record devkit_version=${devkit_version} (a baked artifact cannot name its template)."; version_errors=1; }
+else
+    log_err "scripts/util_release_metadata.sh failed; a baked artifact would ship without a manifest."; version_errors=1
+fi
+rm -rf "$version_probe"
+# …and the builder stages must put VERSION where that script looks, or every
+# shipped manifest says "unknown".
+for version_stage in 'prod-dev-builder' 'prod-ros-builder'; do
+    awk -v stage="$version_stage" '
+        $0 ~ "AS " stage        {inside=1}
+        inside && /^FROM / && $0 !~ "AS " stage {inside=0}
+        inside && /^COPY VERSION/ {found=1}
+        END {exit found ? 0 : 1}' docker/Dockerfile \
+        || { log_err "docker/Dockerfile: ${version_stage} does not COPY VERSION; its release manifest would say devkit_version=unknown."; version_errors=1; }
+done
+[ "$version_errors" -eq 0 ] \
+    && log_ok "Template revision ${devkit_version} is recorded in VERSION and in the release manifest."
 
 # =============================================================================
 # [adopt] `make adopt` hands a fork the identity it owns. It edits tracked files,

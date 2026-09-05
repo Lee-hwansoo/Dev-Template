@@ -318,6 +318,7 @@ status: check
 	@printf "  %-19s %s\n" "Host User:"          "$$(whoami)"
 	@printf "  %-19s %s\n" "Host OS:"            "$(if $(filter true,$(IS_MACOS)),macOS Darwin ($(HOST_ARCH)),$(if $(filter true,$(IS_WSL)),Windows WSL2,Linux Native))"
 	@printf "  %-19s %s\n" "Project Name:"       "$(COMPOSE_PROJECT_NAME)"
+	@printf "  %-19s %s\n" "DevKit Version:"     "$(DEVKIT_VERSION)$(if $(DEVKIT_COMMIT), ($(DEVKIT_COMMIT)),)"
 	@printf "  %-19s %s\n" "Workspace Path:"     "$(HOST_WORKSPACE_PATH)"
 	@printf "  %-19s %s\n" "ROS Version:"        "$(ROS_DISTRO)"
 	@$(RESOLVE_SVC_MODE); \

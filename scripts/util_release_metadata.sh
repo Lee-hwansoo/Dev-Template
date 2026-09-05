@@ -31,6 +31,10 @@ esac
 
 OUTPUT_FILE="${1:-${WORKSPACE_PATH:-/workspace}/release/devkit-release.json}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+# Template revision from the committed VERSION file (an explicit DEVKIT_VERSION
+# in the environment wins, e.g. when the file is not in the build context).
+DEVKIT_VERSION="${DEVKIT_VERSION:-$(cat "${WS_ROOT:-.}/VERSION" 2>/dev/null || echo unknown)}"
+export DEVKIT_VERSION
 
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
     log_error "Python is required to generate release metadata: $PYTHON_BIN"
@@ -117,6 +121,11 @@ metadata = {
     "cudnn_version": os.environ.get("CUDNN_VERSION", ""),
     "opencv_cuda": os.environ.get("OPENCV_CUDA", "auto"),
     "git_commit": os.environ.get("GIT_COMMIT", "unknown"),
+    # Which TEMPLATE revision produced this artifact. git_commit above is the
+    # project's commit; after a fork diverges those are two different answers,
+    # and "which DevKit was this built with" is the one that explains a
+    # behaviour change in the environment rather than in the code.
+    "devkit_version": os.environ.get("DEVKIT_VERSION", "unknown"),
     "build_date": resolve_build_date(),
     # Reproducibility inputs, recorded so a build can be audited or re-pinned.
     "base_image": os.environ.get("BASE_IMAGE", "unknown"),

@@ -212,6 +212,25 @@ git add src/uv.lock && git commit -m "chore: pin python dependencies"
 - **`make stop` / `make down`**: `ENV`에 해당하는 서비스만 대상으로 합니다 (`ENV=ros` 실행 시 `basic-*` 컨테이너는 건드리지 않음).
 - **`make docker-clean`**: **고아 이미지, BuildKit 빌드 캐시 및 미사용 볼륨 전체 삭제** (수십 GB 용량 복구).
 
+## 🧬 템플릿 버전 (Template Version)
+
+`VERSION`이 이 템플릿의 리비전입니다. 커밋되어 **파일과 함께 이동**하므로, GitHub 템플릿
+버튼으로 시작해 DevKit 히스토리가 없는 프로젝트도 자기 출발점을 압니다. **무엇이 바뀌었는지는
+git 이 보관합니다** — `v*` 주석 태그와 태그 사이의 `git log`이며, 손으로 동기화하는 별도
+변경 기록 파일은 두지 않습니다.
+
+```bash
+make status              # DevKit Version: <VERSION> (커밋 해시)
+```
+
+버전을 올리는 일은 `VERSION` 한 줄을 고치고 `v*` 태그를 붙이는 것이며, `make verify`가
+형식과 일관성을 확인합니다.
+
+MAJOR 상승은 "파생 프로젝트가 무언가 고쳐야 한다"는 뜻입니다. 상류 갱신을 선별해 가져오는
+절차는 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#-템플릿-버전과-상류-갱신-가져오기-template-lifecycle)에 있습니다.
+
+---
+
 ## 📖 상세 매뉴얼 및 문서 안내
 
 자세한 기능 설명 및 고급 서버 배포법은 아래 전문 문서를 참조하세요:

@@ -149,83 +149,88 @@ docker exec <container> /entrypoint.sh --env sh -c 'echo $VIRTUAL_ENV'
 
 ---
 
-## ⚙️ 고급 의존성 제어 및 커스텀 (Advanced Dependency Management)
+## 🧬 템플릿 버전과 상류 갱신 가져오기 (Template Lifecycle)
 
-### 1. Python 레이어 (`src/pyproject.toml` & `uv`)
-`pyproject.toml`을 통해 CPU/GPU 환경에 따른 파이썬 패키지(예: PyTorch 등) 분기 및 인덱스 설정을 관리합니다.
+DevKit은 템플릿이므로, 이 위에 올린 프로젝트는 **어느 리비전에서 시작했는지**와 **그 뒤 무엇이
+움직였는지**를 알아야 합니다.
 
-```toml
-[project.optional-dependencies]
-cpu = [ "torch==2.11.0", "torchvision" ]
-gpu = [ "torch==2.11.0", "torchvision" ]
+| 파일 | 역할 |
+| --- | --- |
+| `VERSION` | 템플릿 리비전 한 줄. **커밋되어 파일과 함께 이동**하므로 GitHub 템플릿 버튼으로 만든(=DevKit 히스토리가 없는) 프로젝트도 자기 출발점을 압니다 |
+| `v*` 주석 태그 | **무엇이 바뀌었는지**의 출처. 별도 변경 기록 파일은 두지 않습니다 — git 이 이미 가진 정보의 사본이 되고, 손으로 동기화할 두 번째 진실이 되기 때문입니다 |
 
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
+### 버전 규약
 
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
+버전의 "공개 API"는 **광고된 표면**입니다 — `make` 타겟, 컨테이너 내부 숏컷, `.env` 노브,
+그리고 `scripts/verify_repo.sh`가 검증하는 계약.
+
+| 상승 | 파생 프로젝트에 주는 의미 |
+| --- | --- |
+| **MAJOR** | 계속 쓰려면 **무언가 고쳐야 함** (타겟 이름 변경, 노브 제거, 필수 파일 추가) |
+| **MINOR** | 새 기능. 의존하던 것은 그대로 |
+| **PATCH** | 수정만 |
+
+### 버전 올리기
+
+전용 도구는 없습니다. 한 줄을 고치고 태그를 붙이는 일이라, 감싸는 스크립트는 규약을 한 번 더
+적어두는 것 이상을 하지 못합니다. 태그 본문에 그 구간의 커밋 목록을 넣으면 `git show <태그>`와
+GitHub 릴리스가 같은 내용을 싣고, MAJOR 상승이라면 **무엇을 고쳐야 하는지**를 첫 줄에 적으세요
+— 파생 프로젝트가 가장 먼저 읽는 곳입니다.
+
+```bash
+printf '%s\n' "$NEW" > VERSION                     # semver 한 줄
+make verify                                         # 형식과 일관성 확인
+git commit -am "chore(release): v${NEW}"
+git tag -a "v${NEW}"                                # 본문: git log --oneline <이전 태그>..HEAD
+
+git log  --oneline <이전 태그>..<새 태그>            # 두 버전 사이 무엇이 바뀌었나
+git diff <이전 태그>..<새 태그> -- Makefile config/ scripts/ docker/   # 커널 파일만
 ```
-> **`UV_EXTRA` 자동 선택**: `setup_gpu.sh`가 GPU를 감지하면 `~/.gpu_env.sh`에 `UV_EXTRA=gpu`(NVIDIA 계열) 또는
-> `UV_EXTRA=cpu`를 기록하고, `uvs`/`mksync`가 이를 `uv sync --extra <값>`으로 사용합니다.
-> 수동으로 덮어쓰려면 `.env`에 `UV_SYNC_FLAGS="--extra gpu"`를 지정하거나 `mksync --extra gpu`를 실행하세요.
 
-### 2. C++ & ROS 레이어 (`CMake` + `dependencies.repos`)
-- **`FetchDependencies.cmake`**: `CMakeLists.txt` 빌드 시점에 GitHub 라이브러리(예: `spdlog`, `nlohmann_json`)를 동적으로 다운로드 및 링크.
-- **`dependencies.repos` & `overlay/`**: 외부 레포지토리 소스를 `src/thirdparty`로 자동 복사하며, `overlay/` 폴더 내 파일로 커스텀 덮어쓰기 보장.
-- **`colcon.meta` & `CMAKE_EXTRA_ARGS`**: 대용량 외부 빌드 시간 단축(`BUILD_TESTING=OFF`) 및 GTSAM/Eigen 메모리 충돌(ODR Violation) 방지 옵션 주입.
-  `colcon.meta` 는 `cbuild --meta` 로 전달됩니다(전달하지 않으면 colcon 이 읽지 않습니다).
-- **`OPENCV_CUDA`**: OpenCV 를 소스에서 빌드하는 프로젝트를 위한 CMake 플래그를 `cbuild`/`mbuild` 에 **자동 주입**합니다.
-  `auto` 는 NVIDIA 런타임과 `nvcc` 가 모두 있을 때만 CUDA 를 켜고(없으면 `-DWITH_CUDA=OFF`), 감지된 GPU 아키텍처만
-  컴파일합니다(`-DCUDA_ARCH_BIN=<compute_cap>+PTX`). 값만 확인하려면 `gpu opencv_args`.
+### 같은 버전의 내용인지 확인하는 법
 
-### 3. 시스템 패키지 태깅 규칙 (`dependencies/apt.txt`, `dependencies/apt_ros.txt`)
+`VERSION`은 템플릿 버전이 적히는 **유일한 곳**이고 나머지는 전부 파생됩니다 — `make status`는
+파일을 읽고, 릴리스 매니페스트의 `devkit_version`은 빌드 시점에 박힙니다. 그래서 조각들이
+어긋날 수가 없으며, check [template-version]이 그 구조를 검사합니다(`VERSION` 밖에 버전
+문자열이 하드코딩되면 실패).
 
-프로덕션 이미지 용량을 최소화하기 위해 패키지 줄 끝 주석에 태그를 지정합니다. 태그 해석은
-`scripts/util_apt_helper.sh install-packages <all|builder|runtime> [ros_distro]`가 단독으로 담당합니다.
+```bash
+make status                                                  # DevKit Version: <VERSION> (커밋)
+cat /etc/devkit/devkit-release.json | grep devkit_version    # 배포된 SIF/이미지가 스스로 답함
+```
 
-| 태그 | 의미 |
-| :--- | :--- |
-| `# runtime` | 배포 산출물에 반드시 포함될 실행 필수 패키지 |
-| `# dev` | 개발 컨테이너 전용 빌드 도구 (프로덕션 빌더/런타임에서 제외) |
-| `# gui` | RViz, RQT 등 GUI 전용 패키지 (프로덕션 헤드리스 빌드에서 제외) |
-| `# ros1` / `# ros2` | 해당 ROS 세대에서만 설치 (`ros-${ROS_DISTRO}-*` 는 자동 치환) |
-| *(태그 없음)* | 개발 이미지와 프로덕션 **빌더**에 설치, 런타임에서는 제외 |
+매니페스트의 `git_commit`은 프로젝트 커밋, `devkit_version`은 템플릿 리비전입니다 — fork
+이후 두 값은 갈라지고, "환경이 왜 달라졌나"에 답하는 쪽은 후자입니다.
 
-**필터 모드별 선택 결과:**
+- `src/pyproject.toml`의 `version`은 **당신 프로젝트의 버전**입니다. 템플릿 버전과 묶지 않으니
+  자유롭게 올리세요.
+- `.env`가 현재 템플릿과 같은 세대인지는 `make check`가 답합니다 — `.env.example`에 있고
+  `.env`에 없는 키를 나열하므로 오래된 `.env`는 바로 드러납니다.
 
-| 모드 | 사용처 (Dockerfile 스테이지) | 선택 대상 |
-| :--- | :--- | :--- |
-| `all` | `dev`, `ros` (개발 이미지) | `# dev`/`# gui` 포함 전체 (반대 ROS 세대만 제외) |
-| `builder` | `prod-*-builder` | `# dev`, `# gui` 제외 |
-| `runtime` | `prod-*-runtime` | `# runtime` 태그가 붙은 항목만 |
+### 상류 갱신 가져오기
 
-> [!IMPORTANT]
-> **`ros_distro` 인자를 생략하면 `apt_ros.txt`는 아예 읽지 않습니다.** ROS apt 저장소를 설정하지 않는 비-ROS 스테이지
-> (`dev`, `prod-dev-builder`, `prod-dev-runtime`)가 `ros-*` 패키지를 요구해 빌드가 실패하는 것을 막는 계약이며,
-> `make verify` [apt-tag-filter]이 이를 자동 검증합니다.
->
-> 선택 결과는 설치 없이 미리 확인할 수 있습니다:
-> ```bash
-> DEVKIT_DRY_RUN=1 DEVKIT_DEPS_DIR=./dependencies \
->   bash scripts/util_apt_helper.sh install-packages runtime humble
-> ```
+```bash
+# 1) 최초 1회: 상류를 원격으로 등록
+git remote add upstream https://github.com/Lee-hwansoo/DevKit.git
+git fetch upstream
 
----
+# 2) 무엇이 바뀌었는지 먼저 읽기 (MAJOR 인지 확인)
+git diff HEAD upstream/main -- VERSION
+git log --oneline "v$(cat VERSION)"..upstream/main
 
-## 🛡️ 보안 및 아키텍처 제약사항 (Security & Architecture)
+# 3) 커널 파일만 선별 병합 — src/ 와 .env 는 당신 것이므로 건드리지 않습니다
+git diff HEAD upstream/main -- Makefile config/ scripts/ docker/ docker-compose*.yml
+git checkout upstream/main -- config/ scripts/        # 예: 셸/스크립트 계층만 갱신
 
-0. **APT 신뢰 앵커 고정**: `packages.ros.org`의 서명키는 `scripts/util_apt_helper.sh` 최상단의
-   `ROS_GPG_FINGERPRINT` 상수와 대조한 뒤에만 설치됩니다.
-   - `STRICT_GPG_CHECK=true` → 지문 불일치 시 **빌드 중단** (CI/운영 권장, `.env` 또는 빌드 인자로 설정)
-   - 기본값 → 경고 후 진행
-   - 업스트림이 키를 교체하면 호스트에서 **`make update-gpg`** 를 실행하세요. 이 명령이 상수를 갱신합니다.
-1. **동적 권한 매핑**: 호스트의 UID/GID를 컨테이너 내 non-root 개발자 계정으로 동적 매핑하여 권한 에러를 차단합니다.
-2. **`privileged: true`**: USB 센서, 카메라, SocketCAN 통신을 위해 컨테이너가 특권 모드로 작동합니다.
-3. **`network_mode: host`**: ROS DDS 통신 성능 극대화를 위해 호스트 네트워크를 공유합니다. 충돌 방지를 위해 `.env`에서 고유한 `ROS_DOMAIN_ID`를 설정하세요.
+# 4) 계약으로 검증 후 커밋
+make verify && make build && make test
+```
+
+> [!TIP]
+> `make verify`가 통과하면 병합이 키트의 런타임 계약을 깨지 않았다는 뜻입니다. 반대로 실패
+> 메시지는 어느 계약이 깨졌는지 슬러그로 알려주므로(`check [env-bridge]` 등), 그 항목만
+> 확인하면 됩니다. `.env`는 절대 상류에서 덮어쓰지 말고 `.env.example`과 **차이만** 보세요:
+> `diff <(sort .env.example) <(sort .env) | head -40`
 
 ---
 

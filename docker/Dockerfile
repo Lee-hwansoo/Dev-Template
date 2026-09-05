@@ -287,6 +287,9 @@ COPY src ${WORKSPACE_PATH}/src
 COPY dependencies ${WORKSPACE_PATH}/dependencies
 COPY config ${WORKSPACE_PATH}/config
 COPY scripts ${WORKSPACE_PATH}/scripts
+# VERSION is the template revision util_release_metadata.sh stamps into the
+# release manifest; without it here the shipped artifact says "unknown".
+COPY VERSION ${WORKSPACE_PATH}/VERSION
 WORKDIR ${WORKSPACE_PATH}
 RUN DEVKIT_BUILD_TYPE=prod bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync" && \
     DEVKIT_STRIP_SOURCE=${DEVKIT_STRIP_SOURCE} DEVKIT_FAIL_ON_SOURCE=${DEVKIT_FAIL_ON_SOURCE} \
@@ -314,6 +317,9 @@ COPY src ${WORKSPACE_PATH}/src
 COPY dependencies ${WORKSPACE_PATH}/dependencies
 COPY config ${WORKSPACE_PATH}/config
 COPY scripts ${WORKSPACE_PATH}/scripts
+# VERSION is the template revision util_release_metadata.sh stamps into the
+# release manifest; without it here the shipped artifact says "unknown".
+COPY VERSION ${WORKSPACE_PATH}/VERSION
 WORKDIR ${WORKSPACE_PATH}
 RUN DEVKIT_BUILD_TYPE=prod bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync --share" && \
     DEVKIT_STRIP_SOURCE=${DEVKIT_STRIP_SOURCE} DEVKIT_FAIL_ON_SOURCE=${DEVKIT_FAIL_ON_SOURCE} \

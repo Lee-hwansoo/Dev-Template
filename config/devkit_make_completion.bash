@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
-# DevKit Makefile Tab Completion (Ultra-Lean & Fast Engine) — bash only.
-# One shell, one dialect: the container is bash, every script is bash, and
-# maintaining a second array-semantics dialect for zsh bought nothing but an
-# untestable code path. zsh users: run `bash` (or chsh) for completion; every
-# make target works from any shell regardless.
+# config/devkit_make_completion.bash — `make <Tab>` for targets and KEY=VALUE
+# knobs. bash only: a second array dialect for zsh bought an untestable code
+# path. zsh users run `bash` for completion; every target works from any shell.
 # =============================================================================
 
 # Silent no-op outside bash so a stray rc entry never prints errors.
