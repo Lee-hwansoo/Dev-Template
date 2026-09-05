@@ -753,12 +753,68 @@ fi
 # =============================================================================
 # [vscode-json] VS Code JSON: no shell default expansion ${VAR:-default}
 # =============================================================================
+vscode_errors=0
 if grep -rqE '\$\{[A-Za-z_][A-Za-z0-9_]*:-' .vscode .devcontainer 2>/dev/null; then
     log_err "VS Code JSON files must not use \${VAR:-default} shell expansion (VS Code treats it as substitution):"
     grep -rE '\$\{[A-Za-z_][A-Za-z0-9_]*:-' .vscode .devcontainer 2>/dev/null | sed 's/^/    /' >&2
-else
-    log_ok "VS Code JSON files: no shell default expansion found."
+    vscode_errors=1
 fi
+stray_ide_env="$(grep -rn '\${env:WS_' .vscode .devcontainer 2>/dev/null | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
+[ -z "$stray_ide_env" ] \
+    || { log_err "IDE config reads \${env:WS_*}, which is never set in the IDE process: $(cut -d: -f1,2 <<< "$stray_ide_env" | tr '\n' ' ')"; vscode_errors=1; }
+# Every shell symbol and script the IDE config invokes must exist: a task
+# calling a helper that was removed prints only "command not found", and no
+# static JSON check notices.
+ide_syms="$(grep -ohE '&& *[A-Za-z_][A-Za-z0-9_]*' .vscode/*.json .devcontainer/*.json 2>/dev/null \
+            | sed 's/&& *//' | sort -u | tr '\n' ' ')"
+# One bash for the whole group, and by DEFINITION lookup rather than grep: the
+# build entry points live inside a ROS_VERSION branch, where a per-line grep
+# reported a false miss.
+ide_missing="$(bash --norc -c "WORKSPACE_PATH='${ROOT_DIR}' source config/util_aliases.sh >/dev/null 2>&1
+    for s in ${ide_syms}; do
+        declare -F \"\$s\" >/dev/null 2>&1 || alias \"\$s\" >/dev/null 2>&1 || printf ' %s' \"\$s\"
+    done" 2>/dev/null || true)"
+[ -z "$ide_missing" ] \
+    || { log_err "IDE tasks invoke shell symbols that no longer exist:${ide_missing}"; vscode_errors=1; }
+# A setting must live in ONE file. devcontainer customizations are injected as
+# remote settings, which .vscode/settings.json then overrides — so a key present
+# in both is a copy that can only ever go stale.
+for ide_key in $(sed -n '/"settings": {/,/}/p' .devcontainer/devcontainer.json 2>/dev/null \
+                 | grep -oE '"[A-Za-z_][A-Za-z0-9_.]*":' | tr -d '":'); do
+    grep -q "\"${ide_key}\"" .vscode/settings.json \
+        && { log_err "'${ide_key}' is set in both .devcontainer/devcontainer.json and .vscode/settings.json."; vscode_errors=1; }
+done
+# Each IntelliSense profile must be documented: docs/DEBUGGING.md tells the user
+# which one to pick, and it still named a "Host (Bind Mount)" profile that had
+# been renamed twice.
+while IFS= read -r ide_profile; do
+    grep -qF "$ide_profile" docs/DEBUGGING.md \
+        || { log_err "IntelliSense profile '${ide_profile}' is not documented in docs/DEBUGGING.md."; vscode_errors=1; }
+done < <(grep -oE '"name": "[^"]+"' .vscode/c_cpp_properties.json | sed 's/"name": "//; s/"$//')
+# Same rule for every F5 entry: a debug configuration nobody documents is a
+# feature nobody finds. The compounds in particular had no mention anywhere.
+# Parsed, not grepped: an `environment` entry also carries a "name" key.
+ide_launch_names="$(python3 - <<'PYLAUNCH' 2>/dev/null || true
+import json, re, pathlib
+d = json.loads(re.sub(r'(?m)^\s*//.*$', '', pathlib.Path('.vscode/launch.json').read_text()))
+for entry in d.get('configurations', []) + d.get('compounds', []):
+    print(entry['name'])
+PYLAUNCH
+)"
+[ "$(grep -c . <<< "$ide_launch_names")" -ge 10 ] \
+    || { log_err "launch.json name extraction collapsed ($(grep -c . <<< "$ide_launch_names") found)."; vscode_errors=1; }
+while IFS= read -r ide_launch; do
+    grep -qF "$ide_launch" docs/DEBUGGING.md \
+        || { log_err "debug configuration '${ide_launch}' is not documented in docs/DEBUGGING.md."; vscode_errors=1; }
+done <<< "$ide_launch_names"
+for ide_script in $(grep -ohE '(WS_SCRIPTS\}?|scripts)/[A-Za-z0-9_]+\.sh' .vscode/*.json .devcontainer/*.json 2>/dev/null \
+                    | sed 's|.*/||' | sort -u); do
+    [ -f "scripts/${ide_script}" ] \
+        || { log_err "IDE tasks reference scripts/${ide_script}, which does not exist."; vscode_errors=1; }
+done
+[ "$vscode_errors" -eq 0 ] \
+    && log_ok "VS Code / devcontainer JSON: no shell expansion, every invoked symbol and script resolves."
+
 # =============================================================================
 # [adopt] `make adopt` hands a fork the identity it owns. It edits tracked files,
 #      so it must be surgical: a bare `sed s/^name = /` also renamed the

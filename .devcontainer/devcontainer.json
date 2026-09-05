@@ -29,12 +29,12 @@
                 "redhat.vscode-xml",
                 "redhat.vscode-yaml",
                 "EditorConfig.EditorConfig"
-            ],
-            "settings": {
-                "python.defaultInterpreterPath": "${containerEnv:WORKSPACE_PATH:/workspace}/install/.venv/bin/python",
-                "C_Cpp.default.compileCommands": "${containerEnv:WORKSPACE_PATH:/workspace}/build/compile_commands.json",
-                "terminal.integrated.defaultProfile.linux": "bash"
-            }
+            ]
+            // No "settings" block: .vscode/settings.json already carries these
+            // (interpreter, compileCommands, shell) as ${workspaceFolder} paths,
+            // which resolve in the container and on the host alike — and
+            // workspace settings win over the ones injected from here, so a copy
+            // would only ever be the stale half. check [vscode-json] forbids it.
         }
     },
 

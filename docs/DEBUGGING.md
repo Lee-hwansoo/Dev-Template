@@ -44,7 +44,10 @@ VSCode 프로세스 자체를 컨테이너 내부로 직접 연결합니다.
 ### 방법 B: 호스트 사이드 개발
 호스트 OS에서 코드 편집기를 구동하면서 컨테이너와 연동합니다.
 1. VSCode에서 일반적인 방식으로 워크스페이스 오픈.
-2. `c_cpp_properties.json`에서 `Host (Bind Mount)` IntelliSense 프로필 선택.
+2. 상태 표시줄에서 IntelliSense 프로필을 호스트용으로 전환합니다
+   (`c_cpp_properties.json`: `Host (Linux/WSL)` 또는 `Host (macOS)`; 컨테이너 내부 편집은
+   `Docker (Container)`). 호스트 프로필은 컨테이너 환경변수를 읽을 수 없으므로 C/C++ 표준을
+   `.env` 기본값(c11 / c++17)으로 고정해 둡니다.
 
 ---
 
@@ -71,6 +74,7 @@ GDB 디버그 엔진을 통해 C++ 실행 파일 및 ROS 노드를 라인 단위
 
 ### 1. 단일 파일 디버깅
 임의의 `*.py` 파일을 연 상태에서 **F5** ➔ **`🐍 Python: Debug Current File`** 선택.
+인자를 넘겨야 하면 **`🐍 Python: Debug with Args`** — 파일 경로를 먼저 묻습니다.
 
 ### 2. 원격 프로세스 Attach (Advanced)
 배경에서 구동 중인 파이썬 노드에 디버거 부착:
@@ -89,7 +93,24 @@ GDB 디버그 엔진을 통해 C++ 실행 파일 및 ROS 노드를 라인 단위
 전체 시스템 런치 파일과 개별 노드를 한 번에 디버깅합니다.
 
 * **ROS 2 Launch**: **`🤖 ROS2: Launch File`** 선택 (`PYTHONPATH`, `AMENT_PREFIX_PATH`, `LD_LIBRARY_PATH` 자동 할당).
+  코드를 고치지 않았다면 빌드를 건너뛰는 **`🤖 ROS2: Launch File (skip build)`** 가 빠릅니다.
 * **ROS 1 Launch**: **`🐢 ROS1: roslaunch`** 선택 (터미널에서 `roscore` 실행 필요).
+* **단일 노드**: **`🤖 ROS2: Run Node`** / **`🐢 ROS1: rosrun`** — 패키지와 실행 파일 이름을 묻습니다.
+
+### 런치와 노드를 동시에 (Compound)
+
+런치 파일을 띄우면서 그 안의 노드에 디버거를 붙이는 조합입니다. F5 목록에서 하나만 고르면
+두 세션이 함께 시작됩니다.
+
+| Compound | 구성 |
+| :--- | :--- |
+| **`🚀 Full Debug: ROS2 Launch + C++ Attach`** | `🤖 ROS2: Launch File` + `🐛 C++: Attach to Process (GDB)` |
+| **`🚀 Full Debug: ROS2 Launch + Python Attach`** | `🤖 ROS2: Launch File` + `🐍 Python: Attach to debugpy (Remote)` |
+| **`🚀 Full Debug: ROS1 roslaunch + C++ Attach`** | `🐢 ROS1: roslaunch` + `🐛 C++: Attach to Process (GDB)` |
+| **`🚀 Full Debug: ROS1 roslaunch + Python Attach`** | `🐢 ROS1: roslaunch` + `🐍 Python: Attach to debugpy (Remote)` |
+
+> Attach 쪽은 대상 프로세스가 떠 있어야 붙습니다 — C++ 는 프로세스 선택 목록에서, Python 은
+> 노드 안에 `debugpy.listen(("0.0.0.0", 5678))` 이 있어야 합니다(위 2절).
 
 ---
 
@@ -99,9 +120,16 @@ GDB 디버그 엔진을 통해 C++ 실행 파일 및 ROS 노드를 라인 단위
 
 | 태스크 카테고리 | 주요 수행 태스크 |
 | :--- | :--- |
-| **진단 (Diagnostics)** | `✅ DevKit Verify`, `🏥 Hardware Check`, `⚡ GPU Status`, `🔍 Check Dependencies` |
-| **유지보수 (Maintenance)** | `🧹 Clean Workspace`, `🔄 Sync Dependencies`, `🐍 Python: uv sync` |
-| **ROS 빌드 & 테스트** | `🔨 colcon: Build (Debug)`, `🧪 colcon: Test`, `📋 Source Workspace` |
+| **진단 (Diagnostics)** | `✅ DevKit: Verify (Script-only)`, `🚀 Full Hardware & GPU Check`, `⚡ GPU Status & Diagnostics`, `🔍 Check Dependencies (Sanity)` |
+| **유지보수 (Maintenance)** | `🧹 Clean Workspace`, `🔄 Sync Repos (.repos only)`, `📦 Sync Repos + rosdep (system deps)`, `🐍 Python: uv sync`, `📊 Build Cache Statistics (ccache)` |
+| **ROS 빌드 & 테스트** | `🔨 colcon: Build (Debug)`, `🔨 colcon: Build Package`, `🧪 colcon: Test`, `🧪 colcon: Test Results` |
+| **순수 CMake 빌드** | `🔨 cmake: Build (Debug)`, `🔨 cmake: Build (Release)` |
+| **품질 루프** | `🧪 Project: Test (mtest)`, `🎨 Project: Lint (mlint)`, `🎨 Project: Lint --fix` |
+
+> [!NOTE]
+> 라벨은 `.vscode/tasks.json`이 단일 진실 공급원이며, `scripts/verify_repo.sh`의
+> check [vscode-json]이 각 태스크가 호출하는 셸 함수·스크립트가 실제로 존재하는지
+> 검사합니다(제거된 내부 함수를 계속 호출해 "command not found"로 끝난 적이 있습니다).
 
 ---
 

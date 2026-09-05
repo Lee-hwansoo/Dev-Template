@@ -70,10 +70,10 @@
     "cmake.configureOnOpen": false,
 
     // ── Python ───────────────────────────────────────────────────────────────
-    "python.defaultInterpreterPath": "${env:WS_VENV}/bin/python",
+    "python.defaultInterpreterPath": "${workspaceFolder}/install/.venv/bin/python",
     "python.analysis.extraPaths": [
-        "${env:WS_SRC}",
-        "${env:WS_INSTALL}/lib/python3/dist-packages",
+        "${workspaceFolder}/src",
+        "${workspaceFolder}/install/lib/python3/dist-packages",
         "/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages"
     ],
     "python.analysis.typeCheckingMode": "basic",
