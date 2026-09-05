@@ -130,6 +130,29 @@ else
 fi
 
 # =============================================================================
+# [compose-env-split] One template per acceleration profile; the ROS/dev split
+# =============================================================================
+compose_errors=0
+[ "$(grep -cE '^  healthcheck: \*(dev|ros)-healthcheck$' docker-compose.dev.yml)" -eq 2 ] \
+    || { log_err "docker-compose.dev.yml must give both ENV anchors a healthcheck (the common templates no longer do)."; compose_errors=1; }
+# Concrete services are the ones with a profile; each must inherit an ENV anchor.
+compose_services="$(grep -cE '^    <<: \*(dev|ros-dev)-shared$' docker-compose.dev.yml)"
+compose_profiles="$(grep -cE '^    profiles: \[' docker-compose.dev.yml)"
+[ "$compose_services" -eq "$compose_profiles" ] && [ "$compose_profiles" -ge 6 ] \
+    || { log_err "${compose_services}/${compose_profiles} compose services merge an ENV anchor — one would run without its healthcheck, command or build target."; compose_errors=1; }
+# The host wiring is written ONCE, in base-common; `extends` appends each
+# service's own volumes to it. Two copies (one per ENV) drifted silently.
+for host_mount in HOST_WORKSPACE_PATH HOST_X11_DIR HOST_XAUTHORITY HOST_XDG_RUNTIME_DIR \
+                  HOST_GITCONFIG HOST_SSH_AUTH_SOCK HOST_CACHE_DIR WSL_LIB_DIR_MOUNT; do
+    grep -qE "^ *- \\\$\\{[^}]*${host_mount}" docker-compose.common.yml \
+        || { log_err "docker-compose.common.yml no longer mounts ${host_mount} on base-common; every service loses it."; compose_errors=1; }
+    grep -qE "^ *- \\\$\\{[^}]*${host_mount}" docker-compose.dev.yml \
+        && { log_err "docker-compose.dev.yml re-declares the ${host_mount} mount; base-common already carries it."; compose_errors=1; }
+done
+[ "$compose_errors" -eq 0 ] \
+    && log_ok "Compose ENV split: ${compose_profiles} services inherit an ENV anchor with a healthcheck."
+
+# =============================================================================
 # [apt-tag-filter] APT tag-filter contract (dependencies/apt*.txt tag system)
 #     - no ros_distro  → apt_ros.txt must be skipped entirely
 #     - runtime        → '# dev' / '# gui' entries must never appear
@@ -167,7 +190,7 @@ fi
 # The persisted file must PREPEND, never assign: it is generated during boot,
 # before ROS is sourced, so a whole-path snapshot wipes /opt/ros/<distro>/lib in
 # every shell that re-reads it — `import rclpy` then dies on a missing
-# librcl_action.so. Reproduced in a running container before this was fixed.
+# librcl_action.so.
 gpu_ld_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
 ( LD_LIBRARY_PATH=/probe/boot GPU_ENV_FILE="${gpu_ld_probe}/gpu_env.sh" HOME="$gpu_ld_probe" \
   bash -c 'source scripts/setup_gpu.sh igpu' ) >/dev/null 2>&1
