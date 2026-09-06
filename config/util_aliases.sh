@@ -38,7 +38,10 @@ __require_cmd() {
 # Refresh the workspace links after anything that creates their targets,
 # so they do not lag a whole session behind.
 __refresh_links() {
-    [ -x "${WS_SCRIPTS}/util_setup_links.sh" ] && "${WS_SCRIPTS}/util_setup_links.sh" --skip-compile-commands
+    # No --skip here: this runs AFTER a build, which is the only moment the
+    # per-package compile_commands.json files exist to be merged. Skipping it
+    # meant the aggregate the IDE reads was never written outside a manual run.
+    [ -x "${WS_SCRIPTS}/util_setup_links.sh" ] && "${WS_SCRIPTS}/util_setup_links.sh"
     return 0
 }
 
@@ -609,6 +612,7 @@ mbuild() {
         cmake --install "${WS_ROOT}/build" || return 1
         __require_install_artifacts "install(TARGETS ... DESTINATION bin/lib)" || return 1
     fi
+    __refresh_links
 }
 
 # mclean [--all]

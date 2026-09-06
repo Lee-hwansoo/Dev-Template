@@ -2851,6 +2851,40 @@ query_mode="$( WORKSPACE_PATH="$ROOT_DIR" bash -c '
     && log_ok "A GPU status query leaves the caller's shell untouched; a mode change still reaches it."
 
 # =============================================================================
+# [compile-db] The IDE reads build/compile_commands.json, and only a build can
+#      produce it. Every automatic caller passed --skip-compile-commands, so the
+#      aggregation ran on a manual invocation and nowhere else — while shell
+#      startup, which must stay fast, is the one place that should skip it.
+# =============================================================================
+ccdb_errors=0
+ccdb_probe="$(probe_dir config scripts)"
+mkdir -p "$ccdb_probe/build/pkg_a" "$ccdb_probe/build/pkg_b" "$ccdb_probe/bin" "$ccdb_probe/src"
+printf '[{"directory":"/x","command":"cc a.c","file":"a.c"}]' > "$ccdb_probe/build/pkg_a/compile_commands.json"
+printf '[{"directory":"/x","command":"cc b.c","file":"b.c"}]' > "$ccdb_probe/build/pkg_b/compile_commands.json"
+printf '#!/bin/sh\nexit 0\n' > "$ccdb_probe/bin/colcon"; chmod +x "$ccdb_probe/bin/colcon"
+( PATH="$ccdb_probe/bin:$probe_min_path" WORKSPACE_PATH="$ccdb_probe" ROS_DISTRO=humble \
+  bash -c 'source config/util_aliases.sh >/dev/null 2>&1; cbuild' ) >/dev/null 2>&1 || true
+ccdb_count="$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))))' \
+    "$ccdb_probe/build/compile_commands.json" 2>/dev/null || echo 0)"
+[ "$ccdb_count" = "2" ] \
+    || { log_err "a build leaves ${ccdb_count} entries in build/compile_commands.json; the per-package files were never merged and the IDE reads nothing."; ccdb_errors=1; }
+[ -e "$ccdb_probe/compile_commands.json" ] \
+    || { log_err "no compile_commands.json link at the workspace root; .vscode points at a path that does not exist."; ccdb_errors=1; }
+# A deleted package must drop out rather than linger.
+rm -rf "$ccdb_probe/build/pkg_b"
+( PATH="$ccdb_probe/bin:$probe_min_path" WORKSPACE_PATH="$ccdb_probe" ROS_DISTRO=humble \
+  bash -c 'source config/util_aliases.sh >/dev/null 2>&1; cbuild' ) >/dev/null 2>&1 || true
+[ "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))))' \
+    "$ccdb_probe/build/compile_commands.json" 2>/dev/null || echo 0)" = "1" ] \
+    || { log_err "a removed package still appears in the aggregated compile database."; ccdb_errors=1; }
+rm -rf "$ccdb_probe"
+# …and the interactive shell must not pay for the whole search on every start.
+grep -qE '^[^#]*util_setup_links\.sh.*--skip-compile-commands' config/init_bash.sh \
+    || { log_err "config/init_bash.sh aggregates the compile database at shell startup; every new terminal would scan build/."; ccdb_errors=1; }
+[ "$ccdb_errors" -eq 0 ] \
+    && log_ok "A build refreshes the aggregated compile database (and drops removed packages); shell startup does not."
+
+# =============================================================================
 # Result
 # =============================================================================
 echo ""
