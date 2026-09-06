@@ -28,6 +28,25 @@ declare -F devkit_auto_color >/dev/null 2>&1 && devkit_auto_color
 
 errors=0
 warnings=0
+# The host tools every workflow reaches for. Kept as a table so check
+# [host-prereqs] can hold it and docs/DEPENDENCIES.md to the same list.
+# name|blocking|why
+HOST_REQUIRED='python3|yes|repository verification and host detection
+git|yes|make adopt, the git_commit in a baked artifact, safe.directory
+curl|no|make update-gpg fetches the archive signing keys
+gpg|no|make update-gpg verifies those keys
+xauth|no|GUI forwarding writes the X cookie the container reads'
+while IFS='|' read -r tool blocking why; do
+    [ -n "$tool" ] || continue
+    command -v "$tool" >/dev/null 2>&1 && continue
+    if [ "$blocking" = yes ]; then
+        log_error "${tool} is required on the host: ${why}."
+        errors=$((errors + 1))
+    else
+        log_warn "${tool} not found: ${why}."
+        warnings=$((warnings + 1))
+    fi
+done <<< "$HOST_REQUIRED"
 
 # 1. Docker CLI presence
 if ! command -v docker >/dev/null 2>&1; then
@@ -44,7 +63,8 @@ else
     fi
 
     # 3. Compose v2 plugin (the Makefile invokes 'docker compose', not 'docker-compose')
-    if ! docker compose version >/dev/null 2>&1; then
+    compose_version="$(docker compose version --short 2>/dev/null || true)"
+    if [ -z "$compose_version" ]; then
         log_error "'docker compose' (Compose v2 plugin) is not available — this project requires it."
         if command -v docker-compose >/dev/null 2>&1; then
             log_info "Found legacy 'docker-compose' (v1), which is NOT used. Install the Compose v2 plugin (package 'docker-compose-plugin')."
@@ -52,13 +72,26 @@ else
             log_info "Install the Docker Compose v2 plugin (package 'docker-compose-plugin')."
         fi
         errors=$((errors + 1))
+    elif ! awk -F. '{gsub(/^v/, ""); exit !($1 > 2 || ($1 == 2 && $2 >= 24))}' <<< "$compose_version"; then
+        log_error 'Docker Compose 2.24+ is required (include and service-scoped teardown).'
+        errors=$((errors + 1))
     fi
 
     # 4. BuildKit (the Dockerfile uses --mount=type=cache/bind, which require BuildKit)
-    if ! docker buildx version >/dev/null 2>&1 && [ "${DOCKER_BUILDKIT:-1}" != "1" ]; then
-        log_warn "BuildKit appears unavailable (no 'docker buildx' and DOCKER_BUILDKIT is not 1)."
+    if ! docker buildx version >/dev/null 2>&1 || [ "${DOCKER_BUILDKIT:-1}" = 0 ]; then
+        log_error "BuildKit/buildx is required and must be enabled."
         log_info "The Dockerfile requires BuildKit. Export DOCKER_BUILDKIT=1 or install the buildx plugin ('docker-buildx-plugin')."
-        warnings=$((warnings + 1))
+        errors=$((errors + 1))
+    fi
+fi
+
+# An explicit NVIDIA request needs the container runtime, not just the driver:
+# without it docker fails deep in the build with "could not select device driver".
+if [ "${GPU_MODE:-auto}" = nvidia ] && command -v docker >/dev/null 2>&1; then
+    if ! docker info 2>/dev/null | grep -qi nvidia; then
+        log_error "GPU_MODE=nvidia, but Docker has no NVIDIA runtime (nvidia-container-toolkit)."
+        log_info  "Fix: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
+        errors=$((errors + 1))
     fi
 fi
 
@@ -70,6 +103,6 @@ fi
 if [ "$warnings" -gt 0 ]; then
     log_warn "Preflight passed with ${warnings} warning(s)."
 else
-    log_ok "Host toolchain preflight passed (docker, compose v2, BuildKit)."
+    log_ok "Host prerequisites present (docker, compose v2, BuildKit, python3, git)."
 fi
 exit 0

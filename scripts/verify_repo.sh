@@ -889,6 +889,69 @@ grep -qE '(컴퓨트 노드|compute node).*(마운트|mount)' docs/SLURM.md \
 [ "$slurmdef_errors" -eq 0 ] \
     && log_ok "SLURM job defaults agree between #SBATCH and .env.example, every knob becomes its flag, and the submitter creates the log directory."
 # =============================================================================
+# [host-prereqs] The host tools a workflow reaches for must be BOTH checked
+#      before the build and written down. A tool missing from preflight fails
+#      minutes later inside docker; one missing from the docs is a support
+#      question. The two lists are held to each other here.
+# =============================================================================
+hostdep_errors=0
+# The table preflight iterates is the source; the guide must name every entry.
+hostdep_table="$(awk "/^HOST_REQUIRED='/,/'\$/" scripts/check_preflight.sh \
+    | sed -e "s/^HOST_REQUIRED='//" -e "s/'\$//" | grep -v '^$' || true)"
+hostdep_tools="$(cut -d'|' -f1 <<< "$hostdep_table")"
+[ "$(wc -l <<< "$hostdep_tools")" -ge 4 ] \
+    || { log_err "check_preflight.sh no longer carries a HOST_REQUIRED table; the host prerequisites are unchecked."; hostdep_errors=1; }
+for hostdep in $hostdep_tools; do
+    grep -qF "**${hostdep}**" docs/DEPENDENCIES.md \
+        || { log_err "preflight requires '${hostdep}' but docs/DEPENDENCIES.md does not list it; a fresh host hits it as a surprise."; hostdep_errors=1; }
+done
+# The reverse, so the table cannot quietly shrink or demote an entry: the guide
+# is the independent anchor. Rows whose outcome column says the build is
+# blocked must be blocking in preflight too.
+hostdep_documented="$(awk -F'|' '/preflight 차단/ {
+        n = split($2, cell, /\*\*/)
+        for (i = 2; i <= n; i += 2) if (cell[i] ~ /^[a-z0-9-]+$/) print cell[i]
+    }' docs/DEPENDENCIES.md || true)"
+[ -n "$hostdep_documented" ] \
+    || { log_err "docs/DEPENDENCIES.md lists no blocking host prerequisite; the table or its wording changed and the check went blind."; hostdep_errors=1; }
+for hostdep in $hostdep_documented; do
+    grep -qE "^${hostdep}\|yes\|" <<< "$hostdep_table" \
+        || { log_err "docs/DEPENDENCIES.md calls '${hostdep}' blocking, but check_preflight.sh does not enforce it as such."; hostdep_errors=1; }
+done
+# …and each blocking entry must actually block. A symlink farm holding only
+# what the script itself needs, minus the tool under test: a table nobody
+# iterates checks nothing.
+hostdep_probe="$(probe_dir)"
+mkdir -p "$hostdep_probe/bin"
+for hostdep_bin in sh bash sed awk grep cut tr cat head tail env dirname basename \
+                   $hostdep_tools docker; do
+    hostdep_path="$(command -v "$hostdep_bin" 2>/dev/null || true)"
+    [ -n "$hostdep_path" ] && ln -sf "$hostdep_path" "$hostdep_probe/bin/$hostdep_bin"
+done
+while IFS='|' read -r hostdep_tool hostdep_block _; do
+    [ "$hostdep_block" = yes ] || continue
+    [ -e "$hostdep_probe/bin/$hostdep_tool" ] || continue   # absent here anyway
+    mv "$hostdep_probe/bin/$hostdep_tool" "$hostdep_probe/${hostdep_tool}.hidden"
+    # One run, both answers: this script probes docker three ways and costs
+    # ~290 ms, so paying for it twice per tool was the suite's largest waste.
+    hostdep_rc=0
+    hostdep_out="$( PATH="$hostdep_probe/bin" bash scripts/check_preflight.sh 2>&1 )" || hostdep_rc=$?
+    mv "$hostdep_probe/${hostdep_tool}.hidden" "$hostdep_probe/bin/$hostdep_tool"
+    grep -qF "$hostdep_tool" <<< "$hostdep_out" \
+        || { log_err "check_preflight.sh says nothing when '${hostdep_tool}' is missing; the build fails minutes later instead."; hostdep_errors=1; }
+    [ "$hostdep_rc" -ne 0 ] \
+        || { log_err "check_preflight.sh exits 0 without '${hostdep_tool}', which it calls blocking."; hostdep_errors=1; }
+done <<< "$hostdep_table"
+rm -rf "$hostdep_probe"
+# vcstool lives in the IMAGE; claiming it as a host prerequisite sends people
+# installing it in the wrong place.
+grep -q 'python3-vcstool' dependencies/apt_ros.txt \
+    || { log_err "python3-vcstool is no longer installed in the image, but docs/DEPENDENCIES.md says sync_deps runs there."; hostdep_errors=1; }
+grep -qE '^[^#]*vcstool' scripts/check_preflight.sh \
+    && { log_err "check_preflight.sh requires vcstool on the host; it runs inside the container."; hostdep_errors=1; }
+[ "$hostdep_errors" -eq 0 ] \
+    && log_ok "Every blocking host prerequisite is both enforced by preflight and documented ($(wc -w <<< "$hostdep_tools") tools)."
+# =============================================================================
 # [bake-inputs] What a bake actually passes to docker build. ROS_DISTRO decides
 #      BASE_IMAGE and UV_PYTHON inside check_env.sh, and a host `export` never
 #      crosses into a build — both were silently lost on the bake path.
