@@ -301,11 +301,15 @@ jobs:
             || { echo "a failed job was not recorded as failed"; exit 1; }
 
   prod-artifact:
-    name: production artifact (non-root, venv intact)
-    # Cron and manual only: this builds the production chain.
+    name: production artifact (${{ matrix.flavour }}, non-root, venv intact)
+    # Cron and manual only: this builds the production chain, once per flavour.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: [dev, ros]
     steps:
       - uses: actions/checkout@v4
       - name: reclaim runner disk
@@ -318,8 +322,8 @@ jobs:
         run: make verify
       - name: build the production runtime
         run: |
-          docker build --target prod-runtime --build-arg PROD_ENV=dev -f docker/Dockerfile \
-            --build-arg BASE_IMAGE=ubuntu:22.04 \
+          docker build --target prod-runtime --build-arg PROD_ENV=${{ matrix.flavour }} -f docker/Dockerfile \
+            --build-arg BASE_IMAGE=ubuntu:22.04 --build-arg ROS_DISTRO=humble \
             --build-arg WORKSPACE_PATH=/workspace \
             -t devkit-ci:prod .
       # The failure was silent: with the interpreter under /root, PATH fell
@@ -334,9 +338,20 @@ jobs:
           for uid in 1000 4321; do
             docker run --rm --user "$uid:$uid" devkit-ci:prod python3 -c "$probe"
           done
+      # A ROS venv shares the system interpreter, so the managed one must be
+      # gone — check [sif-contract] pins the Dockerfile side of this.
+      - name: the ROS artifact runs on the system interpreter and ships no managed one
+        if: matrix.flavour == 'ros'
+        run: |
+          docker run --rm --entrypoint sh devkit-ci:prod -c '
+            py=$(readlink -f "$(command -v python3)")
+            case "$py" in /usr/bin/python3*) ;; *) echo "venv python is $py, not the system interpreter"; exit 1 ;; esac
+            [ -z "$(ls -A /opt/uv/python 2>/dev/null)" ] || { echo "/opt/uv/python still carries an interpreter"; exit 1; }'
       # The bootstrap tools `base` installed must not ship: a runtime has no
-      # key to fetch and no repository to add.
+      # key to fetch and no repository to add. dev only: purge-bootstrap keeps a
+      # tool an installed ROS package still depends on (libcurl-vendor → curl).
       - name: the artifact carries no apt bootstrap tools
+        if: matrix.flavour == 'dev'
         run: |
           docker run --rm --entrypoint sh devkit-ci:prod -c '
             for t in curl gpg lsb_release dirmngr; do
