@@ -125,6 +125,25 @@ case "$COMMAND" in
             > /etc/apt/apt.conf.d/docker-clean
         log_ok "APT cache retention restored to docker-clean."
         ;;
+    purge-bootstrap)
+        # init-apt's curl/gnupg/lsb-release have no job in a shipped stage, but
+        # `purge -y` takes dependents along: ros-*-libcurl-vendor needs curl and
+        # python3-rospkg needs lsb-release. Drop only what nothing installed
+        # still depends on (Depends/Pre-Depends; not Suggests or Breaks).
+        drop=""; kept=""
+        for pkg in curl gnupg dirmngr lsb-release; do
+            dpkg-query -W -f='${db:Status-Abbrev}' "$pkg" 2>/dev/null | grep -q '^ii' || continue
+            if [ -n "$(apt-cache rdepends --installed --no-recommends --no-suggests --no-conflicts \
+                           --no-breaks --no-replaces --no-enhances "$pkg" 2>/dev/null | sed '1,2d')" ]; then
+                kept="$kept $pkg"
+            else
+                drop="$drop $pkg"
+            fi
+        done
+        # shellcheck disable=SC2086  # deliberate word split over the package list
+        [ -z "$drop" ] || apt-get purge -y --auto-remove $drop
+        log_ok "Bootstrap tools purged:${drop:- none}.${kept:+ Kept, still depended on:$kept}"
+        ;;
     configure-snapshot)
         # Pin APT to a point-in-time Ubuntu snapshot so SOURCE_DATE_EPOCH builds are
         # actually reproducible. 'latest' (or empty) keeps the rolling mirrors.
@@ -332,6 +351,7 @@ Usage: util_apt_helper.sh <command> [args...]
 
   init-apt
   restore-docker-clean          Undo init-apt's cache retention (shipped stages)
+  purge-bootstrap               Drop init-apt's curl/gnupg/lsb-release where nothing depends on them
   configure-snapshot <latest|YYYYMMDDTHHMMSSZ>
   setup-ros-repo     <ros_distro>
   setup-cuda-repo    <cuda_version>

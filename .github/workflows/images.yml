@@ -198,6 +198,9 @@ jobs:
       - name: one-click init, then the venv must be active and project-named
         run: |
           make exec ENV=ros CMD='mksync'
+          # A ROS venv shares the SYSTEM interpreter: this is why the ROS
+          # production runtime does not copy /opt/uv/python (check [sif-contract]).
+          make exec ENV=ros CMD='readlink -f "$$(command -v python3)" | grep -q ^/usr/bin/python3'
           make exec ENV=ros CMD='test -n "$$VIRTUAL_ENV_PROMPT" && echo "venv: $$VIRTUAL_ENV_PROMPT"'
           make exec ENV=ros CMD='python3 -c "import rclpy"'
           make exec ENV=ros CMD='check_deps'
@@ -331,6 +334,14 @@ jobs:
           for uid in 1000 4321; do
             docker run --rm --user "$uid:$uid" devkit-ci:prod python3 -c "$probe"
           done
+      # The bootstrap tools `base` installed must not ship: a runtime has no
+      # key to fetch and no repository to add.
+      - name: the artifact carries no apt bootstrap tools
+        run: |
+          docker run --rm --entrypoint sh devkit-ci:prod -c '
+            for t in curl gpg lsb_release dirmngr; do
+              ! command -v "$t" >/dev/null || { echo "$t is still installed in the runtime image"; exit 1; }
+            done'
       - name: the release manifest must name the template revision
         run: |
           docker run --rm --entrypoint sh devkit-ci:prod -c 'cat /etc/devkit/devkit-release.json' \

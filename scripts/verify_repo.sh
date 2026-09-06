@@ -253,7 +253,7 @@ done
 grep -qE '^[^#]*(APP_COMMAND|ROS_LAUNCH_COMMAND)' docker-compose.common.yml docker-compose.dev.yml \
     && { log_err "compose reads the production run command (APP_COMMAND/ROS_LAUNCH_COMMAND); the dev container would run the app instead of a shell."; compose_errors=1; }
 [ "$compose_errors" -eq 0 ] \
-    && log_ok "Compose ENV split: ${compose_profiles} services inherit an ENV anchor with a healthcheck."
+    && log_ok "Compose ENV split: ${compose_profiles} services inherit an ENV anchor with a healthcheck and a bash command."
 
 # =============================================================================
 # [apt-tag-filter] APT tag-filter contract (dependencies/apt*.txt tag system)
@@ -2202,14 +2202,21 @@ uv_chown_stray="$(sed -e :a -e '/\\$/N; s/\\\n//; ta' docker/Dockerfile | grep -
     || { log_err "docker/Dockerfile chowns /opt/uv outside the layer that installs it, duplicating the interpreter layer: $(cut -d: -f1 <<< "$uv_chown_stray" | tr '\n' ' ')"; sif_errors=1; }
 # …and the runtime stages must actually copy it from there, or the venv symlink
 # in the shipped image points at nothing.
-for uv_stage in 'prod-dev-runtime' 'prod-ros-runtime'; do
-    awk -v stage="$uv_stage" -v dir="${uv_python_dir:-/dev/null}" '
+# Only where a venv resolves into it: the pure (dev) venv does; the ROS venv
+# shares the system interpreter (mkenv forces --share under /opt/ros, verified
+# in the image: install/.venv/bin/python3 -> /usr/bin/python3.10), so copying
+# the tree into the ROS runtime shipped 90 MB nothing referenced.
+uv_stage_copies() {   # uv_stage_copies <stage> — 0 when the stage COPYs the managed interpreter
+    awk -v stage="$1" -v dir="${uv_python_dir:-/dev/null}" '
         $0 ~ "AS " stage        {inside=1}
         inside && /^FROM / && $0 !~ "AS " stage {inside=0}
         inside && /^COPY / && index($0, dir) {found=1}
-        END {exit found ? 0 : 1}' docker/Dockerfile \
-        || { log_err "docker/Dockerfile: ${uv_stage} does not copy ${uv_python_dir:-the managed interpreter}; the shipped venv would symlink to a missing interpreter."; sif_errors=1; }
-done
+        END {exit found ? 0 : 1}' docker/Dockerfile
+}
+uv_stage_copies prod-dev-runtime \
+    || { log_err "docker/Dockerfile: prod-dev-runtime does not copy ${uv_python_dir:-the managed interpreter}; the shipped venv would symlink to a missing interpreter."; sif_errors=1; }
+uv_stage_copies prod-ros-runtime \
+    && { log_err "docker/Dockerfile: prod-ros-runtime copies ${uv_python_dir}; the ROS venv uses the system interpreter, so this is 90 MB of dead weight."; sif_errors=1; }
 # Both runtime stages must END as a non-root uid: a root artifact is rejected by
 # k8s runAsNonRoot, and the stage's last USER wins.
 for uid_stage in 'prod-dev-runtime' 'prod-ros-runtime'; do
@@ -2329,14 +2336,40 @@ grep -Eq '^[^#]*NVIDIA_GPG_FINGERPRINT="[A-F0-9]{40}"' scripts/util_apt_helper.s
 # deployed image hoards .debs forever. One verb, asserted per stage.
 grep -q '^    restore-docker-clean)' scripts/util_apt_helper.sh \
     || { log_err "util_apt_helper.sh no longer offers restore-docker-clean; the shipped stages have nothing to call."; sec_errors=1; }
-for apt_stage in dev ros prod-base; do
-    awk -v stage="$apt_stage" '
+# …and must drop the bootstrap tools `base` installed (init-apt: curl, gnupg,
+# lsb-release) — through purge-bootstrap, which spares what an installed
+# package still depends on. A bare `purge -y curl … lsb-release` took
+# ros-*-libcurl-vendor and python3-rospkg with it; the ROS runtime once purged
+# 'gnupg2', a name never installed, and the dev runtime purged nothing.
+for purge_stage in prod-dev-runtime prod-ros-runtime; do
+    awk -v stage="$purge_stage" '
         $0 ~ "AS " stage "$"     {inside=1}
         inside && /^FROM / && $0 !~ "AS " stage "$" {inside=0}
-        inside && /restore-docker-clean/ {found=1}
+        inside && /purge-bootstrap/ {found=1}
         END {exit found ? 0 : 1}' docker/Dockerfile \
-        || { log_err "docker/Dockerfile: stage ${apt_stage} does not call 'util_apt_helper.sh restore-docker-clean' — runtime apt would hoard .deb files."; sec_errors=1; }
+        || { log_err "docker/Dockerfile: ${purge_stage} does not call 'util_apt_helper.sh purge-bootstrap'; curl and gnupg would ship."; sec_errors=1; }
 done
+grep -qE '^[^#]*apt-get purge[^#]*(curl|gnupg|lsb-release)' docker/Dockerfile \
+    && { log_err "docker/Dockerfile purges the bootstrap tools by name; purge-bootstrap must decide, or a dependent package goes with them."; sec_errors=1; }
+# The decision itself, against stubs: curl has an installed dependent, the
+# rest do not — so apt-get must be asked for gnupg/dirmngr/lsb-release only.
+purge_probe="$(probe_dir)"
+printf '#!/bin/sh\necho ii\n' > "$purge_probe/dpkg-query"
+printf '#!/bin/sh\nfor a; do :; done\nprintf "%%s\\nReverse Depends:\\n" "$a"\n[ "$a" != curl ] || echo "  ros-humble-libcurl-vendor"\n' > "$purge_probe/apt-cache"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/argv"\n' "$purge_probe" > "$purge_probe/apt-get"
+chmod +x "$purge_probe/dpkg-query" "$purge_probe/apt-cache" "$purge_probe/apt-get"
+( PATH="$purge_probe:$probe_min_path" bash scripts/util_apt_helper.sh purge-bootstrap ) >/dev/null 2>&1 || true
+purge_argv="$(tr '\n' ' ' < "$purge_probe/argv" 2>/dev/null || echo '<apt-get never called>')"
+case " $purge_argv " in
+    *" curl "*) log_err "purge-bootstrap purges curl while an installed package depends on it (argv: ${purge_argv})."; sec_errors=1 ;;
+esac
+for purge_want in gnupg dirmngr lsb-release; do
+    case " $purge_argv " in
+        *" $purge_want "*) ;;
+        *) log_err "purge-bootstrap keeps '${purge_want}' although nothing depends on it (argv: ${purge_argv})."; sec_errors=1 ;;
+    esac
+done
+rm -rf "$purge_probe"
 # `make term` must probe with a binary the image actually ships: xset lives in
 # x11-xserver-utils (not installed) and made the target report "no display" on a
 # working X11 host. xdpyinfo comes from x11-utils, which the image does install.
@@ -2846,9 +2879,14 @@ deps_firstrun \
 mkdir -p "$deps_probe/elsewhere"
 deps_firstrun "$deps_probe/elsewhere" \
     || { log_err "the first-run check ignores SYNC_TARGET_DIR and inspects src/thirdparty instead."; deps_errors=1; }
+# The first-run sync runs BEFORE the privilege drop, as root, into the bind
+# mount. The clone must be handed to the container user or nobody — not the
+# container user, not the host — can modify or remove it afterwards.
+awk '/bash "\$SYNC_DEPS"/ {seen=1} seen && /sync_owner_if_root "\$THIRD_PARTY"/ {ok=1} END {exit ok ? 0 : 1}' docker/entrypoint.sh \
+    || { log_err "docker/entrypoint.sh leaves the first-run sync target root-owned; sync_owner_if_root must follow the sync."; deps_errors=1; }
 rm -rf "$deps_probe"
 [ "$deps_errors" -eq 0 ] \
-    && log_ok "One answer for 'are there external repositories': both YAML styles, an empty file, .gitkeep and a custom target."
+    && log_ok "One answer for 'are there external repositories': both YAML styles, an empty file, .gitkeep and a custom target; the first-run clone is handed to the user."
 
 # =============================================================================
 # [query-side-effects] A read-only view must leave the caller's shell as it
@@ -2866,11 +2904,6 @@ query_fd() {   # query_fd <command…>
     # three status calls ran glxinfo/eglinfo/vulkaninfo for real — 6.6 s, 44 %
     # of the whole suite on a WSLg host.
     ( cd "$ROOT_DIR" && env -u DISPLAY -u WAYLAND_DISPLAY WORKSPACE_PATH="$ROOT_DIR" bash -c '
-# The first-run sync runs BEFORE the privilege drop, as root, into the bind
-# mount. The clone must be handed to the container user or nobody — not the
-# container user, not the host — can modify or remove it afterwards.
-awk '/bash "\$SYNC_DEPS"/ {seen=1} seen && /sync_owner_if_root "\$THIRD_PARTY"/ {ok=1} END {exit ok ? 0 : 1}' docker/entrypoint.sh \
-    || { log_err "docker/entrypoint.sh leaves the first-run sync target root-owned; sync_owner_if_root must follow the sync."; deps_errors=1; }
         exec 9>"'"$out"'"
         source config/util_aliases.sh >/dev/null 2>&1
         before="$(readlink /proc/$$/fd/1)"

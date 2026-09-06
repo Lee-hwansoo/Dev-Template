@@ -401,6 +401,10 @@ RUN --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_hel
 WORKDIR ${WORKSPACE_PATH}
 ENTRYPOINT ["/entrypoint.sh"]
 
+# Both runtimes drop the tools `base` needed to bootstrap apt (init-apt installs
+# curl, gnupg, lsb-release): a shipped artifact has no key to fetch. The ROS
+# runtime does it after its own repository setup, which still needs them, and
+# purge-bootstrap keeps whatever an installed package still depends on.
 FROM prod-base AS prod-dev-runtime
 ARG WORKSPACE_PATH
 ARG CONTAINER_USER=user
@@ -409,8 +413,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
     --mount=type=bind,source=dependencies/,target=${WORKSPACE_PATH}/dependencies/ \
     bash /tmp/util_apt_helper.sh install-packages runtime && \
+    bash /tmp/util_apt_helper.sh purge-bootstrap && \
     if command -v sudo >/dev/null 2>&1; then chmod a-s "$(command -v sudo)"; fi
 COPY --from=prod-dev-builder ${WORKSPACE_PATH}/install ${WORKSPACE_PATH}/install
+# The pure venv symlinks into the managed interpreter; the ROS runtime below
+# does not copy it, because a ROS venv shares the SYSTEM interpreter (mkenv
+# forces --share whenever /opt/ros exists) and never resolves under /opt/uv.
 COPY --from=prod-dev-builder /opt/uv/python /opt/uv/python
 COPY --from=prod-dev-builder ${WORKSPACE_PATH}/release/ /etc/devkit/build/
 ENV PATH="${WORKSPACE_PATH}/install/.venv/bin:${WORKSPACE_PATH}/install/bin:$PATH" \
@@ -433,10 +441,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=bind,source=dependencies/,target=${WORKSPACE_PATH}/dependencies/ \
     bash /tmp/util_apt_helper.sh setup-ros-repo ${ROS_DISTRO} && \
     bash /tmp/util_apt_helper.sh install-packages runtime ${ROS_DISTRO} && \
-    apt-get purge -y --auto-remove curl gnupg2 dirmngr && \
+    bash /tmp/util_apt_helper.sh purge-bootstrap && \
     if command -v sudo >/dev/null 2>&1; then chmod a-s "$(command -v sudo)"; fi
 COPY --from=prod-ros-builder ${WORKSPACE_PATH}/install ${WORKSPACE_PATH}/install
-COPY --from=prod-ros-builder /opt/uv/python /opt/uv/python
 COPY --from=prod-ros-builder ${WORKSPACE_PATH}/release/ /etc/devkit/build/
 ENV PATH="${WORKSPACE_PATH}/install/.venv/bin:${WORKSPACE_PATH}/install/bin:$PATH" \
     VIRTUAL_ENV="${WORKSPACE_PATH}/install/.venv"
