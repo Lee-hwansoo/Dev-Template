@@ -79,6 +79,9 @@ _devkit_make_completion() {
         build)
             opts="ENV=ros ENV=dev GPU_MODE=auto GPU_MODE=nvidia GPU_MODE=igpu GPU_MODE=cpu NO_CACHE=1"
             ;;
+        ide-config)
+            opts="ENV=ros ENV=dev GPU_MODE=auto GPU_MODE=nvidia GPU_MODE=igpu GPU_MODE=cpu"
+            ;;
         start|restart)
             opts="ENV=ros ENV=dev GPU_MODE=auto GPU_MODE=nvidia GPU_MODE=igpu GPU_MODE=cpu DEVKIT_VCS_ALLOW_FAILURE=1 DEVKIT_ROSDEP_ALLOW_FAILURE=1"
             ;;

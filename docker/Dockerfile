@@ -151,7 +151,17 @@ ENV PATH="/usr/lib/ccache:${WORKSPACE_PATH}/install/.venv/bin:$PATH" \
     SYS_PYTHON_EXE=${SYS_PYTHON_EXE} \
     BASH_ENV=/etc/devkit/shell-env.sh
 
-RUN mkdir -p ${CCACHE_DIR} ${UV_CACHE_DIR} ${WORKSPACE_PATH}/install
+RUN mkdir -p ${CCACHE_DIR} ${UV_CACHE_DIR} ${WORKSPACE_PATH}/install /etc/devkit && \
+    printf '[ ! -r "${WORKSPACE_PATH}/config/init_bash.sh" ] || . "${WORKSPACE_PATH}/config/init_bash.sh"\n' > /etc/devkit/shell-env.sh
+
+# CUDA compilation needs no GPU on the builder. Both dev and prod inherit this.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    --mount=type=bind,source=scripts/util_cuda_apt.sh,target=/tmp/util_cuda_apt.sh \
+    bash /tmp/util_cuda_apt.sh dev
+ENV PATH=/usr/local/cuda/bin:${PATH} \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64 \
+    CUDA_HOME=/usr/local/cuda
 
 # ── Stage: dev-base-tools (Interactive CLI, GUI & Diagnostics) ────────────────
 FROM build-core AS dev-base-tools
@@ -365,13 +375,11 @@ ARG USER_GID=$USER_UID
 # (the apt layers between need root). The artifact only reads install/ and
 # /etc/devkit, and k8s runAsNonRoot rejects a root image. Apptainer ignores
 # USER — it runs as the invoking user.
-RUN groupadd --gid ${USER_GID} ${CONTAINER_USER} \
-    && useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash ${CONTAINER_USER}
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     --mount=type=bind,source=scripts/util_cuda_apt.sh,target=/tmp/util_cuda_apt.sh \
     apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates bash && \
+    ca-certificates bash file libstdc++6 && \
     bash /tmp/util_cuda_apt.sh runtime && \
     apt-get autoremove -y && \
     rm -rf /var/tmp/*
@@ -418,8 +426,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     if command -v sudo >/dev/null 2>&1; then chmod a-s "$(command -v sudo)"; fi
 COPY --from=prod-ros-builder ${WORKSPACE_PATH}/install ${WORKSPACE_PATH}/install
 COPY --from=prod-ros-builder /opt/uv/python /opt/uv/python
-COPY --from=prod-ros-builder ${WORKSPACE_PATH}/release/ /etc/devkit/
+COPY --from=prod-ros-builder ${WORKSPACE_PATH}/release/ /etc/devkit/build/
 ENV PATH="${WORKSPACE_PATH}/install/.venv/bin:${WORKSPACE_PATH}/install/bin:$PATH" \
     VIRTUAL_ENV="${WORKSPACE_PATH}/install/.venv"
+RUN --mount=type=bind,source=scripts,target=${WORKSPACE_PATH}/scripts \
+    --mount=type=bind,source=config,target=${WORKSPACE_PATH}/config \
+    --mount=type=bind,from=uv-binaries,source=/uv,target=/usr/local/bin/uv \
+    /entrypoint.sh bash ${WORKSPACE_PATH}/scripts/check_deps.sh --runtime
 USER ${CONTAINER_USER}
 CMD []

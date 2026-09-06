@@ -11,8 +11,8 @@ if [ "${ROS_DISTRO:-humble}" = "noetic" ]; then
     if [ -z "${ROS_HOSTNAME:-}" ] || [ "${ROS_HOSTNAME}" = "localhost" ]; then
         ROS_HOSTNAME="$(hostname)"
         export ROS_HOSTNAME
-        export ROS_MASTER_URI="http://${ROS_HOSTNAME}:11311"
     fi
+    export ROS_MASTER_URI="${ROS_MASTER_URI:-http://${ROS_HOSTNAME}:11311}"
 else
     # ROS 2 Specifics
     export ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}

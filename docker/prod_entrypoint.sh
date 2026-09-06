@@ -25,12 +25,15 @@ source_runtime_file() {
     [ -f "$file" ] || return 0
     # Save and restore shell options to safely source files that may reference
     # unbound variables (e.g. ROS setup.bash) without permanently altering flags.
-    local _saved_opts
-    _saved_opts="$(set +o)"
+    local had_e=0 had_u=0 rc=0
+    case "$-" in *e*) had_e=1 ;; esac
+    case "$-" in *u*) had_u=1 ;; esac
     set +eu
     # shellcheck source=/dev/null
-    source "$file"
-    eval "$_saved_opts"
+    source "$file" || rc=$?
+    [ "$had_e" = 0 ] || set -e
+    [ "$had_u" = 0 ] || set -u
+    return "$rc"
 }
 
 source_runtime_file "$ROS_SETUP"
@@ -50,11 +53,11 @@ if [ "$#" -gt 0 ]; then
 fi
 
 if [ -n "${ROS_LAUNCH_COMMAND:-}" ]; then
-    exec bash -lc "$ROS_LAUNCH_COMMAND"
+    exec bash -c "$ROS_LAUNCH_COMMAND"
 fi
 
 if [ -n "${APP_COMMAND:-}" ]; then
-    exec bash -lc "$APP_COMMAND"
+    exec bash -c "$APP_COMMAND"
 fi
 
 echo "  [ERROR] No production command configured. Set ROS_LAUNCH_COMMAND, APP_COMMAND, or pass an explicit command after the image." >&2

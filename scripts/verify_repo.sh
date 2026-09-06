@@ -146,7 +146,7 @@ done < <(find . \( -name "*.sh" -o -name "*.bash" \) -not -path "*/.*" -print0)
 #     runs: an unterminated quote there only fails on the runner, minutes in.
 # =============================================================================
 # The GitHub expression syntax ${{ … }} is not shell, so it is substituted out.
-wf_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+wf_probe="$(probe_dir)"
 for wf in .github/workflows/*.yml; do
     awk -v out="$wf_probe" -v base="$(basename "$wf" .yml)" '
         function esc(s) { gsub(/\$\{\{[^}]*\}\}/, "X", s); return s }
@@ -272,7 +272,7 @@ done
 # [gpu-env-persist] GPU environment persistence: `docker exec` shells do not run the
 #     entrypoint, so setup_gpu.sh must leave its env in GPU_ENV_FILE.
 # =============================================================================
-gpu_env_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+gpu_env_probe="$(probe_dir)"
 if ( GPU_ENV_FILE="${gpu_env_probe}/gpu_env.sh" HOME="$gpu_env_probe" \
      bash -c 'source scripts/setup_gpu.sh cpu' >/dev/null 2>&1 ) \
    && grep -q "LIBGL_ALWAYS_SOFTWARE" "${gpu_env_probe}/gpu_env.sh" 2>/dev/null; then
@@ -284,7 +284,7 @@ fi
 # before ROS is sourced, so a whole-path snapshot wipes /opt/ros/<distro>/lib in
 # every shell that re-reads it — `import rclpy` then dies on a missing
 # librcl_action.so.
-gpu_ld_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+gpu_ld_probe="$(probe_dir)"
 ( LD_LIBRARY_PATH=/probe/boot GPU_ENV_FILE="${gpu_ld_probe}/gpu_env.sh" HOME="$gpu_ld_probe" \
   bash -c 'source scripts/setup_gpu.sh igpu' ) >/dev/null 2>&1
 if grep -qE '^export LD_LIBRARY_PATH=' "${gpu_ld_probe}/gpu_env.sh" 2>/dev/null; then
@@ -303,17 +303,29 @@ rm -rf "$gpu_env_probe"
 # [build-entrypoints] Build entry points must be callable from non-interactive shells.
 #     Aliases are not expanded inside functions during `docker build`.
 # =============================================================================
-non_interactive_callables="$(bash -lc '
-    WORKSPACE_PATH='"${ROOT_DIR}"' source config/util_aliases.sh 2>/dev/null
-    for fn in cbuild mbuild mksync mkenv; do
-        printf "%s=%s " "$fn" "$(type -t "$fn" 2>/dev/null || echo missing)"
-    done' 2>/dev/null)"
-if [[ "$non_interactive_callables" == *"cbuild=function"* && "$non_interactive_callables" == *"mbuild=function"* \
-   && "$non_interactive_callables" == *"mksync=function"* ]]; then
-    log_ok "Build entry points (cbuild/mbuild/mksync) are functions — callable from docker build."
-else
-    log_err "cbuild/mbuild/mksync must be functions, not aliases: ${non_interactive_callables}"
-fi
+# The quality loop counts too: `make test` reaches mtest through `make exec`,
+# and mtest's ROS branch calls cbt/cbtr. As aliases those expanded only in an
+# interactive shell, so `make test ENV=ros` died with "cbt: command not found"
+# — invisible here because the starter carries no package.xml and the pure
+# Python branch runs instead. Probed per ROS generation for that reason.
+entry_probe() {
+    bash -lc "WORKSPACE_PATH='${ROOT_DIR}' ROS_DISTRO='$1' ROS_VERSION='$2' \
+        source config/util_aliases.sh 2>/dev/null
+        for fn in cbuild mbuild mksync mkenv mtest mlint cbt cbtr; do
+            printf '%s=%s ' \"\$fn\" \"\$(type -t \"\$fn\" 2>/dev/null || echo missing)\"
+        done" 2>/dev/null
+}
+entry_errors=0
+for entry_gen in "humble 2" "noetic 1"; do
+    # shellcheck disable=SC2086  # deliberate split into distro + generation
+    non_interactive_callables="$(entry_probe ${entry_gen})"
+    for entry_fn in cbuild mbuild mksync mkenv mtest mlint cbt cbtr; do
+        [[ "$non_interactive_callables" == *"${entry_fn}=function"* ]] \
+            || { log_err "${entry_fn} is not a function on ROS ${entry_gen%% *}; a non-interactive shell (docker build, make exec, make test) cannot call it."; entry_errors=1; }
+    done
+done
+[ "$entry_errors" -eq 0 ] \
+    && log_ok "Build and quality entry points are functions on both ROS generations — callable from docker build and 'make exec'."
 
 # =============================================================================
 # [detector-cache] The cache write must be atomic and a failed probe fatal: a
@@ -1225,6 +1237,29 @@ else
     log_err "check_env.sh ignores .env: ROS_DISTRO/BASE_IMAGE fall back to the humble default and get cached."
 fi
 rm -f "$probe_env"
+# …and .env.example is the layer BELOW it: the committed answer to "which ROS
+# is this project". Both layers must be read HERE, by the detector: the cache it
+# writes is included after them, so a setting this script cannot see is inert.
+defaults_probe="$(probe_dir)"
+printf 'ROS_DISTRO=noetic\n' > "$defaults_probe/.env.example"
+: > "$defaults_probe/.env"
+defaults_out="$( unset ROS_DISTRO BASE_IMAGE
+    DEVKIT_ENV_FILE="$defaults_probe/.env" bash scripts/check_env.sh --makefile 2>/dev/null || true )"
+grep -qx 'ROS_DISTRO := noetic' <<< "$defaults_out" \
+    || log_err "check_env.sh ignores .env.example; a committed project setting cannot reach the build."
+# The local file still wins over it.
+printf 'ROS_DISTRO=humble\n' > "$defaults_probe/.env"
+defaults_out="$( unset ROS_DISTRO BASE_IMAGE
+    DEVKIT_ENV_FILE="$defaults_probe/.env" bash scripts/check_env.sh --makefile 2>/dev/null || true )"
+grep -qx 'ROS_DISTRO := humble' <<< "$defaults_out" \
+    || log_err ".env no longer overrides .env.example; the local layer must win."
+rm -rf "$defaults_probe"
+# The cache is keyed on both layers, or an edit to either is ignored until a
+# manual clean-cache.
+for settings_file in .env .env.example; do
+    grep -qF "[ ! ${settings_file} -nt \"\$(DETECTED_ENV_FILE)\" ]" Makefile \
+        || log_err "the detection cache is not invalidated when ${settings_file} changes."
+done
 grep -q '\.env -nt "\$(DETECTED_ENV_FILE)"' Makefile \
     || log_err "the detection cache must be regenerated when .env is newer; it is included after .env and would override it."
 
@@ -1257,7 +1292,7 @@ banner_probe="$(bash -c 'source scripts/util_logging.sh
 # LOG_FILE must capture what a post-mortem needs — the hint under a finding and
 # the step markers, not just the tagged verbs — and it must never contain the
 # escapes the console got. Both were true only for _log_base before.
-file_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+file_probe="$(probe_dir)"
 bash -c "source scripts/util_logging.sh
     export LOG_FILE='$file_probe/run.log'; LOG_PREFIX='[T]'
     log_error finding; log_detail explanation; log_step_done step" >/dev/null 2>&1
@@ -1338,7 +1373,7 @@ path_api="$(bash -c 'source config/util_paths.sh >/dev/null 2>&1
 [ "$(wc -w <<< "$path_api")" -eq 13 ] \
     || { log_err "config/util_paths.sh exports $(wc -w <<< "$path_api")/13 path-API names (got: ${path_api})."; api_errors=1; }
 # By EXECUTION, because the reader is what every pre-compose caller depends on.
-env_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+env_probe="$(probe_dir)"
 printf 'K="v1"\r\nK=v2\n' > "$env_probe/.env"
 [ "$(bash -c "source config/util_paths.sh >/dev/null 2>&1; devkit_env_value K '$env_probe/.env'" 2>/dev/null)" = "v2" ] \
     || { log_err "devkit_env_value must return the LAST assignment with quotes and CR stripped."; api_errors=1; }
@@ -1406,7 +1441,8 @@ for knob in DEVKIT_SLURM_PARTITION DEVKIT_SLURM_GRES DEVKIT_SLURM_CPUS_PER_TASK 
             DEVKIT_SLURM_NTASKS DEVKIT_SLURM_MEM DEVKIT_SLURM_TIME DEVKIT_SLURM_JOB_NAME \
             DEVKIT_SLURM_OUTPUT DEVKIT_SLURM_ERROR DEVKIT_SLURM_COMMENT DEVKIT_SLURM_EXTRA_ARGS \
             CONTAINER_DATA_ROOT CONTAINER_RUN_ROOT SLURM_DATA_ROOT SLURM_RUN_ROOT \
-            APT_SNAPSHOT_DATE APT_SNAPSHOT_FALLBACK STRICT_GPG_CHECK DOCKER_DEV_CACHE_DIR \
+            APT_SNAPSHOT_DATE APT_SNAPSHOT_FALLBACK ROS_SNAPSHOT_DATE STRICT_GPG_CHECK \
+            DOCKER_DEV_CACHE_DIR BAKE_FORMAT UV_EXTRA DEVKIT_SLURM_ARRAY DEVKIT_SLURM_ACCOUNT \
             SYNC_TARGET_DIR CMAKE_EXTRA_ARGS CMAKE_C_STANDARD CMAKE_CXX_STANDARD OPENCV_CUDA \
             COLCON_EXTRA_FLAGS CUDA_VERSION KEEP_VENV TARGETARCH; do
     # Word-bounded and anchored to CODE: a substring match let KEEP_VENV pass
@@ -1512,7 +1548,7 @@ if bash -c 'source scripts/util_logging.sh; log_error probe' 2>&1 >/dev/null | g
 fi
 # A destructive in-container command must refuse an unknown argument instead of
 # falling through to its default: `mclean --help` used to delete the build tree.
-mclean_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+mclean_probe="$(probe_dir)"
 mkdir -p "$mclean_probe/config" "$mclean_probe/build/keep"
 cp config/util_aliases.sh config/util_paths.sh "$mclean_probe/config/" 2>/dev/null || true
 : > "$mclean_probe/build/keep/file"
@@ -1843,7 +1879,7 @@ hardcoded_version="$(grep -rn --fixed-strings "$devkit_version" \
     || { log_err "the template version is hardcoded outside VERSION: $(cut -d: -f1,2 <<< "$hardcoded_version" | tr '\n' ' ')"; version_errors=1; }
 # Asserted by EXECUTION: the manifest is what a deployed artifact carries, and
 # the value reaches it through a file the builder stages must actually copy.
-version_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+version_probe="$(probe_dir)"
 if bash scripts/util_release_metadata.sh "$version_probe/r.json" >/dev/null 2>&1; then
     # Separator-agnostic: the generator emits compact JSON.
     grep -qE "\"devkit_version\": ?\"${devkit_version}\"" "$version_probe/r.json" \
@@ -1898,6 +1934,10 @@ if refs - index:
     print(f"[tool.uv.sources] names a missing index: {sorted(refs - index)}")
 elif not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', name):
     print(f"[project] name '{name}' fails the rule 'make adopt' enforces")
+elif 'build-system' in d:
+    print("a [build-system] makes `uv sync` build src/ as a wheel; there is no package there to build")
+elif uv.get('package') is not False:
+    print("[tool.uv] package is not declared false; whether src/ is installed as a package is left to inference")
 else:
     print('ok')
 PYINDEX
@@ -2364,7 +2404,7 @@ grep -q 'VIRTUAL_ENV_DISABLE_PROMPT' config/init_bash.sh \
 # `uv sync` must pin the venv's own interpreter: against UV_PYTHON uv REPLACES
 # a mismatching environment, turning `mksync --share` pure and losing rospy.
 # And activation must not be skipped just because the image pre-set VIRTUAL_ENV.
-act_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+act_probe="$(probe_dir)"
 mkdir -p "$act_probe/config" "$act_probe/install/.venv/bin"
 cp config/init_bash.sh config/util_paths.sh "$act_probe/config/"
 printf 'VIRTUAL_ENV_PROMPT=probe-name\n' > "$act_probe/install/.venv/bin/activate"
@@ -2399,7 +2439,7 @@ for flag in $(grep -oE 'cbuild [^"'"'"']*' .vscode/tasks.json | grep -oE '\-\-[a
     grep -qE "^[[:space:]]*${flag}\)" config/util_aliases.sh \
         || { log_err ".vscode/tasks.json runs 'cbuild ${flag}' but __parse_build_flags does not handle it."; flag_errors=1; }
 done
-flag_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+flag_probe="$(probe_dir)"
 mkdir -p "$flag_probe/bin" "$flag_probe/config"
 cp config/util_aliases.sh config/util_paths.sh "$flag_probe/config/"
 printf '#!/bin/sh\necho "$*"\n' > "$flag_probe/bin/colcon"; chmod +x "$flag_probe/bin/colcon"

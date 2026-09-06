@@ -60,6 +60,10 @@ compile_commands.json
 .env.local
 .env.*.local
 .docker_cache/
+*.oci.tar
+*.sif.sha256
+*.sif.provenance
+*.oci.tar.provenance
 *.sif
 
 # --- IDE ---------------------------------------------

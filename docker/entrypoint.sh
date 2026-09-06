@@ -12,7 +12,7 @@ export LC_ALL="$LANG" LANGUAGE="$LANG"
 # Git: suppress "dubious ownership" errors without mutating global config
 export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0="safe.directory"
-export GIT_CONFIG_VALUE_0="*"
+export GIT_CONFIG_VALUE_0="${WORKSPACE_PATH:-/workspace}"
 
 WS_ROOT="${WORKSPACE_PATH:-/workspace}"
 
@@ -88,7 +88,7 @@ sync_owner_if_root() {
     local target_uid
     target_uid="$(id -u "${CONTAINER_USER}" 2>/dev/null || true)"
     [ -n "$target_uid" ] && [ "$(stat -c %u "$path" 2>/dev/null)" = "$target_uid" ] && return 0
-    chown -R "${CONTAINER_USER}:${CONTAINER_USER}" "$path" 2>/dev/null \
+    chown -R "${CONTAINER_USER}:$(id -g "${CONTAINER_USER}")" "$path" 2>/dev/null \
         || log_warn "Could not synchronize ownership: $path"
 }
 

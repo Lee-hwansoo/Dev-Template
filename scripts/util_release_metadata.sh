@@ -64,10 +64,10 @@ if command -v dpkg-query >/dev/null 2>&1; then
     APT_COUNT="$(wc -l < "$APT_MANIFEST" 2>/dev/null || echo 0)"
 fi
 
-if [ -x "${WS_VENV_PY:-}" ]; then
-    "${WS_VENV_PY}" -m pip freeze 2>/dev/null | LC_ALL=C sort > "$PIP_MANIFEST" || true
-elif command -v uv >/dev/null 2>&1; then
-    uv pip freeze 2>/dev/null | LC_ALL=C sort > "$PIP_MANIFEST" || true
+if command -v uv >/dev/null 2>&1 && [ -x "${WS_VENV_PY:-}" ]; then
+    uv pip freeze --python "$WS_VENV_PY" | LC_ALL=C sort > "$PIP_MANIFEST"
+elif [ -x "${WS_VENV_PY:-}" ]; then
+    "${WS_VENV_PY}" -m pip freeze | LC_ALL=C sort > "$PIP_MANIFEST"
 fi
 [ -f "$PIP_MANIFEST" ] && PIP_COUNT="$(wc -l < "$PIP_MANIFEST" 2>/dev/null || echo 0)"
 
@@ -83,6 +83,7 @@ export OUTPUT_FILE PYTHON_VERSION APT_COUNT PIP_COUNT MANIFEST_SHA
 import datetime
 import json
 import os
+import platform
 import sys
 
 
@@ -132,6 +133,10 @@ metadata = {
     "apt_snapshot": os.environ.get("APT_SNAPSHOT_DATE", "latest"),
     "source_date_epoch": os.environ.get("SOURCE_DATE_EPOCH", ""),
     "build_type": os.environ.get("DEVKIT_BUILD_TYPE", "dev"),
+    "architecture": platform.machine(),
+    "phase": os.environ.get("DEVKIT_MANIFEST_PHASE", "build"),
+    "ros_snapshot": os.environ.get("ROS_SNAPSHOT_DATE", "latest"),
+    "python_extra": os.environ.get("UV_EXTRA", ""),
     "manifest": {
         "apt_packages": int(os.environ.get("APT_COUNT") or 0),
         "pip_packages": int(os.environ.get("PIP_COUNT") or 0),
@@ -139,6 +144,12 @@ metadata = {
         "files": ["devkit-apt-manifest.txt", "devkit-pip-manifest.txt"],
     },
 }
+
+if os.environ.get("DEVKIT_METADATA_BASE"):
+    with open(os.environ["DEVKIT_METADATA_BASE"], encoding="utf-8") as handle:
+        build = json.load(handle)
+    build.update({key: metadata[key] for key in ("python", "architecture", "phase", "manifest")})
+    metadata = build
 
 with open(os.environ["OUTPUT_FILE"], "w", encoding="utf-8") as handle:
     json.dump(metadata, handle, ensure_ascii=False, separators=(",", ":"))

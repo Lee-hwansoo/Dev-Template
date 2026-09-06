@@ -27,7 +27,7 @@ if [ "${__DEVKIT_ENV_READY:-}" != "$WS_ROOT" ]; then
     else
         export GIT_CONFIG_COUNT=1
         export GIT_CONFIG_KEY_0="safe.directory"
-        export GIT_CONFIG_VALUE_0="*"
+        export GIT_CONFIG_VALUE_0="$WS_ROOT"
     fi
 
     # ccache — guard against PATH growing on every re-source

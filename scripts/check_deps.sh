@@ -24,6 +24,7 @@ bindings, and report (or strip) plaintext source shipped in the artifact.
 
 Options:
   -h, --help  Show this help.
+  --runtime  Audit the final image and record its installed package manifests.
 
 Environment:
   DEVKIT_STRIP_SOURCE=1    Byte-compile .py to .pyc and delete the .py source
@@ -35,6 +36,7 @@ EOF
 # failed with "Target directory '--help' does not exist".
 case "${1:-}" in
     -h|--help) usage; exit 0 ;;
+    --runtime) RUNTIME_AUDIT=1; shift ;;
     --*) log_error "Unknown option: $1"; usage >&2; exit 2 ;;
 esac
 
@@ -53,17 +55,23 @@ missing=0
 # Filter to executables and .so first: the `file` probe is per-file.
 while IFS= read -r -d '' binary; do
     if file "$binary" 2>/dev/null | grep -qE "ELF.*(executable|shared object)"; then
-        if ldd "$binary" 2>/dev/null | grep -q "not found"; then
+        # Driver libraries are injected by --nv / NVIDIA Container Toolkit.
+        unresolved="$(ldd "$binary" 2>/dev/null | awk '/not found/ && $1 !~ /^(libcuda\.so|libnvidia-)/ {print}' || true)"
+        if [ -n "$unresolved" ]; then
             log_error "Missing libraries in ${binary}:"
-            ldd "$binary" 2>/dev/null | grep "not found" | sed 's/^/    /'
+            printf '    %s\n' "$unresolved"
             missing=$((missing + 1))
         fi
     fi
 done < <(find "$TARGET_DIR" -type f \( -perm -u+x -o -name '*.so*' \) \
-              ! -name '*.py' ! -name '*.pyc' -not -path "*/.*" -print0)
+              ! -name '*.py' ! -name '*.pyc' -print0)
+
+while IFS= read -r -d '' link; do
+    [ -e "$link" ] || { log_error "Dangling installed symlink: $link"; missing=$((missing + 1)); }
+done < <(find "$TARGET_DIR" -type l -print0)
 
 # Check ROS Python bindings
-if [ -n "${ROS_DISTRO:-}" ]; then
+if [ -d "/opt/ros/${ROS_DISTRO:-}" ]; then
     log_info "Verifying ROS (${ROS_DISTRO}) Python bindings..."
     # Plain RUN layers (prod builders) have no ROS environment, so the import
     # below would fail spuriously. setup.bash is neither `set -u`- nor
@@ -86,7 +94,8 @@ if [ -n "${ROS_DISTRO:-}" ]; then
             ;;
         *)
             if ! "$py_bin" -c "import rclpy" 2>/dev/null; then
-                log_warn "ROS 2 (${ROS_DISTRO}) 'rclpy' module not found in $py_bin"
+                log_error "ROS 2 (${ROS_DISTRO}) 'rclpy' module not found in $py_bin"
+                missing=$((missing + 1))
             else
                 log_ok "ROS 2 'rclpy' module verified."
             fi
@@ -153,4 +162,10 @@ if [ "$missing" -eq 0 ]; then
 else
     log_error "Found $missing issue(s)."
     exit 1
+fi
+
+if [ "${RUNTIME_AUDIT:-0}" = 1 ]; then
+    "$WS_VENV_PY" -c 'import sys; assert sys.prefix.endswith("install/.venv"), sys.prefix'
+    DEVKIT_METADATA_BASE=/etc/devkit/build/devkit-release.json DEVKIT_MANIFEST_PHASE=runtime \
+        bash "$WS_SCRIPTS/util_release_metadata.sh" /etc/devkit/devkit-release.json
 fi

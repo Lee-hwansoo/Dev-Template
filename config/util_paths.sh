@@ -43,7 +43,7 @@ devkit_env_value() {
 configure_git_safe_directory() {
     export GIT_CONFIG_COUNT=1
     export GIT_CONFIG_KEY_0="safe.directory"
-    export GIT_CONFIG_VALUE_0="*"
+    export GIT_CONFIG_VALUE_0="${WS_ROOT}"
 }
 
 # devkit_require <script> [force_reload] — source once from WS_SCRIPTS or the

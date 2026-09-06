@@ -30,6 +30,7 @@ x-common-env: &common-env
   XDG_RUNTIME_DIR: /tmp/.container_xdg
   SYS_PYTHON_EXE: ${SYS_PYTHON_EXE:-/usr/bin/python3}
   UV_PYTHON: ${UV_PYTHON:-3.10}
+  UV_EXTRA: ${UV_EXTRA:-}
   UV_SYNC_FLAGS: ${UV_SYNC_FLAGS:-}
   ROS_DISTRO: ${ROS_DISTRO:-humble}
   SYNC_TARGET_DIR: ${SYNC_TARGET_DIR:-src/thirdparty}
@@ -116,10 +117,12 @@ services:
         TZ: ${TZ:-UTC}
         SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-}
         APT_SNAPSHOT_DATE: ${APT_SNAPSHOT_DATE:-latest}
+        ROS_SNAPSHOT_DATE: ${ROS_SNAPSHOT_DATE:-latest}
         STRICT_GPG_CHECK: ${STRICT_GPG_CHECK:-true}
         WORKSPACE_PATH: ${WORKSPACE_PATH:-/workspace}
         UV_VERSION: ${UV_VERSION:-0.10.10}
         UV_PYTHON: ${UV_PYTHON:-3.10}
+        UV_EXTRA: ${UV_EXTRA:-}
         CMAKE_C_STANDARD: ${CMAKE_C_STANDARD:-11}
         CMAKE_CXX_STANDARD: ${CMAKE_CXX_STANDARD:-17}
         BASE_IMAGE: ${BASE_IMAGE:-ubuntu:22.04}
@@ -128,7 +131,6 @@ services:
         UV_SYNC_FLAGS: ${UV_SYNC_FLAGS:-}
         CMAKE_EXTRA_ARGS: ${CMAKE_EXTRA_ARGS:-}
         COLCON_EXTRA_FLAGS: ${COLCON_EXTRA_FLAGS:-}
-        HAS_NVIDIA: ${HAS_NVIDIA:-false}
         FULL_CUDA: ${FULL_CUDA:-false}
         CUDA_VERSION: ${CUDA_VERSION:-}
         CUDNN_VERSION: ${CUDNN_VERSION:-}
