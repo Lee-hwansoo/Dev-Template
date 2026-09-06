@@ -79,7 +79,7 @@ for f in \
     scripts/util_sif_common.sh scripts/util_logging.sh \
     dependencies/apt.txt dependencies/apt_ros.txt \
     VERSION .clang-format \
-    docs/DEVELOPMENT.md docs/DEPENDENCIES.md docs/DEPLOY.md docs/DIAGNOSTICS.md \
+    docs/GETTING_STARTED.md docs/DEVELOPMENT.md docs/DEPENDENCIES.md docs/DEPLOY.md docs/DIAGNOSTICS.md \
     src/example/starter_node.cpp src/example/starter_node.py src/example/test_starter_node.py
 do
     [ -f "$f" ] || log_err "Missing required file: $f"

@@ -12,6 +12,7 @@ DevKit은 **골격**입니다. 여기 올라오는 변경은 이 키트를 쓰�
 | 배포·재현성·보안 제약 | [docs/DEPLOY.md](../docs/DEPLOY.md) |
 | 진단 명령 | [docs/DIAGNOSTICS.md](../docs/DIAGNOSTICS.md) |
 | 어떤 파일이 어떤 규칙의 주인인가 | [docs/DEVELOPMENT.md 공유 라이브러리 표](../docs/DEVELOPMENT.md#-공유-라이브러리--규칙이-한-번만-정의되는-곳) |
+| 파생 프로젝트 쪽에서 무엇을 소유하는가 | [docs/GETTING_STARTED.md](../docs/GETTING_STARTED.md) |
 
 ## 시작하기
 
@@ -25,11 +26,30 @@ make build && make start    # 실물이 필요할 때만
 
 1. **규칙의 주인을 먼저 찾으세요.** 같은 규칙의 두 번째 사본을 만드는 것이 이 저장소에서
    가장 흔한 실수였습니다 — 색상 판정, `.env` 읽기, SIF 런타임 해석이 모두 그랬습니다.
-2. **커밋은 Conventional Commits** (`type(scope): subject`). 히스토리가 곧 변경 기록이므로
-   제목 한 줄이 무엇이 왜 바뀌었는지 말해야 합니다.
-3. **주석은 핵심 1~2줄**, 사용법(인자·옵션)은 docstring 형식으로 충분히.
+2. **커밋은 Conventional Commits** (`type(scope): subject`, 제목 한 줄). 히스토리가 곧 변경 기록이므로
+   (별도 파일 없음) 제목이 무엇이 왜 바뀌었는지 말해야 하고, 관심사 하나에 커밋 하나입니다.
+
+   | type | 쓰임 |
+   | --- | --- |
+   | `feat` / `fix` | 기능 추가 / 버그 수정 |
+   | `refactor` / `perf` | 동작 동일한 정리 / 성능 |
+   | `docs` / `test` / `ci` / `chore` | 문서 / 계약·테스트 / 파이프라인 / 잡무 |
+
+3. **주석은 핵심 1~2줄** — 코드가 이미 말하는 것을 되풀이하지 않고 "왜 이렇게 했는가"만 남깁니다.
+   반대로 **사용법은 충분히**: 사용자가 직접 호출하는 함수·스크립트는 시그니처와 인자·옵션을 docstring 형식으로.
+
+   ```bash
+   # mlint [--fix]
+   #   ruff (Python) and clang-format (C/C++ when installed) in check mode; --fix
+   #   applies what can be applied. Same rules the editor uses on save.
+   mlint() { ... }
+
+   # 설명성 주석은 한 줄로
+   # Prepend, never assign: this is written before ROS is sourced.
+   ```
+
 4. **커밋 전 `make verify`.** 실패 메시지는 어느 계약이 깨졌는지 슬러그로 알려줍니다
-   (`check [env-bridge]` 등).
+   (`check [env-bridge]` 등). 계약을 추가했다면 아래 절의 뮤테이션 테스트를 거칩니다.
 
 ## 출력 규약
 

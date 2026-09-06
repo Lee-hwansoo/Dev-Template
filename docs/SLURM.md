@@ -75,23 +75,12 @@ graph TD
 로컬 개발 PC에서 개발 및 테스트가 완료되면, 운영 서버로 전송할 SIF 단일 이미지 파일을 생성합니다.
 
 ```bash
-# ROS 프로덕션 SIF 이미지 생성 (권장)
-make bake-prod ENV=ros
-
-# Pure C++/Python 프로덕션 SIF 이미지 생성
-make bake-prod ENV=dev
-
-# Full CUDA 스택 포함 프로덕션 SIF 생성 (NVIDIA CUDA 라이브러리 풀패키지)
-PROD_FULL_CUDA=1 make bake-prod ENV=ros
+make bake-prod ENV=ros        # 또는 ENV=dev — 결과: <프로젝트>-<환경>-prod-<아키텍처>.sif (예: myproject-ros-prod-amd64.sif)
 ```
-> 기본 파일명은 `<프로젝트>-<환경>-prod-<아키텍처>.sif`입니다. 예: `myproject-ros-prod-amd64.sif`.
-> Apple Silicon에서 x86 서버용 아카이브를 만들려면 `TARGETARCH=amd64 BAKE_FORMAT=oci make bake-prod`를 실행하고 Linux에서 SIF로 변환하세요.
 
-> **의존성 동기화 실패 정책 (fail-open 스위치)**: 워크스페이스 의존성 동기화(`sync_deps` / `setup_sync_deps.sh`)는
-> **기본적으로 실패 시 즉시 중단**됩니다 — 의존성이 누락된 이미지가 원격 클러스터에 배포되는 것을 막기 위함입니다.
-> 오프라인·사설 레포 등으로 의도적으로 일부만 받고 진행해야 한다면 `DEVKIT_VCS_ALLOW_FAILURE=1`(서드파티 vcs) 또는
-> `DEVKIT_ROSDEP_ALLOW_FAILURE=1`(rosdep)로 **fail-open**을 명시적으로 켜세요. 단, 이 경우 의존성이 빠진 SIF가
-> 생성될 수 있으니 주의하세요. (상세: [`docs/DEPENDENCIES.md`](DEPENDENCIES.md))
+굽기 옵션(`PROD_FULL_CUDA`, `SOURCE_DATE_EPOCH`, 소스 비유출 스위치)과 Apple Silicon 에서 x86 아카이브를 만드는
+`BAKE_FORMAT=oci` 경로는 [DEPLOY.md](DEPLOY.md) 가, 의존성 동기화가 실패할 때의 정책은
+[DEPENDENCIES.md](DEPENDENCIES.md#동기화-실패-정책) 가 설명합니다.
 
 ---
 

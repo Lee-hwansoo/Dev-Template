@@ -14,7 +14,7 @@
 2. **오버레이 병합**: 이 디렉토리(`dependencies/overlay/`)의 항목들이 `src/thirdparty/`로 **재귀적으로 복사되어 원본 파일을 덮어씁니다** (`cp -a` 기반, 속성 보존).
 
 > [!NOTE]
-> 복사 대상 경로는 `SYNC_TARGET_DIR` 환경 변수로 관리되며 기본값은 `src/thirdparty`입니다. 자세한 의존성 관리 체계는 [`docs/DEVELOPMENT.md`](../../docs/DEVELOPMENT.md)를 참고하세요.
+> 복사 대상 경로는 `SYNC_TARGET_DIR` 환경 변수로 관리되며 기본값은 `src/thirdparty`입니다. 자세한 의존성 관리 체계는 [`docs/DEPENDENCIES.md`](../../docs/DEPENDENCIES.md)를 참고하세요.
 
 ---
 

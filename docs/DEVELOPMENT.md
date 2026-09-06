@@ -1,31 +1,18 @@
 # 📘 DevKit 개발자 워크플로우 & 툴체인 가이드
 
-본 문서는 **DevKit** 생태계의 핵심 개발 워크플로우, 의존성 관리 방식, 빌드 툴체인 및 SIF 빌드 옵션을 상세히 다룹니다.
-
----
-
-## 📚 이 가이드와 나머지 문서
-
-| 문서 | 내용 |
-| --- | --- |
-| **이 문서** | SSOT 아키텍처, 일상 워크플로우(`mksync`·품질 루프·셸 환경), 템플릿 수명주기, CI |
-| [DEPENDENCIES.md](DEPENDENCIES.md) | Python·C++/ROS·APT 세 레이어의 의존성 제어 |
-| [DEPLOY.md](DEPLOY.md) | Apptainer SIF, 소스 비유출, 재현성, 보안 제약 |
-| [DIAGNOSTICS.md](DIAGNOSTICS.md) | 호스트/컨테이너 진단 명령 (`make check`·`hwcheck`·`gpus`) |
-| [SLURM.md](SLURM.md) | 원격 서버·SLURM 클러스터 운영 절차 |
-| [DEBUGGING.md](DEBUGGING.md) | VS Code 디버거(GDB/debugpy)와 태스크 |
+매일 쓰는 것들입니다 — 규칙이 한 곳에서만 정의되는 구조, `mksync` 와 품질 루프, 셸 환경, 정리,
+템플릿 버전과 상류 갱신, CI. 처음 프로젝트를 만드는 순서는 [GETTING_STARTED.md](GETTING_STARTED.md),
+의존성 파일은 [DEPENDENCIES.md](DEPENDENCIES.md), 배포물은 [DEPLOY.md](DEPLOY.md) 가 소유합니다.
+문서 전체 지도는 [README](../README.md#-문서-안내) 에 있습니다.
 
 ---
 
 ## 🏛️ 아키텍처: 단일 진실 공급원 (SSOT)
 
-DevKit은 모든 워크스페이스 경로 및 환경 설정에 **Single Source of Truth (SSOT)** 원칙을 강제합니다. 전체 환경은 `${WORKSPACE_PATH}` (기본값: `/workspace`)를 기준으로 결합됩니다.
-
-### 📍 표준화된 경로 전략
-- **쉐도우 디렉토리 부재**: 모든 스크립트, 패키지 및 환경 설정은 워크스페이스 내에 엄격히 위치합니다.
-- **상대 경로 견고성**: 스크립트 소싱 시 다음 오버레이 패턴을 통해 실행됩니다:
-  1. `${WORKSPACE_PATH}/scripts/...` (공식 SSOT 경로)
-  2. `$(dirname "${BASH_SOURCE[0]}")/...` (로컬 fallback)
+컨테이너 안의 모든 경로는 `${WORKSPACE_PATH}`(기본 `/workspace`) 아래에서 `config/util_paths.sh` 가
+한 번 조합합니다. 호스트에서 실행되는 스크립트도 같은 파일을 소스하는데, make 가 컨테이너 경로를
+호스트 레시피에도 export 하므로 `WORKSPACE_PATH` 는 **그 자리에 DevKit 트리가 있을 때만** 믿고,
+아니면 자기 파일 위치로 루트를 잡습니다. 그래서 `make bake-prod` 가 `/workspace/scripts` 를 찾다 죽는 일이 없습니다.
 
 ### 📚 공유 라이브러리 — 규칙이 한 번만 정의되는 곳
 이 목록은 **파생 프로젝트가 쓰라고 제공하는 API**입니다 — 인트리 호출자가 없는 심볼도
@@ -41,7 +28,7 @@ command not found`로 죽은 원인이었습니다). `scripts/verify_repo.sh`가
 | `scripts/util_logging.sh` | 로그 동사(`log_ok`/`log_warn`/`log_detail`…), 배너·섹션, 스트림별 색상 판정 |
 | `scripts/util_sif_common.sh` | SIF 런타임 바이너리, 아키텍처 태그, 아티팩트 이름, 엔트리포인트 경유, 런타임 환경 전달·GPU 플래그·데이터 바인드·실행 기록 |
 | `scripts/util_gpu_detect.sh` | GPU 벤더·디바이스 노드 감지 |
-| `scripts/util_apt_helper.sh` | 빌드 타임 APT 저장소 신뢰 앵커 및 태그 필터 설치 |
+| `scripts/util_apt_helper.sh` | 빌드 타임 APT 저장소 신뢰 앵커, 태그 필터 설치, 부트스트랩 도구 정리 |
 | `scripts/util_cuda_apt.sh` | CUDA/cuDNN apt 프로파일 설치 |
 | `scripts/util_setup_links.sh` | 워크스페이스 심볼릭 링크(`colcon.meta`, `.venv`, `compile_commands.json`) |
 | `scripts/util_release_metadata.sh` | 릴리스 메타데이터 및 APT/pip 매니페스트 생성 |
@@ -50,11 +37,7 @@ command not found`로 죽은 원인이었습니다). `scripts/verify_repo.sh`가
 
 ## 🏁 통합 개발 워크플로우
 
-컨테이너 진입 후 즉시 개발을 시작할 수 있는 통합 명령어 체계입니다.
-
 ### 1. 원클릭 가상환경 & 빌드 동기화 (`mksync`)
-
-아래 단 하나의 명령어로 가상환경 생성, 의존성 동기화, 초기 빌드를 자동 수행합니다:
 
 ```bash
 mksync
@@ -66,14 +49,15 @@ mksync
 > - venv 는 `install/.venv` 에 만들어지고 **프로젝트 이름으로 명명**됩니다(`--prompt "$COMPOSE_PROJECT_NAME"`) —
 >   프롬프트에 `(myproject-lee)` 로 보이므로 여러 워크스페이스를 오갈 때 어느 셸인지 한눈에 구분됩니다.
 > - `uv sync` 는 venv 가 이미 가진 인터프리터에 고정됩니다(`--python`). 이게 없으면 uv 가 `UV_PYTHON` 과
->   불일치를 이유로 환경을 **재생성**해, `mksync --share`(noetic)가 만든 shared venv 가 pure 로 바뀌며 `rospy` 가 사라집니다.
+>   불일치를 이유로 환경을 **재생성**해, ROS 이미지의 shared venv 가 pure 로 바뀌며 `rclpy`/`rospy` 가 사라집니다.
 > - **프로젝트 타입 판별**: `ROS_DISTRO`가 있으면 `src/thirdparty`를 제외한 `src/`에서 `package.xml`을 찾아 **ROS**(`cbuild`)로 판별합니다. 없으면 저장소 루트 또는 `src/`의 `CMakeLists.txt`로 **CPP**(`mbuild`; 같은 `__cmake_entry`가 빌드 진입점을 정합니다), 둘 다 없으면 **PYTHON**(빌드 생략)입니다.
-> - **`mksync --share`**: `--system-site-packages` 옵션으로 venv를 생성하여 `rospy`·`catkin`(ROS 1) 또는 `rclpy`(ROS 2) 등 시스템 파이썬 패키지를 venv 내부에서 그대로 접근 가능하게 합니다.
-> - **ROS 이미지에서는 자동 적용**: `/opt/ros/<distro>`가 있으면 `--share` 없이도 shared 모드가 켜집니다 — ROS 파이썬 바인딩은 시스템 dist-packages에 있어 격리된 venv 에서는 import 되지 않기 때문입니다. 순수 venv 는 비-ROS 이미지에서만 의미가 있습니다.
+> - **shared venv**: `/opt/ros/<distro>`가 있으면 `--share` 없이도 `--system-site-packages` venv 가 됩니다 — ROS 파이썬 바인딩은 시스템 dist-packages에 있어 격리된 venv 에서는 import 되지 않기 때문입니다. `--share` 를 명시하는 것은 비-ROS 이미지에서 시스템 패키지를 공유하고 싶을 때만 의미가 있습니다.
 > - 이미 격리된 venv 가 있는데 shared 가 필요하면 `mksync`가 조용히 진행하지 않고 `mkenv --share`를 한 번 실행하라고 멈춥니다.
 > - **추가 인자 전달**: `--share`를 제외한 나머지 인자는 그대로 `uv sync`로 전달됩니다 (예: `mksync --extra gpu` — `pyproject.toml` 이 그 extra 를 선언한 뒤에).
 > - `cbuild` / `mbuild` / `mksync` / `mkenv`는 모두 **함수**로 정의되어 있어 `docker build`의 비대화형 셸에서도 호출됩니다
 >   (별칭은 비대화형 셸에서 전개되지 않으므로 빌드 진입점은 별칭으로 만들지 마세요 — `make verify` [build-entrypoints]이 이를 강제합니다).
+
+의존성 파일(`pyproject.toml`, `dependencies/*`)의 규칙과 동기화 실패 정책은 [DEPENDENCIES.md](DEPENDENCIES.md) 에 있습니다.
 
 ### 2. 품질 루프 — 테스트와 린트 (`mtest` / `mlint`)
 
@@ -107,30 +91,9 @@ DevKit이 추측하지 않고 파생 프로젝트의 `uv.lock`이 고정합니�
 > 쓰므로 CLI 검사가 필요할 때만 `dependencies/apt.txt`의 `# clang-format # dev` 줄을 해제하고
 > `make build`하세요. 테스트가 아직 없는 프로젝트에서 `mtest`는 실패가 아니라 안내를 출력합니다.
 
-**CI**: `.github/workflows/project.yml`이 `src/**` 변경 시 `make build && make start && make lint
-&& make test`를 실행합니다. 키트 자체를 검증하는 `verify.yml`·`images.yml`과 역할이 분리되어
-있으니, 파생 프로젝트는 이 파일만 자기 것으로 손보면 됩니다.
+CI 에서 같은 루프를 도는 `project.yml` 은 아래 [CI 절](#-ci-github-actions) 에 있습니다.
 
----
-
-### 3. 스타터 예제 노드 실행 테스트 (Starter Node Execution)
-
-`src/example/`의 예제는 사용자의 실제 패키지가 프로젝트 타입 판별을 결정하도록 **빌드 시스템에 등록하지 않은 독립 파일**입니다.
-따라서 아래와 같이 직접 실행/컴파일합니다:
-
-```bash
-# Python 스타터 노드 (ROS 2 / Pure Python 자동 판별)
-python3 src/example/starter_node.py
-
-# C++ 스타터 노드 컴파일 및 실행
-mkdir -p build && g++ -std=c++17 src/example/starter_node.cpp -o build/starter_node
-./build/starter_node
-```
-
-예제를 빌드 파이프라인에 편입하려면 `src/`에 `package.xml`(ROS) 또는 `CMakeLists.txt`(Pure C++)를 추가한 뒤
-`mksync`(전체 동기화) 또는 `cbuild`/`mbuild`(빌드만)를 실행하세요.
-
-### 4. 셸 환경의 단일 정의 (One Environment, Every Shell)
+### 3. 셸 환경의 단일 정의 (One Environment, Every Shell)
 
 `config/init_bash.sh` **한 파일**이 DevKit 셸 환경을 정의하고, bash의 세 가지 호출 방식이 모두 이를 경유합니다:
 
@@ -144,13 +107,8 @@ mkdir -p build && g++ -std=c++17 src/example/starter_node.cpp -o build/starter_n
   `case $- in *i*)` 가드 아래에 있어 스크립트 셸에서는 실행되지 않습니다.
 - `__DEVKIT_ENV_READY` 마커로 멱등 처리되어, 중첩 셸은 ROS/venv를 다시 소싱하지 않습니다 (오버헤드 약 10ms).
 - `~/.bashrc`에는 **스냅샷을 굽지 않고** 훅을 가리키는 한 줄만 넣습니다 — 파일을 고치면 즉시 반영됩니다.
-
-검증된 결과 (실이미지):
-
-```
-대화형 87개 : 비대화형 85개   차이 = LS_COLORS, __DEVKIT_MOTD_SHOWN (둘 다 대화형 전용)
-비대화형 python3 -c "import rclpy"  → ok
-```
+- 엔트리포인트는 부팅 때 확정한 값(XDG 런타임 디렉터리, GPU 환경, DDS 설정)을 `/etc/profile.d/devkit-*.sh` 에 남기고,
+  root 로 만든 볼륨과 첫 실행 동기화 결과의 소유권을 컨테이너 사용자에게 넘긴 뒤 권한을 낮춰 명령을 실행합니다.
 
 #### 셸에 의존하지 않는 경로 (`/entrypoint.sh --env`)
 
@@ -166,17 +124,8 @@ docker exec <container> /entrypoint.sh --env ./install/bin/app
 docker exec <container> /entrypoint.sh --env sh -c 'echo $VIRTUAL_ENV'
 ```
 
-실측 비교:
-
-| 호출 | `WS_ROOT` |
-| :--- | :--- |
-| `docker exec c python3 …` | *없음* |
-| `docker exec c /entrypoint.sh --env python3 …` | `/workspace` |
-
-`make exec`가 이 경로를 사용하며(구버전 이미지에서는 bash로 폴백), `make verify` [env-bridge]이 존재를 강제합니다.
-> `CMD` 안의 `$`는 make가 먼저 먹으므로 **두 번** 써야 컨테이너 셸에 도달합니다 —
-> `make exec CMD='echo $$ROS_DISTRO'`. 단일 `$ROS_DISTRO`는 빈 문자열로 확장돼
-> 명령이 조용히 잘린 문자열을 받습니다.
+`make exec`가 이 경로를 사용하며(구버전 이미지에서는 bash로 폴백), `make verify` [env-bridge]이 엔트리포인트를
+실제로 부팅해 검증합니다.
 
 > [!TIP]
 > 호스트에서는 그냥 **`make exec`** 를 쓰면 됩니다:
@@ -188,23 +137,39 @@ docker exec <container> /entrypoint.sh --env sh -c 'echo $VIRTUAL_ENV'
 > ```
 >
 > `exec`는 `ENV=ros`/`ENV=dev` 어느 이미지에서도 동일하게 동작합니다 — 컨테이너 셸에 명령을 넘길 뿐,
-> ROS를 전제하지 않습니다. 다만 `CMD`는 make 변수를 거치므로 **작은따옴표로 감싸고 중첩 큰따옴표는 피하세요**;
-> 복잡한 인용이 필요하면 스크립트 파일로 만들어 `make exec CMD='bash scripts/my_task.sh'` 형태로 호출하는 편이 안전합니다.
->
-> `make verify` [env-bridge]이 이 구조(단일 훅 소싱 · 비대화형 무출력 · 스냅샷 미사용)를 강제합니다.
+> ROS를 전제하지 않습니다. `CMD` 안의 `$`는 make가 먼저 먹으므로 **두 번** 써야 컨테이너 셸에 도달합니다
+> (`make exec CMD='echo $$ROS_DISTRO'`). 작은따옴표로 감싸고 중첩 큰따옴표는 피하세요 — 복잡한 인용이 필요하면
+> 스크립트 파일로 만들어 `make exec CMD='bash scripts/my_task.sh'` 형태로 호출하는 편이 안전합니다.
 
-### 5. 의존성 관리 체계 (Dependency Management)
+### 4. 환경 소싱과 이동
 
-* **Python 패키지 (`uv`)**: `src/pyproject.toml`을 통해 관리됩니다. `uvs` 명령어로 초고속 파이썬 동기화를 수행합니다.
-* **시스템 및 ROS 패키지**: `dependencies/` 디렉토리를 통해 관리되며, `sync_deps --rosdep` 명령어로 외부 레포지토리 수신 및 시스템 패키지를 설치합니다.
-* `sync_deps` 및 `rosdep` 실패 시 즉시 프로세스가 중단됩니다. 의도적으로 일부 패키지만 설치하고 진행하려면 `DEVKIT_VCS_ALLOW_FAILURE=1` 또는 `DEVKIT_ROSDEP_ALLOW_FAILURE=1`을 지정하세요.
+- **`s`**: 빌드 후 또는 새 터미널에서 워크스페이스 오버레이를 소싱합니다 — ROS 2 는 `install/setup.bash`, ROS 1 은 `devel/setup.bash` 를 고릅니다. 실패한 `setup.bash` 는 성공으로 보고되지 않습니다.
+- **`activate`**: `install/.venv` 진입. 새 셸은 `init_bash.sh` 가 이미 활성화해 두므로 보통 필요 없습니다.
+- **`cw` / `cs` / `cc`**: 워크스페이스 루트 / `src/` / `config/`.
+- **`gpu <mode>`**: 가속 모드 전환(현재 셸에 적용되고 `~/.gpu_env.sh` 에 남음). 진단은 [DIAGNOSTICS.md](DIAGNOSTICS.md).
+
+---
+
+## 🧹 정리와 초기화 (Cleanup)
+
+| 명령 | 범위 | 비고 |
+| :--- | :--- | :--- |
+| `mclean` (컨테이너) | `build/`, `devel/`, `log/`, `install/` 의 산출물을 **비움** (마운트 지점이라 지우지는 않음) | venv 는 `mclean --all` 에서만. 남은 항목이 있으면 실패로 보고 |
+| `make clean` | 호스트의 `build/`, `devel/`, `log/`, `install/` 산출물과 편의 심볼릭 링크(`compile_commands.json`, `.venv`, `colcon.meta`) | `install/.venv` 보존 — 재생성에 `mksync` 전체가 필요. 지우려면 `KEEP_VENV=0`(확인 프롬프트). Docker 가 root 로 만든 디렉터리는 해결 명령을 안내 |
+| `make clean-cache` | `.docker_cache/`(호스트 감지 캐시·플레이스홀더) | 컨테이너가 떠 있으면 거부 — Docker 가 마운트 소스를 root 로 다시 만들기 때문 |
+| `make clean-all` | 컨테이너 · 프로젝트 named 볼륨 · **compose 가 빌드한 이 프로젝트 이미지**(`--rmi local`) · 호스트 산출물 · 캐시 | 확인 프롬프트. `KEEP_VENV=1` 은 venv 가 든 `install` 볼륨만 남겨 재빌드 후 `mksync` 없이 접속 |
+| `make stop` / `make down` | 선택한 `ENV` 의 서비스만 | `ENV=ros` 는 `basic-*` 컨테이너를 건드리지 않음 |
+| `make docker-clean` | **호스트 전체**의 고아 이미지 · BuildKit 캐시 · 미사용 볼륨 | 다른 프로젝트도 영향. 삭제 대상을 보여주고 확인 |
+
+기본 구성에서 `build/install/log` 는 **named 볼륨**이므로 컨테이너 쪽 산출물은 `make clean-all` 이 제거합니다.
+파괴적 타겟의 확인 생략은 `FORCE=1` 또는 `CI=true` 같은 **정확한 true 값**만 인정합니다(`FORCE=0` 은 거부).
 
 ---
 
 ## 🧬 템플릿 버전과 상류 갱신 가져오기 (Template Lifecycle)
 
 DevKit은 템플릿이므로, 이 위에 올린 프로젝트는 **어느 리비전에서 시작했는지**와 **그 뒤 무엇이
-움직였는지**를 알아야 합니다.
+움직였는지**를 알아야 합니다. 어떤 파일이 누구의 것인지는 [GETTING_STARTED.md](GETTING_STARTED.md#누가-무엇을-소유하나) 의 표에 있습니다.
 
 | 파일 | 역할 |
 | --- | --- |
@@ -218,7 +183,7 @@ DevKit은 템플릿이므로, 이 위에 올린 프로젝트는 **어느 리비�
 
 | 상승 | 파생 프로젝트에 주는 의미 |
 | --- | --- |
-| **MAJOR** | 계속 쓰려면 **무언가 고쳐야 함** (타겟 이름 변경, 노브 제거, 필수 파일 추가) |
+| **MAJOR** | 계속 쓰려면 **무언가 고쳐야 함** (타겟 이름 변경, 노브 제거, 필수 파일 추가, 기본 설치에서 opt-in 으로 전환) |
 | **MINOR** | 새 기능. 의존하던 것은 그대로 |
 | **PATCH** | 수정만 |
 
@@ -330,20 +295,11 @@ make verify && make build && make test
 ### `project.yml` — 파생 프로젝트의 루프
 
 트리거: `src/**` · `dependencies/**` · 워크플로 자신 · 수동. `make verify → setup → build → start → mksync → lint → test`.
-키트가 아니라 **당신의 코드**를 검증하며, 포크가 자기 것으로 손볼 파일은 이것 하나입니다.
+키트가 아니라 **당신의 코드**를 검증하며, 포크가 자기 것으로 손볼 파일은 이것 하나입니다
+([GETTING_STARTED.md](GETTING_STARTED.md#5-ci--githubworkflowsprojectyml)).
 
 > `config/**` 변경은 런타임 잡을 트리거하지 않습니다 — 그 부류의 회귀(`LD_LIBRARY_PATH` 오염, venv 미활성,
 > tty 없는 MOTD)는 호스트에서 도는 계약으로 고정돼 있어 빠른 티어가 바로 잡습니다.
-> 병합 전에는 `runtime-smoke` 를 수동으로 한 번 돌리는 것을 권장합니다.
-
---- | :--- | :--- | :--- |
-| `verify.yml` | 모든 push · PR | `make verify`(계약 전체) + `docker build --check`(레이어 없이 멀티스테이지 린트) | **수 초** |
-| `images.yml` | `docker/**`·`dependencies/**`·apt 헬퍼 변경 시 + 주간 cron + 수동 | ROS 1/ROS 2 apt 키 경로(컨테이너 안, tty 없음) · CUDA 저장소 핀 · `base`/`build-core` 실제 빌드 | 수 분 |
-| `images.yml` → `runtime-smoke` | **cron · 수동 전용** | 전체 이미지 빌드 → `make start` → 비-bash 프로세스에서 `import rclpy` · `xdpyinfo` 존재 · `mksync` 후 venv 활성/명명 · `check_deps` | ~20분 |
-
-> 두 워크플로 모두 `concurrency: cancel-in-progress` 로 이전 실행을 자동 취소합니다.
-> `config/**` 변경은 런타임 잡을 트리거하지 않습니다 — 대신 그 부류의 회귀(`LD_LIBRARY_PATH` 오염,
-> venv 미활성, tty 없는 MOTD)는 각각 호스트에서 도는 계약으로 고정돼 있어 fast 티어가 바로 잡습니다.
 > 병합 전에는 `runtime-smoke` 를 수동으로 한 번 돌리는 것을 권장합니다.
 
 ---
@@ -351,7 +307,7 @@ make verify && make build && make test
 ## 🧓 레거시 티어 (ROS 1)
 
 ROS 1 noetic 은 2025 년 5 월에 EOL 이 되었습니다. DevKit 은 그 경로를 **유지하고 계약으로 검증**하지만
-(`catkin_make`·`devel/` 오버레이·ROS 1 apt 키 경로·`--share` venv) 새 기능은 ROS 2 에만 추가합니다.
+(`catkin_make`·`devel/` 오버레이·ROS 1 apt 키 경로·shared venv) 새 기능은 ROS 2 에만 추가합니다.
 20.04 이전 배포판 이름(melodic·kinetic)은 베이스 이미지 매핑이 없어 어차피 빌드되지 않았으므로 제거했습니다 —
 `ROS_DISTRO=noetic` 만 ROS 1 입니다.
 
@@ -372,39 +328,3 @@ DevKit은 베이스 키트이므로 진입점 이름을 바꾸면 그 위에 올
 > **`software` GPU 모드는 예외적으로 제거되었습니다.** `cpu`와 완전히 동일한 동작이었고
 > `GPU_MODE`·`gpu` 명령·README 어디에도 문서화된 적이 없는 내부 동의어였기 때문입니다.
 > 한 동작에 두 이름을 남기지 않는다는 원칙에 따라 `cpu` 하나만 유지합니다.
-
----
-
-## 📝 모범 사례 (Best Practices)
-
-1. **환경 소싱 (`s`)**: 빌드 후 또는 새 터미널을 열었을 때 `s` 실행 — ROS 2 는 `install/setup.bash`, ROS 1 은 `devel/setup.bash` 를 고릅니다.
-2. **파이썬 가상환경 진입**: `activate` 알리애스를 통해 isolated venv 진입.
-3. **스마트 빌드**: ROS 패키지는 `cbuild`, Pure C++ 프로젝트는 `mbuild` 사용.
-4. **커밋 규약**: [Conventional Commits](https://www.conventionalcommits.org/) —
-   `type(scope): subject`. 히스토리가 곧 변경 기록이므로(별도 파일 없음) 제목 한 줄이
-   **무엇이 왜 바뀌었는지**를 말해야 합니다.
-
-   | type | 쓰임 |
-   | --- | --- |
-   | `feat` / `fix` | 기능 추가 / 버그 수정 |
-   | `refactor` / `perf` | 동작 동일한 정리 / 성능 |
-   | `docs` / `test` / `ci` / `chore` | 문서 / 계약·테스트 / 파이프라인 / 잡무 |
-
-   커밋 전 `make verify`가 통과해야 합니다. 계약을 하나 추가했다면 **뮤테이션 테스트**로
-   "깨지면 잡히는지"를 확인하세요 — 이 저장소의 검사는 전부 그렇게 도입되었습니다.
-5. **주석 규칙**: 설명성 주석은 **핵심 1~2줄**로 씁니다. 코드가 이미 말하는 것을 되풀이하지
-   않고, "왜 이렇게 했는가"만 남깁니다. 반대로 **사용법은 충분히** 적습니다 — 사용자가
-   직접 호출하는 함수·스크립트는 시그니처와 인자·옵션을 docstring 형식으로 남기세요.
-
-   ```bash
-   # mlint [--fix]
-   #   ruff (Python) and clang-format (C/C++ when installed) in check mode; --fix
-   #   applies what can be applied. Same rules the editor uses on save.
-   mlint() { ... }
-
-   # 설명성 주석은 한 줄로
-   # Prepend, never assign: this is written before ROS is sourced.
-   ```
-
-VS Code는 `make setup`에서 생성한 Compose 설정을 사용합니다. `ENV`, `GPU_MODE`, 컨테이너 사용자 또는 마운트 설정을 바꾸면 `make ide-config`를 다시 실행하고 컨테이너를 다시 여세요.
-`ide-config`는 추적 파일인 `.devcontainer/devcontainer.json`의 `service`/`remoteUser`를 **이 호스트**에 맞춰 고쳐 씁니다 — 그 diff 는 커밋하지 마세요(다른 호스트에는 없는 서비스일 수 있습니다). docker compose 가 없는 호스트(SLURM 제출 노드)에서는 건너뜁니다.

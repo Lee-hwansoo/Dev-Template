@@ -13,9 +13,9 @@
 
 > **TL;DR (3줄 요약)**
 >
-> - **DevKit**은 **Native Linux**, **Windows WSL2**, **macOS (Apple Silicon/Intel)** 환경에서 ROS 1/2, Pure C++, Pure Python 개발을 한 번에 지원하는 워크스페이스 구축 툴킷입니다.
-> - GPU 하드웨어(NVIDIA, AMD, Intel, D3D12, macOS Apple Silicon)를 자동 감지하여 최적의 가속 환경을 구성하며, VSCode 디버깅(GDB, debugpy)이 사전 정의되어 있습니다.
-> - 로컬 개발 환경을 단 한 줄의 명령으로 **HPC 클러스터(Apptainer SIF &amp; SLURM)** 배치 작업으로 전환합니다.
+> - **DevKit**은 **Native Linux**, **Windows WSL2**, **macOS (Apple Silicon/Intel)** 환경에서 ROS 2, ROS 1 noetic, Pure C++, Pure Python 개발을 한 번에 지원하는 워크스페이스 **템플릿**입니다 (ROS 1 은 레거시 티어 — 지원·검증되지만 새 기능은 ROS 2 에만).
+> - GPU 하드웨어(NVIDIA, AMD, Intel, WSL2 D3D12)를 자동 감지하여 가속 환경을 구성하고, VS Code 디버깅(GDB, debugpy)이 사전 정의되어 있습니다.
+> - 로컬 개발 환경을 한 줄의 명령으로 **HPC 클러스터(Apptainer SIF &amp; SLURM)** 배치 작업으로 전환합니다.
 
 ---
 
@@ -54,95 +54,54 @@ graph TD
 > 그리고 컨테이너 안에서 `mksync`. 나머지 타겟은 `make help`, 컨테이너 숏컷은 `h`로 언제든
 > 꺼내 볼 수 있으니 외울 필요가 없습니다.
 
-### 1. ROS 2 개발 환경 시작 (`ENV=ros`)
-
 ```bash
-# 0) 최초 1회: .env 생성 + X11 인증 + 탭 자동완성 등록
+# 0) 최초 1회: .env 생성 + X11 인증 + 탭 자동완성 등록 + VS Code 연결 설정
 make setup
 
-# 1) 도커 이미지 빌드 (GPU 자동 감지)
-make build ENV=ros
+# 1) 이미지 빌드 (GPU 자동 감지) → 2) 컨테이너 기동 → 3) 대화형 셸
+make build ENV=ros && make start ENV=ros && make shell ENV=ros    # ROS 2
+make build ENV=dev && make start ENV=dev && make shell ENV=dev    # 순수 C++ / Python
 
-# 2) 개발 컨테이너 기동
-make start ENV=ros
-
-# 3) 대화형 셸 진입
-make shell ENV=ros
+# 4) 컨테이너 안에서: venv + 의존성 + 빌드를 한 번에
+mksync
 ```
 
 > [!IMPORTANT]
 > `make setup`을 먼저 실행하세요. `.env`는 git 에 포함되지 않으므로 새 클론에는 없고,
 > 없으면 `make build`가 `.env file missing. Run 'make setup' first.`로 멈춥니다.
+> `make setup`은 `~/.bashrc`에 `make` 탭 완성(타겟과 `ENV=`, `SIF_MODE=` 같은 옵션)도 등록합니다 — bash 전용이며,
+> zsh 에서는 `bash`로 들어와 쓰거나 `source config/devkit_make_completion.bash`로 직접 등록합니다.
 
-### 2. 순수 C++ / Python 개발 환경 시작 (`ENV=dev`)
-
-```bash
-make setup   # 최초 1회
-make build ENV=dev && make start ENV=dev && make shell ENV=dev
-```
-
-### 3. 스타터 예제 노드 실행 (Starter Examples)
-
-컨테이너 셸(`make shell`) 진입 후 사전 탑재된 C++ 및 Python 스타터 예제 노드를 즉시 테스트할 수 있습니다:
-
-```bash
-# Python 예제 노드 실행 (ROS 2 및 Pure Python 환경 자동 감지)
-python3 src/example/starter_node.py
-
-# C++ 예제 노드 컴파일 및 실행 (단일 파일 예제이므로 컴파일러 직접 호출)
-mkdir -p build && g++ -std=c++17 src/example/starter_node.cpp -o build/starter_node
-./build/starter_node
-```
-
-> [!NOTE]
-> `src/example/`의 예제는 **빌드 시스템에 등록되지 않은 독립 파일**입니다. 사용자의 실제 패키지가 프로젝트 타입 판별
-> (`package.xml` → ROS / `CMakeLists.txt` → C++)을 온전히 결정하도록 의도한 것으로, 예제를 빌드 대상에 넣으려면
-> `src/`에 `package.xml`(ROS) 또는 `CMakeLists.txt`(C++)를 추가한 뒤 `mksync` 또는 `cbuild`/`mbuild`를 실행하세요.
-
-> [!TIP]
-> **터미널 명령어 자동 완성 자동 설치**: 호스트에서 `make setup`을 한 번만 실행하면 `~/.bashrc`에 탭 자동완성이 등록되어 `make` 명령어 및 `ENV=`, `SIF_MODE=` 등 모든 옵션의 탭 자동완성이 활성화됩니다 (bash 전용 — zsh 로그인 셸에서는 `bash` 진입 후 사용; `make` 타겟 자체는 셸과 무관하게 동작). 수동 등록: `source config/devkit_make_completion.bash`
-
-### 4. 이 템플릿으로 내 프로젝트 시작하기
-
-DevKit은 **골격**입니다. 복제한 뒤 아래 세 가지는 파생 프로젝트가 소유합니다.
-
-```bash
-make setup          # .env 생성 (COMPOSE_PROJECT_NAME 이 사용자명으로 스코프됨)
-# 의존성을 바꿨다면 컨테이너 안에서 1회 — src/uv.lock 이 갱신됩니다
-mksync && git add src/uv.lock && git commit -m "chore: pin python dependencies"
-```
-
-> `src/uv.lock`은 **커밋되어 함께 배포**됩니다 — 프로덕션 빌드가 `uv sync --locked`로 돌기 때문에
-> lock 없이는 `make bake-prod`가 아예 실패합니다. `src/pyproject.toml`을 고치면 lock 이 낡았다고
-> 빌드가 멈추므로, `mksync`로 갱신해 함께 커밋하세요. 완전한 재현이 필요하면 `BASE_IMAGE`
-> 다이제스트와 `APT_SNAPSHOT_DATE`·`ROS_SNAPSHOT_DATE`까지 고정하세요
-> ([docs/DEPLOY.md](docs/DEPLOY.md#-재현성-reproducibility--현재-보장-범위)).
+**이 템플릿으로 내 프로젝트를 시작한다면** — 정체성(`make adopt`), 팀 공유 `.env.example`, 의존성 세 레이어, lock 커밋,
+`project.yml`, 스타터 예제 정리까지 순서대로: [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md).
 
 ---
 
 ## ⌨️ 주요 명령어 & 숏컷 (Commands & Shortcuts)
 
 ### 🖥️ 1. 호스트 명령어 (Host `make` Commands)
-호스트 PC 터미널에서 구동 및 제어하는 `make` 타겟 목록입니다.
+호스트 PC 터미널에서 구동 및 제어하는 `make` 타겟 목록입니다. 전체 목록은 `make help`.
 
 | 명령 | 기능 및 설명 |
 | :--- | :--- |
-| **`make setup`** | **초기 세팅**: `.env` 생성, X11 인증 및 탭 자동완성 영구 자동 등록 |
+| **`make setup`** | **초기 세팅**: `.env` 생성, X11 인증, 탭 자동완성 등록, VS Code 연결 설정(`ide-config`) |
+| **`make adopt NAME=…`** | **정체성**: 이 체크아웃을 내 프로젝트로 — `pyproject.toml`·`.env`의 이름을 한 번에 ([시작하기](docs/GETTING_STARTED.md)) |
 | **`make check`** | **사전 점검**: Docker/Compose v2/BuildKit, `.env` 키 누락, WSL2, NVIDIA 런타임 설정 여부를 해결 명령과 함께 진단 |
-| **`make build [ENV=...]`** | **이미지 빌드**: ROS 1/2 (`ENV=ros`) 또는 C++/Python (`ENV=dev`) 도커 이미지 빌드 |
+| **`make build [ENV=...]`** | **이미지 빌드**: ROS (`ENV=ros`) 또는 C++/Python (`ENV=dev`) 도커 이미지 빌드 |
 | **`make start [ENV=...]`** | **컨테이너 기동**: 백그라운드 개발 컨테이너 시작 |
 | **`make shell / term`** | **컨테이너 진입**: 대화형 셸 진입 / 새 터미널 창 오픈 (`term`은 opt-in — `dependencies/apt.txt`의 `terminator # gui` 주석 해제) |
+| **`make exec CMD='…'`** | **명령 실행**: 컨테이너 안에서 DevKit 환경 그대로 한 명령 실행 (자동화의 기본 경로) |
 | **`make gpus`** | **호스트 GPU 모니터링**: 호스트 PC의 NVIDIA GPU / iGPU 실시간 VRAM 및 가속 상태 조회 |
 | **`make status`** | **진단 리포트**: 프로젝트 설정, 감지된 호스트 배선, 실행 중 컨테이너 (`check` 를 먼저 수행) |
 | **`make test / lint`** | **품질 루프**: 프로젝트 테스트 실행 / 스타일·린트 검사 (`FIX=1`로 자동 수정). 러너는 워크스페이스 형태(ROS·CMake·순수 Python)에서 자동 결정 |
-| **`make verify`** | **무결성 검증**: 문법·Makefile·호스트 감지·APT 태그 필터·셸 환경 동등성·GPG 핀·정리 의미론·SIF 파이프라인·IDE 설정·보안 기본값 등 **58개 계약**을 검증 |
+| **`make verify`** | **무결성 검증**: 문법·Makefile·호스트 감지·APT 태그 필터·셸 환경 동등성·GPG 핀·정리 의미론·SIF 파이프라인·IDE 설정·보안 기본값 등 **58개 계약**을 실행으로 검증 |
 | **`make bake-prod`** | **Apptainer SIF 추출**: 원격 HPC/SLURM 배포용 단일 바이너리 이미지 생성 |
 | **`make run-sif`** | **HPC / SLURM 실행**: SIF 이미지를 로컬에서 구동하거나 원격 SLURM 클러스터로 배치 투고 |
-| **`make stop / down`** | **컨테이너 중지**: 컨테이너 일시 중지 또는 컨테이너 및 볼륨 완전 삭제 |
-| **`make clean-all`** | **환경 초기화**: 빌드 산출물 및 도커 캐시 정밀 클리닝 |
+| **`make stop / down`** | **컨테이너 중지**: 선택한 `ENV`의 컨테이너 중지 / 제거 |
+| **`make clean / clean-all`** | **정리**: 빌드 산출물 정리 / 컨테이너·볼륨·이미지·캐시까지 완전 초기화 ([정리와 초기화](docs/DEVELOPMENT.md#-정리와-초기화-cleanup)) |
 
 ### 🐳 2. 컨테이너 내부 숏컷 (In-Container Shortcuts)
-개발 컨테이너 셸(`make shell`) 진입 후 내부에서 사용하는 단축 명령어입니다.
+개발 컨테이너 셸(`make shell`) 진입 후 내부에서 사용하는 단축 명령어입니다. 전체 목록은 `h`.
 
 | 명령 | 기능 및 설명 |
 | :--- | :--- |
@@ -153,12 +112,11 @@ mksync && git add src/uv.lock && git commit -m "chore: pin python dependencies"
 | **`gpus` / `gpu <mode>`** | **렌더링 스택 리포트**: OpenGL/GLX·EGL·Vulkan·D3D12 렌더러와 Mesa 버전, 로더 경로, 활성 환경변수 조회 / 가속 모드 전환 |
 | **`hwcheck`** | **6섹션 종합 스캔**: 시스템·네트워크·GPU·디스플레이·**신원(uid/gid)과 마운트 권한**·툴체인 |
 | **`mkenv` / `activate`** | **Python venv**: `install/.venv` 가상환경 생성 또는 활성화 |
-| **`uvs` / `uvr` / `uvp`** | **Python 패키지 관리**: `uv` 기반 초고속 패키지 동기화 / 실행 / 설치 |
+| **`uvs` / `uvr` / `uvp`** | **Python 패키지 관리**: `uv` 기반 패키지 동기화 / 실행 / 설치 |
 | **`uvpython` / `syspython`**| **Python 인터프리터**: venv 파이썬 또는 우분투 시스템 파이썬 구분 실행 |
 | **`check_deps`** | **런타임 검사**: `install/` 내 누락된 `*.so` 공유 라이브러리를 `ldd`로 탐지 |
 | **`mtest` / `mlint`** | **품질 루프**: `colcon test`·`ctest`·`pytest` 중 프로젝트에 맞는 러너 실행 / `ruff`+`clang-format` 규칙 검사 (`mlint --fix`로 수정). 규칙은 `.editorconfig`가 SSOT |
-| **`mclean`** | **산출물 정리**: `build/`, `install/`, `log/` 산출물 디렉토리만 안전하게 삭제 |
-
+| **`mclean`** | **산출물 정리**: `build/`, `devel/`, `log/`, `install/` 산출물만 비움 (venv 는 `--all`에서만) |
 
 ---
 
@@ -211,38 +169,6 @@ mksync && git add src/uv.lock && git commit -m "chore: pin python dependencies"
 
 ---
 
-## 🧹 용량 누수 방지 &amp; 볼륨 정리 (Disk Cleanup)
-
-- **`make clean`**: `build/`, `log/`, `install/`의 빌드 산출물과 워크스페이스 편의 심볼릭 링크
-  (`compile_commands.json`, `.venv`, `colcon.meta` — 컨테이너 진입 시 자동 재생성) 정리.
-  **`install/.venv`(파이썬 가상환경)는 보존**합니다 —
-  재생성에 `mksync` 전체가 필요하기 때문입니다. 가상환경까지 지우려면 `make clean KEEP_VENV=0` (확인 프롬프트 있음).
-  기본 구성에서 `build/install/log`는 **named 볼륨**이라 컨테이너 쪽 산출물은 `make clean-all`이 제거합니다.
-- **`make clean-all`**: 컨테이너 · 프로젝트 전용 Named Volume · **compose가 빌드한 이 프로젝트 이미지**까지 제거하여 완전 초기화
-  (`--rmi local`이라 다른 프로젝트 이미지는 건드리지 않음). 확인 프롬프트 있음.
-  **`make clean-all KEEP_VENV=1`** 은 가상환경이 담긴 `install` 볼륨만 남겨, 재빌드 후 접속하면 `mksync` 없이 바로 사용할 수 있습니다.
-- **`make stop` / `make down`**: `ENV`에 해당하는 서비스만 대상으로 합니다 (`ENV=ros` 실행 시 `basic-*` 컨테이너는 건드리지 않음).
-- **`make docker-clean`**: **고아 이미지, BuildKit 빌드 캐시 및 미사용 볼륨 전체 삭제** (수십 GB 용량 복구).
-
-## 🧬 템플릿 버전 (Template Version)
-
-`VERSION`이 이 템플릿의 리비전입니다. 커밋되어 **파일과 함께 이동**하므로, GitHub 템플릿
-버튼으로 시작해 DevKit 히스토리가 없는 프로젝트도 자기 출발점을 압니다. **무엇이 바뀌었는지는
-git 이 보관합니다** — `v*` 주석 태그와 태그 사이의 `git log`이며, 손으로 동기화하는 별도
-변경 기록 파일은 두지 않습니다.
-
-```bash
-make status              # DevKit Version: <VERSION> (커밋 해시)
-```
-
-버전을 올리는 일은 `VERSION` 한 줄을 고치고 `v*` 태그를 붙이는 것이며, `make verify`가
-형식과 일관성을 확인합니다.
-
-MAJOR 상승은 "파생 프로젝트가 무언가 고쳐야 한다"는 뜻입니다. 상류 갱신을 선별해 가져오는
-절차는 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#-템플릿-버전과-상류-갱신-가져오기-template-lifecycle)에 있습니다.
-
----
-
 ## ✅ 지원 범위 (Support Matrix)
 
 무엇이 **실행으로 확인**되었고 무엇이 아직 아닌지를 구분합니다. 근거는 세 가지입니다 — `make verify`(58개 계약),
@@ -251,7 +177,7 @@ MAJOR 상승은 "파생 프로젝트가 무언가 고쳐야 한다"는 뜻입니
 > **참조 호스트**: WSL2 (커널 6.18, Ubuntu 24.04) · NVIDIA RTX 4060 Ti · Docker + nvidia-container-toolkit · X11 `:0`.
 > 여기서 `make build/start/exec ENV=ros`(auto → **nvidia** 프로필), ROS 2 humble `rclpy` import 와 205개 패키지,
 > 컨테이너 안 `nvidia-smi` 의 GPU 인식, `glxinfo` 가 보고한 `D3D12 (NVIDIA GeForce RTX 4060 Ti)`(llvmpipe 폴백 아님),
-> `xdpyinfo` X11 연결, README 퀵스타트의 Python·C++ 예제와 pytest, 그리고 prod SIF 굽기·실행·작업 기록까지 실제로 통과했습니다.
+> `xdpyinfo` X11 연결, 스타터 예제(Python·C++)와 pytest, 그리고 prod SIF 굽기·실행·작업 기록까지 실제로 통과했습니다.
 >
 > SLURM 은 컨테이너에 **클러스터**(slurmctld + slurmd + munge)를 세워 확인했습니다 — `make run-sif SIF_MODE=slurm`
 > 의 `sbatch` 플래그 수용, `%x_%j` 로그 경로, 할당 안에서의 `srun` 사용, 실제 부여된 자원(`partition`/`cpus_per_task`/`mem`)
@@ -266,12 +192,14 @@ MAJOR 상승은 "파생 프로젝트가 무언가 고쳐야 한다"는 뜻입니
 > **근거의 세 등급**을 구분합니다 — `CI(실행됨)` 은 GitHub Actions 에서 실제로 통과한 잡,
 > `참조 호스트` 는 위 머신에서의 실측, `정의만, 미실행` 은 워크플로우에 잡은 있으나 아직
 > 한 번도 트리거되지 않은 것입니다 — 무거운 잡(runtime-smoke, prod-artifact, sif-artifact, arm64)은
-> cron·수동 전용이며, 위 표의 상태는 `workflow_dispatch` 로 실제 실행해 확인한 결과입니다. 한 대의 호스트와 한 종류의
-> CI 러너 결과이므로 네이티브 Linux 호스트 감지·macOS 로 일반화하지 않습니다.
+> cron·수동 전용이며, 위 표의 상태는 `workflow_dispatch` 로 실제 실행해 확인한 결과입니다. CI 러너는 Ubuntu 와 macOS
+> 두 종류이며 WSL2 러너는 없으므로, WSL2 행은 참조 호스트 실측만이 근거입니다
+> ([CI 구성](docs/DEVELOPMENT.md#-ci-github-actions)).
 
 | 조합 | 상태 | 근거 |
 | :--- | :--- | :--- |
 | 이미지 스테이지 빌드 (`base`, `build-core`) | ✅ 실행 검증 | CI(실행됨) `images.yml` image-stages |
+| Dockerfile apt 목록이 20.04 · 22.04 · 24.04 에서 해석 | ✅ 실행 검증 | CI(실행됨) `images.yml` apt-lists-resolve |
 | ROS 저장소·GPG (humble, 라이브 및 스냅샷 키; noetic) | ✅ 실행 검증 | CI(실행됨) `images.yml` apt-key-paths |
 | **ROS 1 noetic** (레거시 티어 — EOL 2025-05, 동작은 유지·검증되나 새 기능은 ROS 2 에만) | ✅ 실행 검증 — 계약(`build-entrypoints`·`workspace-overlay`)과 apt 키 경로 | CI(실행됨) · `make verify` |
 | 계약 스위트 58개 · Dockerfile 린트 | ✅ 실행 검증 | CI(실행됨) `verify.yml` contracts |
@@ -279,7 +207,7 @@ MAJOR 상승은 "파생 프로젝트가 무언가 고쳐야 한다"는 뜻입니
 | WSL2 호스트: 감지 · 빌드 · 실행 (ROS 2) | ✅ 실행 검증 | 참조 호스트 |
 | NVIDIA GPU 패스스루 (`nvidia-smi`, `libcuda`) | ✅ 실행 검증 — **WSL2 경로만**. 네이티브 Linux 는 장치 노드가 달라(`/dev/nvidia*`) 별개 | 참조 호스트 |
 | GUI · GL 가속 (X11, WSLg/D3D12) | ✅ 실행 검증 — **WSL2 경로만** | 참조 호스트 |
-| 프로덕션 런타임 이미지 (non-root, venv) | ✅ 실행 검증 | CI(실행됨) `images.yml` prod-artifact · 참조 호스트 |
+| 프로덕션 런타임 이미지 (non-root, venv) — dev · ros | ✅ 실행 검증 | CI(실행됨) `images.yml` prod-artifact · 참조 호스트 |
 | SIF 변환 · 실행 · 작업 기록 | ✅ 실행 검증 | CI(실행됨) `images.yml` sif-artifact · 참조 호스트 |
 | SLURM 제출 · 실행 · 종료 상태 기록 | ✅ 실행 검증 — 컨테이너 클러스터. **컨테이너 런타임만 스텁** | 참조 호스트 |
 | **다중 노드 SLURM** (`--nodes=2`, 노드별 태스크 배치) | ✅ 실행 검증 — 2노드 컨테이너 클러스터 | 참조 호스트 |
@@ -296,26 +224,20 @@ MAJOR 상승은 "파생 프로젝트가 무언가 고쳐야 한다"는 뜻입니
 
 ---
 
-## 📖 상세 매뉴얼 및 문서 안내
+## 📖 문서 안내
 
 문서는 두 곳에만 있습니다 — **`docs/`** 는 DevKit 을 *쓰는* 법, **`.github/`** 는 DevKit 에
-*기여하는* 법입니다. 루트에는 `README.md` 와 `LICENSE` 만 둡니다.
+*기여하는* 법입니다. 루트에는 `README.md` 와 `LICENSE` 만 둡니다. 각 주제는 한 문서만이 소유하고
+나머지는 그곳으로 링크합니다.
 
-- 📘 [**개발자 워크플로우 &amp; 숏컷 상세 가이드 (docs/DEVELOPMENT.md)**](docs/DEVELOPMENT.md)
-  - `mksync` 가동 순서, 품질 루프(`mtest`/`mlint`), 셸 환경의 단일 정의, 템플릿 버전과 상류 갱신.
-- 📦 [**의존성 관리 (docs/DEPENDENCIES.md)**](docs/DEPENDENCIES.md)
-  - `pyproject.toml`과 `uv`, `dependencies.repos` 오버레이, `apt*.txt` 태그 필터.
-- 🚀 [**배포: SIF · 소스 보호 · 재현성 · 보안 (docs/DEPLOY.md)**](docs/DEPLOY.md)
-  - `bake-prod` 산출물 구조, 소스 비유출 옵션, 고정 가능/불가 계층과 빌드 매니페스트.
-- 🏥 [**진단 (docs/DIAGNOSTICS.md)**](docs/DIAGNOSTICS.md)
-  - `make check`/`status`, `hwcheck` 6섹션 스캔, `gpus` 렌더링 스택 리포트.
-  - 재현한 문제, 필요한 최소 수정, 검증 조건 및 정리 대상.
-- 🛰️ [**원격 서버 &amp; SLURM 클러스터 배포 매뉴얼 (docs/SLURM.md)**](docs/SLURM.md)
-  - Apptainer SIF 빌드 및 원격 서버 스토리지 분리 구조, `sbatch` 배치 작업 제출, 실시간 로그 모니터링.
-- 🤝 [**기여 가이드 (.github/CONTRIBUTING.md)**](.github/CONTRIBUTING.md)
-  - 커밋·주석 규약, 계약을 추가하는 방법(뮤테이션 테스트), 표면을 늘릴 때 함께 갱신할 것.
-- 🤖 [**LLM 코딩 에이전트 지침 (.github/GEMINI.md)**](.github/GEMINI.md)
-  - 이 저장소에서 LLM 에이전트에게 요구하는 작업 규칙(가정 명시, 최소 구현, 국소 변경, 검증 가능한 목표).
-- 🐞 [**디버깅 &amp; 트러블슈팅 가이드 (docs/DEBUGGING.md)**](docs/DEBUGGING.md)
-  - VSCode GDB/debugpy 디버거 세팅, X11/Wayland GUI 권한 문제 해결, `check_deps` 의존성 검사법.
-
+| 문서 | 소유하는 주제 |
+| :--- | :--- |
+| 🧭 [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) | 템플릿에서 **내 프로젝트** 만들기 — 누가 무엇을 소유하나, `make adopt`, 팀 기본값, lock 커밋, `project.yml`, 스타터 예제 |
+| 📘 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 일상 워크플로 — SSOT 라이브러리, `mksync`, 품질 루프, 셸 환경, 정리와 초기화, 템플릿 버전과 상류 갱신, CI 구성, 레거시·이전 이름 |
+| 📦 [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) | 호스트 전제와 의존성 세 레이어 — `pyproject.toml`/`uv`, `dependencies.repos`/overlay, `apt*.txt` 태그 필터, 실패 정책 |
+| 🚀 [docs/DEPLOY.md](docs/DEPLOY.md) | 배포물 — SIF 굽기 옵션, 소스 비유출, 재현성 계층과 빌드 매니페스트, 보안 제약 |
+| 🛰️ [docs/SLURM.md](docs/SLURM.md) | 원격 서버·SLURM 운영 — 저장소/이미지 분리 구조, 제출·모니터링, 환경변수 표, 트러블슈팅 |
+| 🏥 [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) | 진단 — `make check`/`status`, `hwcheck` 6섹션, `gpus` 렌더링 스택 |
+| 🐞 [docs/DEBUGGING.md](docs/DEBUGGING.md) | VS Code — Dev Containers 연결과 `ide-config`, GDB/debugpy 프로필, ROS 런치 디버깅, 태스크 |
+| 🤝 [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) | 키트에 기여 — 커밋·주석 규약, 출력 규약, 계약 추가(뮤테이션 테스트), 표면을 늘릴 때 |
+| 🤖 [.github/GEMINI.md](.github/GEMINI.md) | LLM 코딩 에이전트 지침 — 가정 명시, 최소 구현, 국소 변경, 검증 가능한 목표 |

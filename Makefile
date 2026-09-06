@@ -318,6 +318,7 @@ adopt:
 	@echo -e "  $(INFO)   README.md   this front page still describes DevKit"
 	@echo -e "  $(INFO)   LICENSE     MIT-0 lets you relicense (docs/DEVELOPMENT.md)"
 	@echo -e "  $(INFO) The kit's own guides stay in docs/ — keep or delete them."
+	@echo -e "  $(INFO) The rest of the checklist: docs/GETTING_STARTED.md"
 	@echo -e "  $(INFO) Review with: git diff"
 
 ## @target status : Diagnose project and container status

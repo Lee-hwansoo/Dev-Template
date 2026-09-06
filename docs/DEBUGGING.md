@@ -35,11 +35,15 @@
 ## 🔌 프로세스 연결 방법
 
 ### 방법 A: Dev Containers 연결 (권장)
-VSCode 프로세스 자체를 컨테이너 내부로 직접 연결합니다.
-1. 개발 컨테이너 시작: `make start ENV=ros`
-2. **Ctrl+Shift+P** 입력 ➔ `Dev Containers: Attach to Running Container...` 선택
-3. `DevKit` 컨테이너 선택
+VS Code 프로세스 자체를 컨테이너 안에서 돌립니다. `.devcontainer/devcontainer.json` 이 `make start` 가 쓰는 것과
+같은 compose 서비스를 가리키므로 마운트·환경이 CLI 와 동일합니다.
+1. `make setup`(또는 설정 변경 후 `make ide-config`) — 이 호스트가 해석한 GPU 프로필과 `CONTAINER_USER` 를
+   `devcontainer.json` 의 `service`/`remoteUser` 에 써 넣습니다. 추적 파일이지만 호스트마다 다른 값이니 **그 diff 는 커밋하지 마세요**.
+   docker compose 가 없는 호스트(SLURM 제출 노드)에서는 건너뜁니다.
+2. 개발 컨테이너 시작: `make start ENV=ros`
+3. **Ctrl+Shift+P** ➔ `Dev Containers: Reopen in Container` (이미 떠 있는 컨테이너에 붙습니다).
 4. **특징**: 컨테이너 네이티브 성능, 자동 IntelliSense 헤더 탐색, 셸 터미널 완전 통합.
+   `ENV`, `GPU_MODE`, 컨테이너 사용자, 마운트를 바꿨다면 `make ide-config` 를 다시 실행하고 컨테이너를 다시 여세요.
 
 ### 방법 B: 호스트 사이드 개발
 호스트 OS에서 코드 편집기를 구동하면서 컨테이너와 연동합니다.

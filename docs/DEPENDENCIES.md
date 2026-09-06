@@ -77,6 +77,14 @@ dev = [ "ruff>=0.6", "pytest>=8" ]   # 정확한 버전은 파생 프로젝트�
   툴체인입니다 — GPU 없는 빌더에서도 CUDA 이미지를 만들 수 있어야 하기 때문입니다. 감지된 GPU 아키텍처만
   컴파일합니다(`-DCUDA_ARCH_BIN=<compute_cap>+PTX`). 값만 확인하려면 `gpu opencv_args`.
 
+#### 동기화 실패 정책
+
+`sync_deps` / `setup_sync_deps.sh`(그리고 그것을 부르는 `mksync`·첫 실행 동기화·prod 빌더)는 vcs import·pull·submodule·rosdep 이
+실패하면 **즉시 중단**합니다 — 의존성이 빠진 워크스페이스나 배포물이 조용히 만들어지는 것을 막기 위해서입니다.
+오프라인·사설 저장소 등으로 일부만 받고 진행해야 할 때만 `DEVKIT_VCS_ALLOW_FAILURE=1`(vcs 계열) 또는
+`DEVKIT_ROSDEP_ALLOW_FAILURE=1`(rosdep)로 fail-open 을 명시적으로 켭니다(`.env` 또는 `make start … DEVKIT_VCS_ALLOW_FAILURE=1`).
+릴리스는 `DEVKIT_REQUIRE_PINNED=1`(prod bake 기본)로 `.repos` 의 모든 항목이 40자 커밋 해시인지도 검사합니다 — [DEPLOY.md 재현성](DEPLOY.md#-재현성-reproducibility--현재-보장-범위).
+
 ### 3. 시스템 패키지 태깅 규칙 (`dependencies/apt.txt`, `dependencies/apt_ros.txt`)
 
 프로덕션 이미지 용량을 최소화하기 위해 패키지 줄 끝 주석에 태그를 지정합니다. 태그 해석은
