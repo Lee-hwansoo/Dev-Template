@@ -64,7 +64,13 @@ safe_link() {
     # Remove existing entry (symlink or regular file) and re-create
     # Use -f instead of -rf: the target is always a symlink or file, never a directory we own
     rm -f "$dest"
-    ln -sf "$src" "$dest"
+    # Link RELATIVE to the workspace when both ends live in it. The workspace is
+    # bind-mounted, so an absolute container path ("/workspace/config/…") is
+    # written into the host tree too, where it dangles — one `make start` then
+    # broke `make verify` on the host.
+    local target="$src"
+    case "$src" in "${WS_ROOT}/"*) case "$dest" in "${WS_ROOT}/"*) target="${src#"${WS_ROOT}/"}" ;; esac ;; esac
+    ln -sf "$target" "$dest"
 
     if [ "$VERBOSE" = true ]; then
         log_ok "$desc synchronized."

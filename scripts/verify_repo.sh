@@ -36,6 +36,19 @@ log_ok()  { echo -e "  \033[0;32m[OK]\033[0m $*"; }
 log_err() { echo -e "  \033[0;31m[ERROR]\033[0m $*" >&2; FAILED=$((FAILED+1)); }
 log_info(){ echo -e "  \033[0;34m[INFO]\033[0m $*"; }
 
+# probe_dir [name…] — a scratch tree for one check, with symlinks to the named
+# top-level directories so a script under test resolves WS_ROOT there and never
+# writes into the repo. Every check that needs a workspace of its own builds it
+# here, so the cleanup rule lives in one place.
+probe_dir() {
+    local dir name
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+    for name in "$@"; do ln -s "${ROOT_DIR}/${name}" "${dir}/${name}"; done
+    printf '%s' "$dir"
+}
+
+log_info "Verifying DevKit repository structure, shell syntax, and contracts..."
+
 log_info "Verifying DevKit repository structure, shell syntax, and contracts..."
 
 # =============================================================================
@@ -74,13 +87,48 @@ for root, dirs, files in os.walk('.'):
                and d not in ('build', 'install', 'log', 'logs', 'thirdparty')]
     for f in files:
         p = os.path.join(root, f)
-        with open(p, 'rb') as fh:
-            if fh.read(3) == b'\xef\xbb\xbf':
-                bad.append(p[2:])
+        # Skip links: a dangling one (a bind-mounted workspace collects them)
+        # made this walk abort with a traceback instead of reporting anything.
+        if os.path.islink(p):
+            continue
+        try:
+            with open(p, 'rb') as fh:
+                head = fh.read(3)
+        except OSError:
+            continue
+        if head == b'\xef\xbb\xbf':
+            bad.append(p[2:])
 print(' '.join(sorted(bad)))
 PYBOM
 )"
 [ -z "$bom_files" ] || log_err "file(s) start with a UTF-8 BOM: ${bom_files}"
+
+# The workspace is BIND-MOUNTED, so a helper link written with an absolute
+# container path is written into the host tree too, where it dangles. One
+# `make start` then left a broken colcon.meta and this very scan aborted with a
+# traceback instead of reporting anything.
+link_probe="$(probe_dir)"
+mkdir -p "$link_probe/config" "$link_probe/scripts"
+cp scripts/util_setup_links.sh "$link_probe/scripts/"
+ln -s "${ROOT_DIR}/config/util_paths.sh" "$link_probe/config/util_paths.sh"
+ln -s "${ROOT_DIR}/config/util_logging.sh" "$link_probe/config/util_logging.sh" 2>/dev/null || true
+: > "$link_probe/config/colcon.meta"
+( WORKSPACE_PATH="$link_probe" bash "$link_probe/scripts/util_setup_links.sh" ) >/dev/null 2>&1 || true
+link_target="$(readlink "$link_probe/colcon.meta" 2>/dev/null || echo '<none>')"
+case "$link_target" in
+    /*) log_err "util_setup_links.sh writes an ABSOLUTE link (${link_target}); across a bind mount it dangles on the other side." ;;
+    '<none>') log_err "util_setup_links.sh created no colcon.meta link; cbuild --meta would find nothing." ;;
+esac
+# …and a dangling link must not stop the scan above from reporting. The REAL
+# scanner, extracted and run against one: it used to abort with a traceback and
+# the whole suite stopped there.
+ln -sfn /devkit-nonexistent-target "$link_probe/broken.link"
+awk "/<<.PYBOM.\$/{f=1;next} /^PYBOM\$/{f=0} f" scripts/verify_repo.sh > "$link_probe/bom.py"
+bom_rc=0
+( cd "$link_probe" && python3 bom.py ) >/dev/null 2>&1 || bom_rc=$?
+[ "$bom_rc" -eq 0 ] \
+    || log_err "the BOM scan aborts on a dangling symlink (exit ${bom_rc}); a bind-mounted workspace collects them and the suite stops before reporting anything."
+rm -rf "$link_probe"
 
 [ "$FAILED" -eq 0 ] && log_ok "All required repository files and permissions present."
 
