@@ -574,7 +574,7 @@ gpu_test() {
 torch_check() {
     local py="${WS_VENV_PY:-}"
     [ -x "$py" ] || py=python3
-    "$py" - <<'PY' 2>/dev/null || log_warn "PyTorch not installed (run: uvs, or set UV_EXTRA=gpu)."
+    "$py" - <<'PY' 2>/dev/null || log_warn "PyTorch not installed — add it to src/pyproject.toml (the commented cpu/gpu example) and run uvs."
 import torch
 print(f"    torch      {torch.__version__}")
 print(f"    CUDA build {torch.version.cuda or 'cpu-only'}")

@@ -23,25 +23,29 @@ dev = [
     "pytest>=8; python_version >= '3.9'",
 ]
 
-[project.optional-dependencies]
-cpu = [
-    "torch==2.11.0; python_version >= '3.10'",
-    "torchvision; python_version >= '3.10'",
-]
-gpu = [
-    "torch==2.11.0; python_version >= '3.10'",
-    "torchvision; python_version >= '3.10'",
-]
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
+# Example: a cpu/gpu split for PyTorch, selected with UV_EXTRA=cpu|gpu (.env).
+# Kept as a comment so the template's lock stays small and no fork pays for a
+# torch resolution it did not ask for — copy it in when your project needs it.
+# [project.optional-dependencies]
+# cpu = ["torch==2.11.0; python_version >= '3.10'", "torchvision; python_version >= '3.10'"]
+# gpu = ["torch==2.11.0; python_version >= '3.10'", "torchvision; python_version >= '3.10'"]
+#
+# [[tool.uv.index]]
+# name = "pytorch-cpu"
+# url = "https://download.pytorch.org/whl/cpu"
+# explicit = true
+#
+# [[tool.uv.index]]
+# name = "pytorch-cu128"
+# url = "https://download.pytorch.org/whl/cu128"
+# explicit = true
+#
+# [tool.uv]
+# conflicts = [[{ extra = "cpu" }, { extra = "gpu" }]]
+#
+# [tool.uv.sources]
+# torch = [{ index = "pytorch-cpu", extra = "cpu" }, { index = "pytorch-cu128", extra = "gpu" }]
+# torchvision = [{ index = "pytorch-cpu", extra = "cpu" }, { index = "pytorch-cu128", extra = "gpu" }]
 
 [tool.ruff]
 # .editorconfig is the style SSOT (python: max_line_length = 100) and
@@ -63,16 +67,3 @@ select = ["E", "F", "I"]
 # a [build-system] here makes `uv sync` try to build a wheel from it and fail,
 # so the policy is declared rather than left to uv's inference.
 package = false
-conflicts = [
-    [ { extra = "cpu" }, { extra = "gpu" } ]
-]
-
-[tool.uv.sources]
-torch = [
-    { index = "pytorch-cpu", extra = "cpu" },
-    { index = "pytorch-cu128", extra = "gpu" },
-]
-torchvision = [
-    { index = "pytorch-cpu", extra = "cpu" },
-    { index = "pytorch-cu128", extra = "gpu" },
-]

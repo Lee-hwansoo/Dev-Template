@@ -34,6 +34,8 @@
 
 ### 1. Python 레이어 (`src/pyproject.toml` & `uv`)
 `pyproject.toml`을 통해 CPU/GPU 환경에 따른 파이썬 패키지(예: PyTorch 등) 분기 및 인덱스 설정을 관리합니다.
+아래 블록은 템플릿 `pyproject.toml`에 **주석으로** 들어 있습니다 — 템플릿의 lock 을 작게 유지하고, 필요 없는
+프로젝트가 torch 해석 비용을 내지 않게 하기 위해서입니다. 필요하면 주석을 풀고 `mksync`로 lock 을 갱신하세요.
 
 ```toml
 [project.optional-dependencies]

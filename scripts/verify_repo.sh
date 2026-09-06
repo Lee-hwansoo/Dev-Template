@@ -2217,12 +2217,18 @@ PYINDEX
 )"
 [ "$uv_index_ok" = "ok" ] \
     || { log_err "src/pyproject.toml: ${uv_index_ok}."; adopt_errors=1; }
+elif d.get('project', {}).get('optional-dependencies') or uv.get('index') or uv.get('sources'):
+    print("the template declares optional-dependencies / uv indexes for real; the torch split is a commented example so no fork pays for a resolution it did not ask for")
+elif not re.search(r'(?m)^# \[project\.optional-dependencies\]', pathlib.Path('src/pyproject.toml').read_text()):
+    print("the commented optional-dependencies example is gone; docs/DEPENDENCIES.md still points at it")
 # The description is user text. Spliced straight into a TOML basic string, a
 # quote produced description = "Robot "A"" — and adopt reported success.
 adopt_probe="$(probe_dir scripts config docker dependencies)"
 mkdir -p "$adopt_probe/src"
 cp Makefile "${ROOT_DIR}/.env.example" "$adopt_probe/"
 cp "${ROOT_DIR}/src/pyproject.toml" "$adopt_probe/src/"
+grep -q 'name = "torch"' src/uv.lock 2>/dev/null \
+    && { log_err "src/uv.lock still resolves torch; the lock was not regenerated after the extras became an example."; adopt_errors=1; }
 cp "${ROOT_DIR}/.env.example" "$adopt_probe/.env"
 adopt_desc_case() {   # adopt_desc_case <description>
     cp "${ROOT_DIR}/src/pyproject.toml" "$adopt_probe/src/pyproject.toml"
