@@ -190,12 +190,12 @@ define EXEC_USER_FLAG
 	fi
 endef
 
-# HINT_ROOT_OWNED: remediation for a path Docker re-created as root.
-# $(1) = host path. Both `clean` and `clean-cache` need the same words.
+# HINT_ROOT_OWNED: remediation for paths Docker re-created as root.
+# $(1) = host paths. `clean` and `clean-cache` need the same words.
 define HINT_ROOT_OWNED
 	echo -e "  $(INFO) Docker creates a missing mount source as root at container start."; \
 	echo -e "  $(INFO) Remove it from inside a container (no sudo needed):"; \
-	echo -e "  $(INFO)   docker run --rm -v \"$(HOST_WORKSPACE_PATH):/w\" alpine rm -rf /w/$(1)"
+	echo -e "  $(INFO)   docker run --rm -v \"$(HOST_WORKSPACE_PATH):/w\" alpine rm -rf $(addprefix /w/,$(1))"
 endef
 
 # CONFIRM: cleanup requires interactive consent or an exact true FORCE/CI value.
@@ -616,8 +616,12 @@ down:
 ## @target clean : Delete build and install output directories
 clean:
 	@# devel/ is the ROS 1 (catkin_make) counterpart of install/: it lives next to
-	@# build/ on the workspace root and goes stale exactly the same way.
-	@rm -rf build devel log
+	@# build/ on the workspace root and goes stale exactly the same way. With a
+	@# bind-mounted build/ (ROS_BUILD_VOL=./build) Docker created it as root,
+	@# and a raw rm failure here gave no way out while install/ got a hint.
+	@rm -rf build devel log 2>/dev/null || { \
+		echo -e "  $(WARN) build/, devel/ or log/ holds root-owned entries and cannot be removed from the host."; \
+		$(call HINT_ROOT_OWNED,build devel log); }
 	@# Workspace convenience links point INTO build/ and install/ using the
 	@# container path (/workspace/...), so they are dangling on the host and
 	@# certainly dead once the targets are gone. util_setup_links.sh recreates

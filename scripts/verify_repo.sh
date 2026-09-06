@@ -1591,6 +1591,10 @@ stray_attach="$(grep -nE "docker ps --filter \"label=com\.docker\.compose\.proje
     || log_err "attach targets pick the first project container instead of the ENV's: $(cut -d: -f1,2 <<< "$stray_attach" | tr '\n' ' ')"
 # Per-recipe, not a global count: a helper that stopped being called would keep
 # the count up while the target it was meant to guard attached to anything.
+# A root-owned build/ (Docker creates a bind-mount source as root) must get the
+# same way out install/ gets; a raw rm failure stopped make with no hint.
+awk '/rm -rf build devel log/ {seen=1} seen && /HINT_ROOT_OWNED,build/ {ok=1} END {exit ok ? 0 : 1}' Makefile \
+    || log_err "'make clean' fails on a root-owned build/ without the HINT_ROOT_OWNED remediation install/ gets."
 for attach_target in shell exec term stats logs top; do
     awk -v t="$attach_target" '$0 ~ "^"t":" {inside=1; next} inside && /^[^\t]/ {inside=0} inside' Makefile \
         | grep -qE '\$\((FIND|REQUIRE)_CONTAINER\)' \
