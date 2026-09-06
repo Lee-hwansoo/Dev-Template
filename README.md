@@ -108,13 +108,15 @@ DevKit은 **골격**입니다. 복제한 뒤 아래 세 가지는 파생 프로�
 
 ```bash
 make setup          # .env 생성 (COMPOSE_PROJECT_NAME 이 사용자명으로 스코프됨)
-mksync              # 컨테이너 안에서 1회 — src/uv.lock 이 생성됩니다
-git add src/uv.lock && git commit -m "chore: pin python dependencies"
+# 의존성을 바꿨다면 컨테이너 안에서 1회 — src/uv.lock 이 갱신됩니다
+mksync && git add src/uv.lock && git commit -m "chore: pin python dependencies"
 ```
 
-> DevKit 저장소 자체는 `src/uv.lock`을 배포하지 않습니다 — 템플릿이 특정 시점의 해석 결과를
-> 담으면 모든 fork가 그 스냅샷을 물려받습니다. 완전한 재현이 필요하면 `BASE_IMAGE` 다이제스트와
-> `APT_SNAPSHOT_DATE`까지 고정하세요 ([docs/DEPLOY.md](docs/DEPLOY.md#-재현성-reproducibility--현재-보장-범위)).
+> `src/uv.lock`은 **커밋되어 함께 배포**됩니다 — 프로덕션 빌드가 `uv sync --locked`로 돌기 때문에
+> lock 없이는 `make bake-prod`가 아예 실패합니다. `src/pyproject.toml`을 고치면 lock 이 낡았다고
+> 빌드가 멈추므로, `mksync`로 갱신해 함께 커밋하세요. 완전한 재현이 필요하면 `BASE_IMAGE`
+> 다이제스트와 `APT_SNAPSHOT_DATE`·`ROS_SNAPSHOT_DATE`까지 고정하세요
+> ([docs/DEPLOY.md](docs/DEPLOY.md#-재현성-reproducibility--현재-보장-범위)).
 
 ---
 
@@ -133,7 +135,7 @@ git add src/uv.lock && git commit -m "chore: pin python dependencies"
 | **`make gpus`** | **호스트 GPU 모니터링**: 호스트 PC의 NVIDIA GPU / iGPU 실시간 VRAM 및 가속 상태 조회 |
 | **`make status / check`** | **진단 리포트**: 프로젝트 설정, GPU/GUI 모드, 렌더링 디바이스 종합 점검 |
 | **`make test / lint`** | **품질 루프**: 프로젝트 테스트 실행 / 스타일·린트 검사 (`FIX=1`로 자동 수정). 러너는 워크스페이스 형태(ROS·CMake·순수 Python)에서 자동 결정 |
-| **`make verify`** | **무결성 검증**: 문법·Makefile·호스트 감지·APT 태그 필터·셸 환경 동등성·GPG 핀·정리 의미론·SIF 파이프라인·IDE 설정·보안 기본값 등 **48개 계약**을 실행으로 검증 (약 2초) |
+| **`make verify`** | **무결성 검증**: 문법·Makefile·호스트 감지·APT 태그 필터·셸 환경 동등성·GPG 핀·정리 의미론·SIF 파이프라인·IDE 설정·보안 기본값 등 **48개 계약**을 검증 |
 | **`make bake-prod`** | **Apptainer SIF 추출**: 원격 HPC/SLURM 배포용 단일 바이너리 이미지 생성 |
 | **`make run-sif`** | **HPC / SLURM 실행**: SIF 이미지를 로컬에서 구동하거나 원격 SLURM 클러스터로 배치 투고 |
 | **`make stop / down`** | **컨테이너 중지**: 컨테이너 일시 중지 또는 컨테이너 및 볼륨 완전 삭제 |
@@ -145,7 +147,7 @@ git add src/uv.lock && git commit -m "chore: pin python dependencies"
 | 명령 | 기능 및 설명 |
 | :--- | :--- |
 | **`h` / `help`** | **도움말 안내**: 컨테이너 내부 전용 통합 숏컷 및 카테고리 안내 출력 |
-| **`mksync [--share]`** | **원클릭 환경 동기화**: 파이썬 venv 생성 + 의존성 설치 + ROS/CMake 빌드 일괄 수행. `--share`는 ROS 1 Noetic 전용 (시스템 파이썬 공유 venv) |
+| **`mksync [--share]`** | **원클릭 환경 동기화**: 파이썬 venv 생성 + 의존성 설치 + ROS/CMake 빌드 일괄 수행. `--share`는 ROS 이미지에서 자동 적용 (시스템 파이썬 공유 venv — `rospy`/`rclpy`가 시스템에 있음) |
 | **`cbuild` / `mbuild`** | **통합 빌드**: `colcon build` / `catkin_make` (ROS) 또는 Modern `cmake` (Pure C++) 실행. `--debug`/`--release`(기본 `RelWithDebInfo`), `--pkg <이름…>`, `--meta`(`config/colcon.meta` 적용) |
 | **`cw` / `cs` / `cc`** | **디렉토리 이동**: 워크스페이스 루트(`$WS_ROOT`), `src/`, `config/`로 빠르게 이동 |
 | **`gpus` / `gpu <mode>`** | **렌더링 스택 리포트**: OpenGL/GLX·EGL·Vulkan·D3D12 렌더러와 Mesa 버전, 로더 경로, 활성 환경변수 조회 / 가속 모드 전환 |
@@ -241,15 +243,58 @@ MAJOR 상승은 "파생 프로젝트가 무언가 고쳐야 한다"는 뜻입니
 
 ---
 
-> **알려진 제약**: **macOS GPU (Metal/MPS) 는 미지원**입니다 — Docker Desktop 은 리눅스 VM 이라
-> CUDA·DRI 패스스루가 없어 모든 macOS 호스트는 CPU 로 떨어집니다. 또한 단일 노드 배치 작업만 지원합니다. `srun` 이 요청한 태스크 수만큼 프로세스를
-> 띄우지만 **다중 노드 / MPI 는 미지원**입니다 — `--mpi`/PMI 배선이 없습니다.
+## ✅ 지원 범위 (Support Matrix)
+
+무엇이 **실행으로 확인**되었고 무엇이 아직 아닌지를 구분합니다. 근거는 세 가지입니다 — `make verify`(48개 계약),
+`.github/workflows/` 의 잡(정의만 되고 아직 실행되지 않은 것은 그렇게 표시), 그리고 아래의 **참조 호스트** 실측입니다.
+
+> **참조 호스트**: WSL2 (커널 6.18, Ubuntu 24.04) · NVIDIA RTX 4060 Ti · Docker + nvidia-container-toolkit · X11 `:0`.
+> 여기서 `make build/start/exec ENV=ros`(auto → **nvidia** 프로필), ROS 2 humble `rclpy` import 와 205개 패키지,
+> 컨테이너 안 `nvidia-smi` 의 GPU 인식, `glxinfo` 가 보고한 `D3D12 (NVIDIA GeForce RTX 4060 Ti)`(llvmpipe 폴백 아님),
+> `xdpyinfo` X11 연결, README 퀵스타트의 Python·C++ 예제와 pytest, 그리고 prod SIF 굽기·실행·작업 기록까지 실제로 통과했습니다.
+>
+> SLURM 은 컨테이너에 **단일 노드 클러스터**(slurmctld + slurmd + munge)를 세워 확인했습니다 — `make run-sif SIF_MODE=slurm`
+> 의 `sbatch` 플래그 수용, `%x_%j` 로그 경로, 할당 안에서의 `srun` 사용, 실제 부여된 자원(`partition`/`cpus_per_task`/`mem`)
+> 기록, 그리고 작업 종료 코드 **0 과 7 의 전파**까지 통과했습니다. 이 노드에서는 중첩 user namespace 를 쓸 수 없어
+> **컨테이너 런타임만 스텁**이며, 따라서 "SIF 가 계산 노드에서 실행된다"는 별개로 남습니다.
+>
+> arm64 는 QEMU(binfmt) 로 `base` 스테이지를 빌드해 실제로 실행했습니다 — `uname -m` = `aarch64`,
+> 계정이 `uid=1000(user)` 로 생성됨, `sif_arch` 가 붙이는 아티팩트 접미사와 일치.
+>
+> **근거의 세 등급**을 구분합니다 — `CI(실행됨)` 은 GitHub Actions 에서 실제로 통과한 잡,
+> `참조 호스트` 는 위 머신에서의 실측, `정의만, 미실행` 은 워크플로우에 잡은 있으나 아직
+> 한 번도 트리거되지 않은 것입니다(무거운 잡은 cron·수동 전용). 한 대의 호스트와 한 종류의
+> CI 러너 결과이므로 네이티브 Linux 호스트 감지·macOS 로 일반화하지 않습니다.
+
+| 조합 | 상태 | 근거 |
+| :--- | :--- | :--- |
+| 이미지 스테이지 빌드 (`base`, `build-core`) | ✅ 실행 검증 | CI(실행됨) `images.yml` image-stages |
+| ROS 저장소·GPG (noetic·humble, 라이브 및 스냅샷 키) | ✅ 실행 검증 | CI(실행됨) `images.yml` apt-key-paths |
+| 계약 스위트 48개 · Dockerfile 린트 | ✅ 실행 검증 | CI(실행됨) `verify.yml` contracts |
+| WSL2 호스트: 감지 · 빌드 · 실행 (ROS 2) | ✅ 실행 검증 | 참조 호스트 |
+| NVIDIA GPU 패스스루 (`nvidia-smi`, `libcuda`) | ✅ 실행 검증 — **WSL2 경로만**. 네이티브 Linux 는 장치 노드가 달라(`/dev/nvidia*`) 별개 | 참조 호스트 |
+| GUI · GL 가속 (X11, WSLg/D3D12) | ✅ 실행 검증 — **WSL2 경로만** | 참조 호스트 |
+| 프로덕션 런타임 이미지 (non-root, venv) | ✅ 실행 검증 | 참조 호스트 (CI 잡은 정의만, 미실행) |
+| SIF 변환 · 실행 · 작업 기록 | ✅ 실행 검증 | 참조 호스트 (CI 잡은 정의만, 미실행) |
+| SLURM 제출 · 실행 · 종료 상태 기록 | ✅ 실행 검증 — 단일 노드 컨테이너 클러스터. **컨테이너 런타임은 스텁** | 참조 호스트 |
+| arm64 이미지: 빌드 · 실행 · 계정 생성 | ✅ 실행 검증 — **QEMU 에뮬레이션** | 참조 호스트 (CI 잡은 정의만, 미실행) |
+| 네이티브 Linux 호스트 감지 (`/dev/dri`, `/dev/nvidia*`) | ⚠️ 계약만 — WSL2 에서는 `/proc/version` 을 바꿔 흉내낼 수 없음 | `verify.yml` contracts |
+| macOS 호스트 (bash 3.2 · BSD sed/awk) | ✅ 실행 검증 | CI(실행됨) `verify.yml` macos-host |
+| 다중 노드 SLURM (실제 클러스터) | ❌ 미검증 — 테스트 노드가 하나 | — |
+| macOS GPU (Metal/MPS) | ❌ **미지원** — CPU 폴백으로만 동작 | — |
+| 다중 노드 / MPI | ❌ **미지원** — `--mpi`/PMI 배선 없음 | — |
+
+> ROS 배포판은 Ubuntu 릴리스와 Python 인터프리터를 함께 결정합니다
+> (20.04/noetic·foxy → 3.8, 22.04/humble·iron → 3.10, 24.04/jazzy·kilted·rolling → 3.12).
+> `ROS_DISTRO` 하나만 바꾸면 나머지가 따라옵니다 — apt 가 `rclpy`/`rospy` 를 시스템
+> 인터프리터에 넣기 때문에 이 짝이 어긋나면 venv 가 ROS 를 import 하지 못합니다.
 
 ---
 
 ## 📖 상세 매뉴얼 및 문서 안내
 
-자세한 기능 설명 및 고급 서버 배포법은 아래 전문 문서를 참조하세요:
+문서는 두 곳에만 있습니다 — **`docs/`** 는 DevKit 을 *쓰는* 법, **`.github/`** 는 DevKit 에
+*기여하는* 법입니다. 루트에는 `README.md` 와 `LICENSE` 만 둡니다.
 
 - 📘 [**개발자 워크플로우 &amp; 숏컷 상세 가이드 (docs/DEVELOPMENT.md)**](docs/DEVELOPMENT.md)
   - `mksync` 가동 순서, 품질 루프(`mtest`/`mlint`), 셸 환경의 단일 정의, 템플릿 버전과 상류 갱신.

@@ -84,15 +84,17 @@ DEVKIT_STRIP_SOURCE=1 DEVKIT_FAIL_ON_SOURCE=1 make bake-prod ENV=ros
 | Ubuntu APT 패키지 | `APT_SNAPSHOT_DATE=YYYYMMDDTHHMMSSZ` → `snapshot.ubuntu.com` 시점 미러 고정 | ✅ 구현됨 |
 | APT 서명키 | `ROS_GPG_FINGERPRINT` 상수 대조 (`STRICT_GPG_CHECK=true` 시 불일치 중단) | ✅ 구현됨 |
 | 빌드 타임스탬프 | `SOURCE_DATE_EPOCH` → 릴리스 메타데이터 `build_date` | ✅ 구현됨 |
-| 외부 소스 저장소 | `dependencies.repos`의 `version:`에 **태그·커밋 해시** 지정 | ⚠️ 사용자 책임 (**`sync_deps`가 브랜치 참조를 경고**) |
+| 외부 소스 저장소 | `dependencies.repos`의 `version:`에 **전체 커밋 해시** 지정 | ✅ prod bake 기본 정책 (`DEVKIT_REQUIRE_PINNED=0`으로 해제 가능) |
 | 빌드 산출물 자체 포함성 | prod 빌더는 `--symlink-install` 미사용 (`DEVKIT_BUILD_TYPE=prod`) | ✅ 구현됨 |
 | 설치 결과 감사 | `dpkg-query`/`pip freeze` 매니페스트 + SHA-256을 이미지에 동봉 | ✅ 구현됨 |
-| Python 의존성 | `src/uv.lock` (최초 `mksync` 후 생성) | ⚠️ **파생 프로젝트 책임** (템플릿은 lock을 배포하지 않음) |
+| Python 의존성 | `src/uv.lock` 커밋 + prod 는 `uv sync --locked --no-editable` | ✅ 구현됨 (lock 이 없거나 낡으면 prod 빌드 중단) |
 | 베이스 이미지 | `.env`에 `BASE_IMAGE=ubuntu@sha256:<digest>` 로 다이제스트 고정 | ⚠️ 사용자 책임 (기본은 가변 태그 `ubuntu:22.04`) |
-| ROS APT 패키지 | packages.ros.org에는 스냅샷 서비스가 **없음** | ❌ 불가 (아래 참조) |
+| ROS APT 패키지 | `ROS_SNAPSHOT_DATE=YYYY-MM-DD` 또는 `final` → `snapshots.ros.org` 시점 미러 고정 | ✅ 구현됨 |
 | `rosdep install` | 해석 결과가 시점에 따라 달라짐 | ❌ 불가 |
 
 **완전 재현이 필요한 경우의 권장 절차**
+
+`DEVKIT_REQUIRE_PINNED=1` 검사는 템플릿의 블록형 `.repos` 형식(저장소명 2칸, 필드 4칸 들여쓰기)을 사용합니다. 태그·짧은 해시·누락된 버전·지원하지 않는 형식은 거부합니다.
 
 ```bash
 # 1) Python 의존성 잠금 — 파생 프로젝트에서 최초 1회 후 커밋
@@ -110,10 +112,11 @@ APT_SNAPSHOT_DATE=20260801T000000Z SOURCE_DATE_EPOCH=1785542400 make bake-prod E
 ```
 
 > [!IMPORTANT]
-> **ROS APT 계층은 시점 고정이 불가능합니다.** packages.ros.org는 스냅샷 미러를 제공하지 않으므로
-> `ros-humble-*` 패키지 버전은 빌드 시점에 따라 달라질 수 있습니다. 비트 단위 재현이 필요하다면
-> ① `dependencies/apt_ros.txt`에 `패키지=버전`으로 명시하거나, ② 검증된 이미지를 **`make bake-prod`로 SIF에 봉인**해
-> 그 아티팩트를 배포하세요. SIF는 그 자체로 완전한 동결 스냅샷입니다.
+> **`ROS_SNAPSHOT_DATE`를 지정하지 않으면(기본 `latest`) ROS 계층은 여전히 가변입니다.**
+> `ros-humble-*` 패키지 버전이 빌드 시점에 따라 달라지므로, 재현이 필요하면 `.env.example`에
+> `ROS_SNAPSHOT_DATE`에 실제 게시된 날짜(또는 EOL 배포판이면 `final`)를 커밋하세요. 그래도 `rosdep install`의
+> 해석 결과는 시점에 따라 달라지므로, 비트 단위 재현이 필요하면 검증된 이미지를
+> **`make bake-prod`로 SIF에 봉인**해 그 아티팩트를 배포하는 편이 확실합니다.
 
 ### 고정 불가 계층의 대안 — 빌드 매니페스트 (감사 및 사후 고정)
 

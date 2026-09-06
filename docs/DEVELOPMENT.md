@@ -39,7 +39,7 @@ command not found`로 죽은 원인이었습니다). `scripts/verify_repo.sh`가
 | --- | --- |
 | `config/util_paths.sh` | 워크스페이스 경로 전체(`WS_ROOT`·`WS_SRC`·`WS_CONFIG`·`WS_SCRIPTS`·`WS_DEPS`·`WS_BUILD`·`WS_INSTALL`·`WS_LOGS`·`WS_VENV`·`WS_VENV_PY`), `.env` 값 읽기(`devkit_env_value`), `devkit_require`, 로그 스텁 |
 | `scripts/util_logging.sh` | 로그 동사(`log_ok`/`log_warn`/`log_detail`…), 배너·섹션, 스트림별 색상 판정 |
-| `scripts/util_sif_common.sh` | SIF 런타임 바이너리, 아티팩트 이름, 호스트 환경 임포트, 엔트리포인트 경유 |
+| `scripts/util_sif_common.sh` | SIF 런타임 바이너리, 아키텍처 태그, 아티팩트 이름, 엔트리포인트 경유, 런타임 환경 전달·GPU 플래그·데이터 바인드·실행 기록 |
 | `scripts/util_gpu_detect.sh` | GPU 벤더·디바이스 노드 감지 |
 | `scripts/util_apt_helper.sh` | 빌드 타임 APT 저장소 신뢰 앵커 및 태그 필터 설치 |
 | `scripts/util_cuda_apt.sh` | CUDA/cuDNN apt 프로파일 설치 |
@@ -67,9 +67,10 @@ mksync
 >   프롬프트에 `(myproject-lee)` 로 보이므로 여러 워크스페이스를 오갈 때 어느 셸인지 한눈에 구분됩니다.
 > - `uv sync` 는 venv 가 이미 가진 인터프리터에 고정됩니다(`--python`). 이게 없으면 uv 가 `UV_PYTHON` 과
 >   불일치를 이유로 환경을 **재생성**해, `mksync --share`(noetic)가 만든 shared venv 가 pure 로 바뀌며 `rospy` 가 사라집니다.
-> - **프로젝트 타입 판별**: `src/` 하위 3단계까지 탐색하여 `package.xml` → **ROS**(`cbuild`), `CMakeLists.txt` → **CPP**(`mbuild`), 둘 다 없으면 **PYTHON**(빌드 생략).
-> - **`mksync --share`**: `--system-site-packages` 옵션으로 venv를 생성하여 ROS 1 `noetic` 환경에서 `rospy`, `catkin` 등 시스템 파이썬 패키지를 venv 내부에서 그대로 접근 가능하게 합니다.
-> - **`ROS_DISTRO=noetic` 시 자동 적용**: `--share` 없이 `mksync`를 실행해도 `noetic` 환경이면 shared 모드가 자동으로 활성화됩니다.
+> - **프로젝트 타입 판별**: `ROS_DISTRO`가 있으면 `src/thirdparty`를 제외한 `src/`에서 `package.xml`을 찾아 **ROS**(`cbuild`)로 판별합니다. 없으면 하위 3단계의 `CMakeLists.txt`로 **CPP**(`mbuild`), 둘 다 없으면 **PYTHON**(빌드 생략)입니다.
+> - **`mksync --share`**: `--system-site-packages` 옵션으로 venv를 생성하여 `rospy`·`catkin`(ROS 1) 또는 `rclpy`(ROS 2) 등 시스템 파이썬 패키지를 venv 내부에서 그대로 접근 가능하게 합니다.
+> - **ROS 이미지에서는 자동 적용**: `/opt/ros/<distro>`가 있으면 `--share` 없이도 shared 모드가 켜집니다 — ROS 파이썬 바인딩은 시스템 dist-packages에 있어 격리된 venv 에서는 import 되지 않기 때문입니다. 순수 venv 는 비-ROS 이미지에서만 의미가 있습니다.
+> - 이미 격리된 venv 가 있는데 shared 가 필요하면 `mksync`가 조용히 진행하지 않고 `mkenv --share`를 한 번 실행하라고 멈춥니다.
 > - **추가 인자 전달**: `--share`를 제외한 나머지 인자는 그대로 `uv sync`로 전달됩니다 (예: `mksync --extra gpu`).
 > - `cbuild` / `mbuild` / `mksync` / `mkenv`는 모두 **함수**로 정의되어 있어 `docker build`의 비대화형 셸에서도 호출됩니다
 >   (별칭은 비대화형 셸에서 전개되지 않으므로 빌드 진입점은 별칭으로 만들지 마세요 — `make verify` [build-entrypoints]이 이를 강제합니다).
@@ -361,3 +362,5 @@ DevKit은 베이스 키트이므로 진입점 이름을 바꾸면 그 위에 올
    # 설명성 주석은 한 줄로
    # Prepend, never assign: this is written before ROS is sourced.
    ```
+
+VS Code는 `make setup`에서 생성한 Compose 설정을 사용합니다. `ENV`, `GPU_MODE`, 컨테이너 사용자 또는 마운트 설정을 바꾸면 `make ide-config`를 다시 실행하고 컨테이너를 다시 여세요.
