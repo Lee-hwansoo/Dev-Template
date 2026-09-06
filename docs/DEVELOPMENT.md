@@ -189,15 +189,23 @@ DevKit은 템플릿이므로, 이 위에 올린 프로젝트는 **어느 리비�
 ### 버전 올리기
 
 전용 도구는 없습니다. 한 줄을 고치고 태그를 붙이는 일이라, 감싸는 스크립트는 규약을 한 번 더
-적어두는 것 이상을 하지 못합니다. 태그 본문에 그 구간의 커밋 목록을 넣으면 `git show <태그>`와
-GitHub 릴리스가 같은 내용을 싣고, MAJOR 상승이라면 **무엇을 고쳐야 하는지**를 첫 줄에 적으세요
-— 파생 프로젝트가 가장 먼저 읽는 곳입니다.
+적어두는 것 이상을 하지 못합니다. 주석 태그의 메시지가 변경 기록입니다 — GitHub 릴리스나 별도
+파일은 두지 않습니다(템플릿은 저장소 자체로 배포되고, 태그만 push 해도 Tags 페이지가 같은 것을 보여 줍니다).
+
+| 태그 메시지 | 내용 |
+| --- | --- |
+| 첫 줄 | `vX.Y.Z: <한 줄 요약>` — GitHub Tags 목록에 제목으로 보이므로 짧게 |
+| 본문 첫 단락 | 파생 프로젝트가 **무엇을 고쳐야 하는지**. 없으면 그렇다고 적습니다 — 파생 프로젝트가 가장 먼저 읽는 곳입니다 |
+| 본문 나머지 | `git log --oneline <이전 태그>..HEAD` |
 
 ```bash
 printf '%s\n' "$NEW" > VERSION                     # semver 한 줄
 make verify                                         # 형식과 일관성 확인
 git commit -am "chore(release): v${NEW}"
-git tag -a "v${NEW}"                                # 본문: git log --oneline <이전 태그>..HEAD
+git tag -a "v${NEW}" -m "v${NEW}: <한 줄 요약>" \
+    -m "Nothing for a derived project to change." \
+    -m "$(git log --oneline <이전 태그>..HEAD)"
+git push origin "v${NEW}"
 
 git log  --oneline <이전 태그>..<새 태그>            # 두 버전 사이 무엇이 바뀌었나
 git diff <이전 태그>..<새 태그> -- Makefile config/ scripts/ docker/   # 커널 파일만
