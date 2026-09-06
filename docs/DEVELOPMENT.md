@@ -88,8 +88,7 @@ DevKit이 추측하지 않고 파생 프로젝트의 `uv.lock`이 고정합니�
 
 > [!NOTE]
 > `clang-format`은 **선택 설치**입니다(libllvm 의존성). 에디터는 C/C++ 확장에 내장된 복사본을
-> 쓰므로 CLI 검사가 필요할 때만 `dependencies/apt.txt`의 `# clang-format # dev` 줄을 해제하고
-> `make build`하세요. 테스트가 아직 없는 프로젝트에서 `mtest`는 실패가 아니라 안내를 출력합니다.
+> 쓰므로 CLI 검사가 필요할 때만 켭니다 ([opt-in 되살리기](DEPENDENCIES.md#-opt-in-기능-되살리기)). 테스트가 아직 없는 프로젝트에서 `mtest`는 실패가 아니라 안내를 출력합니다.
 
 CI 에서 같은 루프를 도는 `project.yml` 은 아래 [CI 절](#-ci-github-actions) 에 있습니다.
 

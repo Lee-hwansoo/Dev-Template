@@ -89,7 +89,7 @@ mksync
 | **`make check`** | **사전 점검**: Docker/Compose v2/BuildKit, `.env` 키 누락, WSL2, NVIDIA 런타임 설정 여부를 해결 명령과 함께 진단 |
 | **`make build [ENV=...]`** | **이미지 빌드**: ROS (`ENV=ros`) 또는 C++/Python (`ENV=dev`) 도커 이미지 빌드 |
 | **`make start [ENV=...]`** | **컨테이너 기동**: 백그라운드 개발 컨테이너 시작 |
-| **`make shell / term`** | **컨테이너 진입**: 대화형 셸 진입 / 새 터미널 창 오픈 (`term`은 opt-in — `dependencies/apt.txt`의 `terminator # gui` 주석 해제) |
+| **`make shell / term`** | **컨테이너 진입**: 대화형 셸 진입 / 새 터미널 창 오픈 (`term`은 opt-in — [되살리기](docs/DEPENDENCIES.md#-opt-in-기능-되살리기)) |
 | **`make exec CMD='…'`** | **명령 실행**: 컨테이너 안에서 DevKit 환경 그대로 한 명령 실행 (자동화의 기본 경로) |
 | **`make gpus`** | **호스트 GPU 모니터링**: 호스트 PC의 NVIDIA GPU / iGPU 실시간 VRAM 및 가속 상태 조회 |
 | **`make status`** | **진단 리포트**: 프로젝트 설정, 감지된 호스트 배선, 실행 중 컨테이너 (`check` 를 먼저 수행) |

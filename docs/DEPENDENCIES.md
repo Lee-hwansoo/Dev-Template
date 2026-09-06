@@ -116,3 +116,21 @@ dev = [ "ruff>=0.6", "pytest>=8" ]   # 정확한 버전은 파생 프로젝트�
 > DEVKIT_DRY_RUN=1 DEVKIT_DEPS_DIR=./dependencies \
 >   bash scripts/util_apt_helper.sh install-packages runtime humble
 > ```
+
+---
+
+## 🔌 opt-in 기능 되살리기
+
+기본 이미지를 가볍게 두기 위해 꺼 놓은 것들입니다. 전부 **주석 한 줄을 풀고 다시 빌드**하는 방식이며,
+`make verify` 가 예시가 낡지 않았는지 검사합니다.
+
+| 기능 | 켜는 방법 | 그 다음 |
+| :--- | :--- | :--- |
+| **`make term` (terminator 2×2 터미널)** | `dependencies/apt.txt` 의 `# terminator # gui` → `terminator # gui` | `make build && make start && make term`. 다른 터미널을 쓰려면 그 패키지를 `# gui` 로 추가하고 `.env` 에 `TERMINAL=<이름>` |
+| **터미널 폰트 (D2Coding)** | [github.com/naver/d2codingfont](https://github.com/naver/d2codingfont/releases) 의 zip 을 `dependencies/D2Coding.zip` 으로 저장 → `config/terminator_config` 에서 `use_system_font = True` 를 `False` 로 바꾸고 `font`·`title_font` 두 줄의 주석 해제 | `make build`. 이미지 빌드는 GitHub 에서 아무것도 내려받지 않으므로 파일이 없으면 시스템 폰트를 씁니다 |
+| **`clang-format` (mlint 의 C/C++ 절반)** | `dependencies/apt.txt` 의 `# clang-format # dev` → `clang-format # dev` | `make build`. 에디터는 C/C++ 확장 내장 복사본을 쓰므로 CLI 검사가 필요할 때만 |
+| **PyTorch cpu/gpu extras** | `src/pyproject.toml` 의 `# --- opt-in example: begin/end ---` 사이 모든 줄과, 아래 `[tool.uv]` 테이블 안의 `# conflicts = …` 한 줄에서 앞의 `# ` 를 지움 | `.env.example`(팀) 또는 `.env` 에 `UV_EXTRA=cpu` 나 `gpu` → 컨테이너에서 `mksync` → `git add src/uv.lock` 커밋. 확인은 `pyt`(torch 가 보는 장치) |
+
+> extras 예시의 `conflicts` 줄이 예시 블록 밖에 있는 이유: `[tool.uv]` 테이블은 이미 `package = false` 로
+> 선언되어 있고, TOML 은 같은 테이블을 두 번 선언할 수 없기 때문입니다.
+
