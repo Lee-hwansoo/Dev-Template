@@ -77,12 +77,42 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     fi && \
     ln -snf /usr/share/zoneinfo/${TZ:-UTC} /etc/localtime && echo ${TZ:-UTC} > /etc/timezone
 
+# Reuse numeric groups (macOS GID 20) and the Ubuntu 24.04 default UID. The group
+# is named after the user — that is what `id` and `ls -l` show — falling back to a
+# numeric name only when the base image already ships that group name at another
+# gid. A CONTAINER_USER taken at another UID is fatal: renumbering it would orphan
+# the files the base image gave it.
+ARG CONTAINER_USER=user
+ARG USER_UID=1000
+ARG USER_GID=$USER_UID
+RUN test "$USER_UID" -ge 500 && test "$USER_GID" -gt 0 && \
+    if id "$CONTAINER_USER" >/dev/null 2>&1; then \
+        test "$(id -u "$CONTAINER_USER")" = "$USER_UID" || { echo "[ERROR] CONTAINER_USER '$CONTAINER_USER' already exists at uid $(id -u "$CONTAINER_USER"), but USER_UID=$USER_UID. Choose another CONTAINER_USER in .env." >&2; exit 2; }; \
+    fi && \
+    { getent group "$USER_GID" >/dev/null \
+        || groupadd --gid "$USER_GID" "$CONTAINER_USER" 2>/dev/null \
+        || groupadd --gid "$USER_GID" "devkit-$USER_GID"; } && \
+    existing="$(getent passwd "$USER_UID" | cut -d: -f1)" && \
+    if [ -n "$existing" ] && [ "$existing" != "$CONTAINER_USER" ]; then \
+        usermod --login "$CONTAINER_USER" --home "/home/$CONTAINER_USER" --move-home "$existing"; \
+    fi && \
+    if id "$CONTAINER_USER" >/dev/null 2>&1; then \
+        usermod --gid "$USER_GID" --shell /bin/bash "$CONTAINER_USER"; \
+    else useradd --uid "$USER_UID" --gid "$USER_GID" -m -s /bin/bash "$CONTAINER_USER"; fi
+
 # ── Stage: build-core (Production-capable build toolchain) ───────────────────
 FROM base AS build-core
 ARG WORKSPACE_PATH
 ARG SYS_PYTHON_EXE
 ARG UV_VERSION
 ARG UV_PYTHON
+ARG UV_EXTRA
+ARG UV_SYNC_FLAGS
+ARG CMAKE_EXTRA_ARGS
+ARG COLCON_EXTRA_FLAGS
+ARG CUDA_VERSION
+ARG CUDNN_VERSION
+ARG FULL_CUDA
 ARG CMAKE_C_STANDARD
 ARG CMAKE_CXX_STANDARD
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -154,25 +184,8 @@ ARG CONTAINER_USER=user
 ARG USER_UID=1000
 ARG USER_GID=$USER_UID
 
-RUN groupadd --gid $USER_GID $CONTAINER_USER \
-    && useradd --uid $USER_UID --gid $USER_GID -m -s /bin/bash $CONTAINER_USER \
-    && echo $CONTAINER_USER ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$CONTAINER_USER \
+RUN echo $CONTAINER_USER ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$CONTAINER_USER \
     && chmod 0440 /etc/sudoers.d/$CONTAINER_USER
-
-# CUDA Toolkit Installation (Conditional)
-ARG CUDA_VERSION
-ARG CUDNN_VERSION
-ARG HAS_NVIDIA
-ARG FULL_CUDA
-
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    --mount=type=bind,source=scripts/util_cuda_apt.sh,target=/tmp/util_cuda_apt.sh \
-    bash /tmp/util_cuda_apt.sh dev
-
-ENV PATH=/usr/local/cuda/bin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64
-ENV CUDA_HOME=/usr/local/cuda
 
 # iGPU-only diagnostics. Keep CPU/NVIDIA images lighter by avoiding Intel OpenCL.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -200,7 +213,7 @@ RUN chmod +x /entrypoint.sh ${WORKSPACE_PATH}/scripts/*.sh ${WORKSPACE_PATH}/con
     cp ${WORKSPACE_PATH}/config/terminator_config /root/.config/terminator/config && \
     cp ${WORKSPACE_PATH}/config/terminator_config /home/${CONTAINER_USER}/.config/terminator/config; \
     fi && \
-    chown -R ${CONTAINER_USER}:${CONTAINER_USER} /home/${CONTAINER_USER} /opt/uv
+    chown -R ${CONTAINER_USER}:$(id -g ${CONTAINER_USER}) /home/${CONTAINER_USER} /opt/uv
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["bash"]
 
@@ -344,7 +357,6 @@ FROM base AS prod-base
 ARG WORKSPACE_PATH
 ARG CUDA_VERSION
 ARG CUDNN_VERSION
-ARG HAS_NVIDIA
 ARG FULL_CUDA
 ARG CONTAINER_USER=user
 ARG USER_UID=1000
@@ -381,9 +393,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     if command -v sudo >/dev/null 2>&1; then chmod a-s "$(command -v sudo)"; fi
 COPY --from=prod-dev-builder ${WORKSPACE_PATH}/install ${WORKSPACE_PATH}/install
 COPY --from=prod-dev-builder /opt/uv/python /opt/uv/python
-COPY --from=prod-dev-builder ${WORKSPACE_PATH}/release/ /etc/devkit/
+COPY --from=prod-dev-builder ${WORKSPACE_PATH}/release/ /etc/devkit/build/
 ENV PATH="${WORKSPACE_PATH}/install/.venv/bin:${WORKSPACE_PATH}/install/bin:$PATH" \
     VIRTUAL_ENV="${WORKSPACE_PATH}/install/.venv"
+RUN --mount=type=bind,source=scripts,target=${WORKSPACE_PATH}/scripts \
+    --mount=type=bind,source=config,target=${WORKSPACE_PATH}/config \
+    --mount=type=bind,from=uv-binaries,source=/uv,target=/usr/local/bin/uv \
+    /entrypoint.sh bash ${WORKSPACE_PATH}/scripts/check_deps.sh --runtime
 USER ${CONTAINER_USER}
 CMD []
 

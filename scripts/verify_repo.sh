@@ -465,6 +465,66 @@ rm -rf "$distro_probe"
 [ "$distro_errors" -eq 0 ] \
     && log_ok "Every supported ROS distro has a base image, and an unknown one is refused ($(wc -w <<< "$apt_distros") distros)."
 # =============================================================================
+# [host-identity] The container account must survive a base image that already
+#      uses the requested gid, group name or user name. macOS hosts (501:20)
+#      and a CONTAINER_USER matching a base-image account both land here.
+# =============================================================================
+identity_errors=0
+# The REAL Dockerfile block, run against stand-ins for shadow-utils. The bug was
+# in the decision logic — getent matches a GID, groupadd ALSO matches a NAME, so
+# a free gid with a taken name aborted the build with a raw groupadd error.
+# images.yml runs this same block against the real tools in a real build.
+identity_probe="$(probe_dir)"
+# Join the continuations as docker build does; stripping the backslashes would
+# leave a line starting with '||' and the probe would die of a syntax error.
+sed -n '/^RUN test "\$USER_UID" -ge 500/,/^    else useradd/p' docker/Dockerfile \
+    | sed -e '1s/^RUN //' -e :a -e '/\\$/N; s/\\\n//; ta' > "$identity_probe/block.sh"
+grep -q 'useradd' "$identity_probe/block.sh" \
+    || { log_err "verify_repo.sh can no longer find the user/group block in docker/Dockerfile."; identity_errors=1; }
+
+# Flat "id:name" files stand in for /etc/passwd and /etc/group.
+cat > "$identity_probe/stub" <<'STUB'
+#!/bin/sh
+case "${0##*/}" in
+    getent) grep -qE "^$2:|:$2\$" "$STUB_DB/$1" 2>/dev/null || exit 2
+            grep -E "^$2:|:$2\$" "$STUB_DB/$1" | head -1 | awk -F: '{print $2":x:"$1}' ;;
+    groupadd) grep -qE ":$3\$" "$STUB_DB/group" && exit 9   # real groupadd: name taken
+              echo "$2:$3" >> "$STUB_DB/group" ;;
+    useradd)  echo "$2:$8" >> "$STUB_DB/passwd" ;;
+    usermod)  if [ "$1" = "--login" ]; then
+                  sed "s/:$6\$/:$2/" "$STUB_DB/passwd" > "$STUB_DB/passwd.tmp" \
+                      && mv "$STUB_DB/passwd.tmp" "$STUB_DB/passwd"
+              fi ;;
+    id) if [ "$1" = "-u" ]; then grep -E ":$2\$" "$STUB_DB/passwd" | cut -d: -f1
+        else grep -qE ":$1\$" "$STUB_DB/passwd"; fi ;;
+esac
+STUB
+chmod +x "$identity_probe/stub"
+for tool in getent groupadd useradd usermod id; do ln -sf stub "$identity_probe/$tool"; done
+
+# Each case: <label> <preseeded passwd> <preseeded group> <user> <uid> <gid> <expected rc>
+run_identity_case() {
+    printf '%s\n' "$2" > "$identity_probe/passwd"; printf '%s\n' "$3" > "$identity_probe/group"
+    local rc=0
+    ( PATH="$identity_probe:$PATH" STUB_DB="$identity_probe" \
+      CONTAINER_USER="$4" USER_UID="$5" USER_GID="$6" sh "$identity_probe/block.sh" ) >/dev/null 2>&1 || rc=$?
+    [ "$rc" = "$7" ] || { log_err "docker/Dockerfile: ${1} exits ${rc}, expected ${7}."; identity_errors=1; }
+}
+# A group NAME taken at another gid is cosmetic — bind-mount ownership is
+# numeric — so the build must fall back to another name, not abort.
+run_identity_case "a group name taken at another gid" "" "1500:user" user 1001 1001 0
+# A CONTAINER_USER taken at another uid cannot be honoured; renumbering a
+# base-image account would orphan its files, so it must fail and say why.
+run_identity_case "a user name taken at another uid" "1000:ubuntu" "1000:ubuntu" ubuntu 1001 1001 2
+run_identity_case "both requested uid and name already taken" $'1000:ubuntu\n1001:user' "1000:ubuntu" user 1000 1000 2
+# The everyday paths must still work: a fresh account, and macOS 501:20 where
+# gid 20 already exists as dialout.
+run_identity_case "a fresh account" "" "" user 1001 1001 0
+run_identity_case "a macOS host (501:20)" "" "20:dialout" user 501 20 0
+rm -rf "$identity_probe"
+[ "$identity_errors" -eq 0 ] \
+    && log_ok "The container account survives a taken gid, group name or user name (4 host shapes)."
+# =============================================================================
 # [run-record] A batch job nobody watched must still be answerable later: which
 #      image, on what the scheduler granted, against which data, and how it
 #      ended. An unterminated record cannot tell "still running" from "died".
