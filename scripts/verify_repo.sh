@@ -1528,9 +1528,12 @@ for want in finding explanation step; do
     grep -qF "$want" "$file_probe/run.log" 2>/dev/null \
         || { log_err "LOG_FILE lost the '${want}' line; a captured log must hold hints and steps too."; api_errors=1; }
 done
-# The CONSOLE stamp too, on both printf-%T and date paths: it skipped the
-# bash-3.2 guard the file stamp has, and macOS printed a bare '[]'.
-for stamp_mode in 1 0; do
+# The CONSOLE stamp too: it skipped the bash-3.2 guard the file stamp has, and
+# macOS printed a bare '[]'. The date path is probed everywhere; the printf-%T
+# path only where this bash has it (4.2+) — forcing it on 3.2 tests nothing.
+stamp_modes="0"
+{ [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 2 ]; }; } && stamp_modes="1 0"
+for stamp_mode in $stamp_modes; do
     bash -c "source scripts/util_logging.sh; __DEVKIT_PRINTF_TIME=$stamp_mode LOG_SHOW_TIME=true log_ok probe" 2>/dev/null \
         | grep -qE '\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]' \
         || { log_err "LOG_SHOW_TIME=true prints no HH:MM:SS console stamp when __DEVKIT_PRINTF_TIME=${stamp_mode} (the bash-3.2 path is broken)."; api_errors=1; }
@@ -2487,7 +2490,10 @@ for sif_arch_caller in scripts/apptainer_bake.sh scripts/apptainer_run.sh; do
 done
 # slurm submits the PRODUCTION artifact (there is no bake --mode slurm): with
 # no SIF_FILE, the default probe must find <project>-<env>-prod-<arch>.sif.
-slurm_art="$(probe_dir config scripts)"
+# Physical path: apptainer_run.sh canonicalises the artifact with `pwd`, and on
+# macOS $TMPDIR is /var/… -> /private/var/…, so an unresolved probe path never
+# matched what sbatch was handed.
+slurm_art="$(cd "$(probe_dir config scripts)" && pwd -P)"
 mkdir -p "$slurm_art/bin"; : > "$slurm_art/probe-dev-prod-amd64.sif"
 printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/argv"\n' "$slurm_art" > "$slurm_art/bin/sbatch"; chmod +x "$slurm_art/bin/sbatch"
 ( PATH="$slurm_art/bin:$probe_min_path" WORKSPACE_PATH="$slurm_art" COMPOSE_PROJECT_NAME=probe TARGETARCH=amd64 \
