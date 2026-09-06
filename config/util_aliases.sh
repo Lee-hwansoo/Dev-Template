@@ -83,13 +83,13 @@ __parse_build_flags() {
 # A prod image copies install/ only, so a build that installs nothing ships
 # nothing. $1 names the missing install rule (catkin and CMake spell it apart).
 __require_install_artifacts() {
-    [ -n "$(find "${WS_ROOT}/install" -mindepth 2 -type f -print -quit 2>/dev/null)" ] && return 0
+    [ -n "$(find "${WS_ROOT}/install" -path '*/.venv' -prune -o -mindepth 2 -type f -print -quit 2>/dev/null)" ] && return 0
     log_error "Production build installed no artifacts into ${WS_ROOT}/install."
     log_detail "Add ${1} rules; the production runtime image copies install/ only." >&2
     return 1
 }
 
-# Parse --share flag; auto-enable for ROS 1 Noetic (tied to system Python ABI)
+# ROS images share the system interpreter and its Python dependencies.
 __parse_share_flag() {
     DEVKIT_SHARE_MODE=false
     DEVKIT_REMAINING_ARGS=()
@@ -100,6 +100,7 @@ __parse_share_flag() {
         esac
     done
     [ "${ROS_DISTRO:-}" = "noetic" ] && DEVKIT_SHARE_MODE=true
+    [ ! -d "/opt/ros/${ROS_DISTRO:-}" ] || DEVKIT_SHARE_MODE=true
 }
 
 # --- General System & Help ----------------------------------------------------
@@ -183,7 +184,7 @@ alias sb='source ~/.bashrc'
 # non-interactive shell, and mksync() calls this during `docker build`.
 # --symlink-install is dev-only — a prod image copies install/ but never src/,
 # so those links would dangle; DEVKIT_BUILD_TYPE=prod forces a real copy.
-if [ "${ROS_VERSION:-2}" = "2" ]; then
+if [ "${ROS_DISTRO:-}" != "noetic" ] && [ "${ROS_VERSION:-2}" = "2" ]; then
     cbuild() {
         __require_cmd colcon || return 1
         local link_flag=(--symlink-install) extra=()
@@ -199,8 +200,8 @@ if [ "${ROS_VERSION:-2}" = "2" ]; then
             "${DEVKIT_CMAKE_EXTRA[@]}" "${DEVKIT_BUILD_PASSTHRU[@]}" ) || return 1
         __refresh_links
     }
-    alias cbt='colcon test'
-    alias cbtr='colcon test-result --all'
+    cbt() { (cd "${WS_ROOT}" && colcon test "$@"); }
+    cbtr() { (cd "${WS_ROOT}" && colcon test-result --all "$@"); }
     alias rt='ros2 topic list'
     alias rte='ros2 topic echo'
     alias rth='ros2 topic hz'
@@ -231,8 +232,8 @@ else
         fi
         __refresh_links
     }
-    alias cbt='catkin_make run_tests'
-    alias cbtr='catkin_test_results'
+    cbt() { (cd "${WS_ROOT}" && catkin_make run_tests "$@"); }
+    cbtr() { (cd "${WS_ROOT}" && catkin_test_results "$@"); }
     alias rt='rostopic list'
     alias rte='rostopic echo'
     alias rth='rostopic hz'
@@ -261,7 +262,13 @@ uvs() {
     [ -n "${UV_SYNC_FLAGS:-}" ] && read -r -a sync_flags <<< "${UV_SYNC_FLAGS}"
     # uv installs the `dev` group by default; a prod venv must not carry
     # ruff and pytest. Dev builds keep them — mtest/mlint need them.
-    [ "${DEVKIT_BUILD_TYPE:-dev}" = "prod" ] && sync_flags+=(--no-default-groups)
+    if [ "${DEVKIT_BUILD_TYPE:-dev}" = "prod" ]; then
+        sync_flags+=(--no-default-groups --no-editable --locked)
+        if [ -f "$pyproject" ] && [ ! -f "${WS_SRC}/uv.lock" ]; then
+            log_error "Production requires src/uv.lock. Run 'mksync' and commit the lockfile."
+            return 1
+        fi
+    fi
     [ -x "${WS_VENV_PY:-}" ] || mkenv || return 1
 
     if [ -f "$pyproject" ]; then
@@ -288,8 +295,8 @@ uvs() {
 __detect_project_type() {
     local src="${WS_SRC:-${WS_ROOT}/src}"
     [ -d "$src" ] || { echo "PYTHON"; return; }
-    if [ -n "${ROS_DISTRO:-}" ] && command -v colcon >/dev/null 2>&1; then
-        if [ -f "${src}/CMakeLists.txt" ] || [ -n "$(find "$src" -maxdepth 3 -name "package.xml" -print -quit 2>/dev/null)" ]; then
+    if [ -n "${ROS_DISTRO:-}" ]; then
+        if [ -n "$(find "$src" -name thirdparty -prune -o -name package.xml -print -quit 2>/dev/null)" ]; then
             echo "ROS"; return
         fi
     fi
@@ -301,9 +308,8 @@ __detect_project_type() {
 }
 
 # mkenv [--share] [<uv venv args>…]
-#   Create install/.venv. --share adds system-site-packages (forced on ROS 1
-#   noetic, whose rospy is tied to the system Python). Named after the PROJECT,
-#   not the directory, so the prompt says which workspace this is.
+#   Create install/.venv with a project-named prompt. ROS images force --share
+#   to use the system interpreter and its dependencies.
 mkenv() {
     local venv_dir="${WS_VENV:-${WS_ROOT}/install/.venv}"
     local prompt="${COMPOSE_PROJECT_NAME:-.venv}"
@@ -350,7 +356,13 @@ mksync() {
     local uvs_args=("${DEVKIT_REMAINING_ARGS[@]}")
 
     # 1. venv → activate → Python packages → system/ROS dependencies
-    mkenv "${mkenv_args[@]}" && \
+    if [ -x "$WS_VENV_PY" ] && [ "$DEVKIT_SHARE_MODE" = true ] && \
+       ! grep -q '^include-system-site-packages = true' "$WS_VENV/pyvenv.cfg"; then
+        log_error "Existing venv is isolated. Run 'mkenv --share' once, then retry mksync."
+        return 1
+    fi
+    { [ -x "${WS_VENV_PY}" ] || mkenv "${mkenv_args[@]}"; } && \
+    activate && \
     uvs "${uvs_args[@]}" && \
     bash "${WS_SCRIPTS}/setup_sync_deps.sh" --rosdep || return 1
 

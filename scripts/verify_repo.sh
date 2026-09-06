@@ -777,6 +777,96 @@ grep -qE '(컴퓨트 노드|compute node).*(마운트|mount)' docs/SLURM.md \
 [ "$slurmdef_errors" -eq 0 ] \
     && log_ok "SLURM job defaults agree between #SBATCH and .env.example, every knob becomes its flag, and the submitter creates the log directory."
 # =============================================================================
+# [bake-inputs] What a bake actually passes to docker build. ROS_DISTRO decides
+#      BASE_IMAGE and UV_PYTHON inside check_env.sh, and a host `export` never
+#      crosses into a build — both were silently lost on the bake path.
+# =============================================================================
+bake_errors=0
+# Probe cache generation in an isolated tree; never delete the user's cache.
+bake_cli="$(probe_dir)"
+cp Makefile "${ROOT_DIR}/.env.example" "$bake_cli/"
+for bake_link in scripts config docker dependencies; do
+    [ -e "${ROOT_DIR}/${bake_link}" ] && ln -s "${ROOT_DIR}/${bake_link}" "$bake_cli/${bake_link}"
+done
+bake_cache="$bake_cli/.docker_cache/detected-env.mk"
+for bake_target in bake-prod bake-dev help; do
+    rm -f "$bake_cache"
+    (cd "$bake_cli" && env -u ROS_DISTRO -u BASE_IMAGE -u UV_PYTHON \
+        make -n "$bake_target") >/dev/null 2>&1 || true
+    if [ "$bake_target" = help ]; then
+        [ ! -f "$bake_cache" ] || { log_err "make help must skip detection."; bake_errors=1; }
+    else
+        [ -f "$bake_cache" ] || { log_err "make $bake_target must resolve its build inputs."; bake_errors=1; }
+    fi
+done
+
+# The pin policy must travel as a BUILD ARG. Captured from a stub docker, so a
+# host-only export — which is what the first attempt was — fails here.
+bake_probe="$(probe_dir)"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/argv"\nexit 1\n' "$bake_probe" > "$bake_probe/docker"
+printf '#!/bin/sh\nexit 0\n' > "$bake_probe/apptainer"
+chmod +x "$bake_probe/docker" "$bake_probe/apptainer"
+bake_arg_for() {   # bake_arg_for <mode> <key>
+    rm -f "$bake_probe/argv"
+    ( PATH="$bake_probe:/usr/bin:/bin" bash scripts/apptainer_bake.sh --mode "$1" --env dev ) >/dev/null 2>&1 || true
+    sed -n "s/^$2=//p" "$bake_probe/argv" 2>/dev/null | head -1
+}
+[ "$(bake_arg_for prod DEVKIT_REQUIRE_PINNED)" = "1" ] \
+    || { log_err "a prod bake does not pass DEVKIT_REQUIRE_PINNED=1 as a build arg; the sync inside the image reads the default and a release can float."; bake_errors=1; }
+[ "$(bake_arg_for dev DEVKIT_REQUIRE_PINNED)" = "0" ] \
+    || { log_err "a dev bake forces pinned repos; a branch is a legitimate choice mid-development."; bake_errors=1; }
+rm -rf "$bake_probe"
+# EVERY stage that runs the sync must declare it — DERIVED, not named: the first
+# attempt declared it on 'ros' alone, which the production builders do not
+# inherit, so the release path never saw the policy and the check still passed.
+# mksync calls setup_sync_deps.sh too, so both spellings count.
+bake_missing="$(awk '
+    /^FROM /                       { stage = $NF; next }
+    /^ARG DEVKIT_REQUIRE_PINNED/   { declared[stage] = 1; next }
+    /setup_sync_deps|mksync/       { if ($0 !~ /^#/) syncs[stage] = 1 }
+    END { for (s in syncs) if (!declared[s]) printf "%s ", s }' docker/Dockerfile || true)"
+[ -z "$bake_missing" ] \
+    || { log_err "docker/Dockerfile: stage(s) ${bake_missing}run the dependency sync without declaring ARG DEVKIT_REQUIRE_PINNED; BuildKit drops the build arg and a release can float."; bake_errors=1; }
+
+# A .env written before ROS_DISTRO changed keeps the OLD pairing and wins. The
+# pin is honoured (DEPLOY.md asks for digests) but must not be silent.
+bake_warn="$(probe_dir)"
+printf 'ROS_DISTRO=noetic\nBASE_IMAGE=ubuntu:22.04\nUV_PYTHON=3.10\n' > "$bake_warn/.env"
+bake_msg="$( unset ROS_DISTRO BASE_IMAGE UV_PYTHON
+    DEVKIT_ENV_FILE="$bake_warn/.env" DEVKIT_ENV_DEFAULTS="${ROOT_DIR}/.env.example" \
+    bash scripts/check_env.sh --makefile 2>&1 >/dev/null || true )"
+rm -rf "$bake_warn"
+grep -q 'ubuntu:20.04' <<< "$bake_msg" \
+    || { log_err "a .env pinning BASE_IMAGE against its ROS_DISTRO produces no warning; the mismatch surfaces only when apt fails."; bake_errors=1; }
+grep -q 'rclpy' <<< "$bake_msg" \
+    || { log_err "a .env pinning UV_PYTHON against its ROS_DISTRO produces no warning; the venv silently cannot import ROS."; bake_errors=1; }
+# A COMMAND-LINE override must reach the detector too. make passes neither
+# command-line nor environment variables into $(shell …), so this arrived as
+# nothing and the pairing silently stayed on whatever .env said.
+# In a probe tree: this repo's own .env may pin BASE_IMAGE deliberately (see
+# the warning above), and the question here is whether the OVERRIDE arrives.
+for bake_pair in "noetic ubuntu:20.04 3.8" "jazzy ubuntu:24.04 3.12"; do
+    set -- $bake_pair
+    # env -u: the Makefile exports everything to its recipes, so this script
+    # already carries the repo's own BASE_IMAGE/UV_PYTHON and the inner make
+    # would read them as environment overrides — exactly what is under test.
+    bake_db="$( cd "$bake_cli" && env -u ROS_DISTRO -u BASE_IMAGE -u UV_PYTHON \
+        make -np bake-prod ROS_DISTRO="$1" 2>/dev/null || true )"
+    bake_base="$(sed -n 's/^BASE_IMAGE := //p' <<< "$bake_db" | tail -1)"
+    bake_py="$(sed -n 's/^UV_PYTHON := //p' <<< "$bake_db" | tail -1)"
+    { [ "$bake_base" = "$2" ] && [ "$bake_py" = "$3" ]; } \
+        || { log_err "'make bake-prod ROS_DISTRO=$1' resolves ${bake_base:-<none>}/${bake_py:-<none>}, not $2/$3; the override never reaches check_env.sh."; bake_errors=1; }
+done
+for bake_distro in noetic jazzy; do
+    bake_env_db="$(cd "$bake_cli" && env -u BASE_IMAGE -u UV_PYTHON ROS_DISTRO="$bake_distro" \
+        make -np bake-prod 2>/dev/null || true)"
+    grep -qx "ROS_DISTRO := $bake_distro" <<< "$bake_env_db" \
+        || { log_err "Environment ROS_DISTRO=$bake_distro was lost or reused a stale cache."; bake_errors=1; }
+done
+rm -rf "$bake_cli"
+[ "$bake_errors" -eq 0 ] \
+    && log_ok "A bake derives its base image and interpreter from ROS_DISTRO (.env or command line), carries the pin policy into the build, and warns on a stale .env."
+# =============================================================================
 # [gpg-anchor] The pinned fingerprint must exist and stay in sync with the
 #      updater that maintains it (`make update-gpg`).
 # =============================================================================
@@ -1154,12 +1244,83 @@ grep -q 'snapshot.ubuntu.com' scripts/util_apt_helper.sh || { log_err "APT snaps
 grep -q 'SOURCE_DATE_EPOCH' scripts/apptainer_bake.sh    || { log_err "bake does not forward SOURCE_DATE_EPOCH."; repro_errors=1; }
 grep -q 'ROS_GPG_FINGERPRINT' scripts/util_apt_helper.sh || { log_err "ROS key is not fingerprint-pinned."; repro_errors=1; }
 grep -q 'dpkg-query -W' scripts/util_release_metadata.sh || { log_err "Release metadata must record an APT manifest (unpinnable layers need auditability)."; repro_errors=1; }
-grep -q 'Unpinned repositories' scripts/setup_sync_deps.sh || { log_err "sync_deps must lint .repos for unpinned branch refs."; repro_errors=1; }
+# The .repos pin, by EXECUTION on a real branch ref: warn by default (a branch
+# is a legitimate choice mid-development) but REFUSE under DEVKIT_REQUIRE_PINNED,
+# which prod bakes set — a release must not be built from a branch that moved.
+# A probe tree, not the real dependencies/: WS_ROOT honours WORKSPACE_PATH when
+# it holds config/util_paths.sh, so the committed .repos file is never touched.
+pin_probe="$(probe_dir)"
+mkdir -p "$pin_probe/dependencies"; ln -s "${ROOT_DIR}/config" "$pin_probe/config"
+printf 'repositories:\n  loose:\n    type: git\n    url: https://example.invalid/x.git\n    version: main\n' \
+    > "$pin_probe/dependencies/dependencies.repos"
+pin_out="$(DEVKIT_DRY_RUN=1 WORKSPACE_PATH="$pin_probe" bash scripts/setup_sync_deps.sh 2>&1 || true)"
+grep -qi 'unpinned' <<< "$pin_out" \
+    || { log_err "sync_deps does not lint .repos for unpinned branch refs; a release could float."; repro_errors=1; }
+# Match the REFUSAL, not just a non-zero exit: this script also exits non-zero
+# when vcstool is absent, which would satisfy an exit-code-only assertion.
+pin_strict="$(DEVKIT_DRY_RUN=1 DEVKIT_REQUIRE_PINNED=1 WORKSPACE_PATH="$pin_probe" \
+    bash scripts/setup_sync_deps.sh 2>&1 || true)"
+grep -qi 'DEVKIT_REQUIRE_PINNED' <<< "$pin_strict" \
+    || { log_err "DEVKIT_REQUIRE_PINNED=1 accepts a branch ref; prod bakes would ship a floating dependency."; repro_errors=1; }
+grep -qi 'DEVKIT_REQUIRE_PINNED' <<< "$pin_out" \
+    && { log_err "sync_deps refuses an unpinned ref without DEVKIT_REQUIRE_PINNED; a branch is a legitimate choice mid-development."; repro_errors=1; }
+
+# Shape must not decide whether a pin is enforced. Flow style and a deeper
+# indent are ordinary YAML; a lint that cannot read them used to let
+# `version: main` through the release gate while only printing a warning.
+pin_hash="0123456789abcdef0123456789abcdef01234567"
+pin_case() {   # pin_case <label> <expect-blocked yes|no> <repos body>
+    printf '%s\n' "$3" > "$pin_probe/dependencies/dependencies.repos"
+    local out
+    out="$(DEVKIT_DRY_RUN=1 DEVKIT_REQUIRE_PINNED=1 WORKSPACE_PATH="$pin_probe" \
+        bash scripts/setup_sync_deps.sh 2>&1 || true)"
+    local blocked=no
+    grep -qE 'DEVKIT_REQUIRE_PINNED=1' <<< "$out" && blocked=yes
+    [ "$blocked" = "$2" ] \
+        || { log_err "release gate on ${1}: blocked=${blocked}, expected ${2}."; repro_errors=1; }
+}
+pin_case "flow-style unpinned"   yes "repositories:
+  a: {type: git, url: https://example.invalid/a.git, version: main}"
+pin_case "deeper-indent unpinned" yes "repositories:
+    a:
+      type: git
+      url: https://example.invalid/a.git
+      version: main"
+# A version field is a STRING. YAML's implicit typing turns an all-digit hash
+# into a number — safe_load reads 40 zeros as int 0 — and the release then
+# reads as unpinned. BaseLoader is what keeps every scalar a string.
+pin_case "pinned, numeric-looking hash" no "repositories:
+  a:
+    type: git
+    url: https://example.invalid/a.git
+    version: 0000000000000000000000000000000000000000"
+pin_case "pinned with an extra field" no "repositories:
+  a:
+    type: git
+    url: https://example.invalid/a.git
+    version: ${pin_hash}
+    remote: origin"
+# …and with no YAML parser the lint must FAIL CLOSED: unread is not pinned.
+mkdir -p "$pin_probe/bin"
+printf '#!/bin/sh\ncase "$*" in *"import yaml"*) exit 1 ;; esac\nexec %s "$@"\n' "$(command -v python3)" \
+    > "$pin_probe/bin/python3"
+chmod +x "$pin_probe/bin/python3"
+pin_closed="$(PATH="$pin_probe/bin:$PATH" DEVKIT_DRY_RUN=1 DEVKIT_REQUIRE_PINNED=1 \
+    WORKSPACE_PATH="$pin_probe" bash scripts/setup_sync_deps.sh 2>&1 || true)"
+grep -qE 'DEVKIT_REQUIRE_PINNED=1' <<< "$pin_closed" \
+    && { log_err "without a YAML parser the lint blocks a pinned .repos it can read; only unreadable input may fail closed."; repro_errors=1; }
+printf 'repositories:\n  a: {type: git, url: https://example.invalid/a.git, version: main}\n' \
+    > "$pin_probe/dependencies/dependencies.repos"
+pin_closed="$(PATH="$pin_probe/bin:$PATH" DEVKIT_DRY_RUN=1 DEVKIT_REQUIRE_PINNED=1 \
+    WORKSPACE_PATH="$pin_probe" bash scripts/setup_sync_deps.sh 2>&1 || true)"
+grep -qE 'DEVKIT_REQUIRE_PINNED=1' <<< "$pin_closed" \
+    || { log_err "without a YAML parser an unreadable .repos passes the release gate; unread is not proof of a pin."; repro_errors=1; }
+rm -rf "$pin_probe"
 # Production artifact self-containment. Asserted by EXECUTION, not by grepping
 # for a variable name: the shipped image copies install/ and never src/ or
 # build/, so `--symlink-install` would leave dangling links and a CMake build
 # that never installs would ship nothing at all.
-prod_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+prod_probe="$(probe_dir)"
 mkdir -p "$prod_probe/bin" "$prod_probe/config" "$prod_probe/src"
 cp config/util_aliases.sh config/util_paths.sh "$prod_probe/config/" 2>/dev/null || true
 printf '#!/bin/sh\necho "$*"\n' > "$prod_probe/bin/colcon"
@@ -1187,7 +1348,7 @@ case "$(build_flags prod 1)" in
     *) log_err "ROS 1 prod cbuild does not run 'catkin_make install'; the runtime image copies install/ only."; repro_errors=1 ;;
 esac
 # Deployment goal: the shipped tree must not carry plaintext project source.
-src_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"; mkdir -p "$src_probe/pkg/lib/python3/site-packages/pkg" "$src_probe/pkg/share/pkg/launch"
+src_probe="$(probe_dir)"; mkdir -p "$src_probe/pkg/lib/python3/site-packages/pkg" "$src_probe/pkg/share/pkg/launch"
 printf 'SECRET=1\n' > "$src_probe/pkg/lib/python3/site-packages/pkg/core.py"
 printf 'x\n'        > "$src_probe/pkg/share/pkg/launch/a.launch.py"
 DEVKIT_STRIP_SOURCE=1 bash scripts/check_deps.sh "$src_probe" >/dev/null 2>&1 || true
@@ -1206,10 +1367,11 @@ printf '#!/bin/sh\necho "$*"\n' > "$prod_probe/bin/uv"; chmod +x "$prod_probe/bi
 mkdir -p "$prod_probe/install/.venv/bin"; printf '#!/bin/sh\n' > "$prod_probe/install/.venv/bin/python3"
 chmod +x "$prod_probe/install/.venv/bin/python3"
 printf '[project]\nname = "p"\nversion = "0"\n' > "$prod_probe/src/pyproject.toml"
+: > "$prod_probe/src/uv.lock"
 sync_flags() {
     env -i PATH="$prod_probe/bin:/usr/bin:/bin" HOME=/tmp WORKSPACE_PATH="$prod_probe" \
         ${1:+DEVKIT_BUILD_TYPE=$1} \
-        bash -lc "source $prod_probe/config/util_aliases.sh 2>/dev/null; uvs" 2>/dev/null
+        bash -c "source $prod_probe/config/util_aliases.sh 2>/dev/null; uvs"
 }
 case "$(sync_flags prod)" in
     *--no-default-groups*) ;;
@@ -1218,7 +1380,6 @@ esac
 case "$(sync_flags '')" in
     *--no-default-groups*) log_err "dev uvs excludes the dev dependency-group, so mtest/mlint have no runner."; repro_errors=1 ;;
 esac
-rm -rf "$prod_probe"
 # The flag only helps if the Dockerfile actually sets it on the builder stages.
 for stage_line in 'prod-dev-builder' 'prod-ros-builder'; do
     awk -v stage="$stage_line" '
@@ -1229,11 +1390,18 @@ for stage_line in 'prod-dev-builder' 'prod-ros-builder'; do
         END {exit (found && !ok) ? 1 : 0}' docker/Dockerfile \
         || { log_err "docker/Dockerfile: ${stage_line} runs mksync without DEVKIT_BUILD_TYPE=prod."; repro_errors=1; }
 done
-if [ -f src/pyproject.toml ] && [ ! -f src/uv.lock ]; then
-    # Informational, never a failure: the TEMPLATE ships no lock (it would hand
-    # every fork one moment's resolution). The derived project commits its own.
-    log_info "No src/uv.lock here — DevKit ships none; run 'mksync' in your project and commit the lock there."
+# A production build resolves nothing: `uvs` passes --locked, so a missing or
+# stale lock must stop the build rather than silently resolve a fresh set.
+[ ! -f src/pyproject.toml ] || [ -f src/uv.lock ] \
+    || log_err "src/pyproject.toml has no src/uv.lock; 'make bake-prod' passes --locked and would fail."
+rm -f "$prod_probe/src/uv.lock"
+missing_lock_rc=0
+missing_lock_out="$(sync_flags prod 2>&1)" || missing_lock_rc=$?
+if [ "$missing_lock_rc" -eq 0 ] || ! grep -q 'Production requires src/uv.lock' <<< "$missing_lock_out"; then
+    log_err "prod uvs must reject a missing lockfile with an actionable error."
+    repro_errors=1
 fi
+rm -rf "$prod_probe"
 [ "$repro_errors" -eq 0 ] && log_ok "Reproducibility inputs wired (APT snapshot, SOURCE_DATE_EPOCH, GPG pin)."
 
 # =============================================================================

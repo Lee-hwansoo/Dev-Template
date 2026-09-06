@@ -108,6 +108,10 @@ ENV PATH="/usr/lib/ccache:${WORKSPACE_PATH}/install/.venv/bin:$PATH" \
     CCACHE_DIR=/cache/ccache \
     UV_CACHE_DIR=/cache/uv \
     UV_PYTHON=${UV_PYTHON} \
+    UV_EXTRA=${UV_EXTRA} \
+    UV_SYNC_FLAGS=${UV_SYNC_FLAGS} \
+    CMAKE_EXTRA_ARGS=${CMAKE_EXTRA_ARGS} \
+    COLCON_EXTRA_FLAGS=${COLCON_EXTRA_FLAGS} \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     VIRTUAL_ENV=${WORKSPACE_PATH}/install/.venv \
@@ -231,13 +235,17 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 FROM ros-base AS ros
 ARG WORKSPACE_PATH
+# A host `export` does not cross into a build. Without this ARG the pin policy
+# a prod bake sets was read as its default (0) by the sync inside the image.
+ARG DEVKIT_REQUIRE_PINNED=0
 ENV COLCON_HOME=${WORKSPACE_PATH}
 WORKDIR ${WORKSPACE_PATH}
 
 RUN mkdir -p src && ${WORKSPACE_PATH}/scripts/util_setup_links.sh
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    SYNC_TARGET_DIR=/tmp/staging ${WORKSPACE_PATH}/scripts/setup_sync_deps.sh --rosdep && \
+    SYNC_TARGET_DIR=/tmp/staging DEVKIT_REQUIRE_PINNED=${DEVKIT_REQUIRE_PINNED} \
+        ${WORKSPACE_PATH}/scripts/setup_sync_deps.sh --rosdep && \
     rm -rf /tmp/staging && \
     bash ${WORKSPACE_PATH}/scripts/util_apt_helper.sh restore-docker-clean
 
@@ -263,6 +271,8 @@ WORKDIR ${WORKSPACE_PATH}
 # ── Stage: production builders (Build and validate install artifacts) ───────
 FROM build-core AS prod-dev-builder
 ARG WORKSPACE_PATH
+# mksync below runs setup_sync_deps.sh: a release must not float on a branch.
+ARG DEVKIT_REQUIRE_PINNED=0
 ARG ROS_DISTRO
 ARG CUDA_VERSION
 ARG CUDNN_VERSION
@@ -291,13 +301,15 @@ COPY scripts ${WORKSPACE_PATH}/scripts
 # release manifest; without it here the shipped artifact says "unknown".
 COPY VERSION ${WORKSPACE_PATH}/VERSION
 WORKDIR ${WORKSPACE_PATH}
-RUN DEVKIT_BUILD_TYPE=prod bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync" && \
+RUN DEVKIT_BUILD_TYPE=prod DEVKIT_REQUIRE_PINNED=${DEVKIT_REQUIRE_PINNED} bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync" && \
     DEVKIT_STRIP_SOURCE=${DEVKIT_STRIP_SOURCE} DEVKIT_FAIL_ON_SOURCE=${DEVKIT_FAIL_ON_SOURCE} \
     bash ${WORKSPACE_PATH}/scripts/check_deps.sh ${WORKSPACE_PATH}/install && \
     DEVKIT_BUILD_TYPE=prod bash ${WORKSPACE_PATH}/scripts/util_release_metadata.sh ${WORKSPACE_PATH}/release/devkit-release.json
 
 FROM ros-builder-base AS prod-ros-builder
 ARG WORKSPACE_PATH
+# mksync below runs setup_sync_deps.sh: a release must not float on a branch.
+ARG DEVKIT_REQUIRE_PINNED=0
 ARG ROS_DISTRO
 ARG CUDA_VERSION
 ARG CUDNN_VERSION
@@ -321,7 +333,7 @@ COPY scripts ${WORKSPACE_PATH}/scripts
 # release manifest; without it here the shipped artifact says "unknown".
 COPY VERSION ${WORKSPACE_PATH}/VERSION
 WORKDIR ${WORKSPACE_PATH}
-RUN DEVKIT_BUILD_TYPE=prod bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync --share" && \
+RUN DEVKIT_BUILD_TYPE=prod DEVKIT_REQUIRE_PINNED=${DEVKIT_REQUIRE_PINNED} bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync --share" && \
     DEVKIT_STRIP_SOURCE=${DEVKIT_STRIP_SOURCE} DEVKIT_FAIL_ON_SOURCE=${DEVKIT_FAIL_ON_SOURCE} \
     bash ${WORKSPACE_PATH}/scripts/check_deps.sh ${WORKSPACE_PATH}/install && \
     DEVKIT_BUILD_TYPE=prod bash ${WORKSPACE_PATH}/scripts/util_release_metadata.sh ${WORKSPACE_PATH}/release/devkit-release.json

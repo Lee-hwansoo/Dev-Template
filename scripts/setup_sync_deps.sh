@@ -52,25 +52,84 @@ mkdir -p "$TARGET_DIR"
 # =============================================================================
 print_section "VCS Repository Import"
 
-# Reproducibility lint (static, runs even without vcstool): a branch name in
-# `version:` makes the build float. Warn, never block — during development a
-# branch is a legitimate choice.
+# Block-format .repos lint: releases require a full commit hash; development
+# may use tags or branches. Omitted versions resolve the remote default branch.
 if [ -f "$REPOS_FILE" ]; then
-    UNPINNED="$(awk '
-        /^[[:space:]]{2}[^[:space:]#]/ { repo = $1; sub(/:$/, "", repo) }
-        /^[[:space:]]+version:/ {
-            v = $2
-            if (v !~ /^[0-9a-f]{7,40}$/ && v !~ /^v?[0-9]+\.[0-9]+/) print "    - " repo " -> " v
-        }' "$REPOS_FILE" 2>/dev/null || true)"
+    # PyYAML when it is there (vcstool depends on it, so a real import brings
+    # it): flow style, any indentation and unknown fields all parse correctly.
+    if python3 -c 'import yaml' 2>/dev/null; then
+        UNPINNED="$(python3 - "$REPOS_FILE" <<'PYLINT' || echo "    ! .repos could not be parsed"
+import re, sys, yaml
+try:
+    # BaseLoader keeps every scalar a string: safe_load turns an all-digit
+    # commit hash into an int and a leading-zero one loses its zeros.
+    doc = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader) or {}
+except yaml.YAMLError as exc:
+    print(f"    ! .repos is not valid YAML: {exc}"); raise SystemExit(0)
+repos = doc.get("repositories") or {}
+if not isinstance(repos, dict):
+    print("    ! 'repositories:' is not a mapping"); raise SystemExit(0)
+for name, spec in repos.items():
+    version = spec.get("version") if isinstance(spec, dict) else None
+    version = "" if version is None else str(version)
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", version):
+        print(f"    - {name} -> {version or '<missing version>'}")
+PYLINT
+)"
+    else
+        # No parser: read what we can and FAIL CLOSED. An unreadable structure
+        # is not proof that a dependency is pinned, and letting it through is
+        # how `version: main` in flow style reached a release build.
+        UNPINNED="$(awk '
+            function check() {
+                if (repo != "" && (length(v) != 40 || tolower(v) ~ /[^0-9a-f]/))
+                    print "    - " repo " -> " (v == "" ? "<missing version>" : v)
+            }
+            /^[[:space:]]*(#.*)?$/ { next }
+            /^repositories:[[:space:]]*(\{\})?[[:space:]]*(#.*)?$/ { next }
+            /^  [^[:space:]#][^:]*:[[:space:]]*(#.*)?$/ {
+                check(); repo = $1; sub(/:$/, "", repo); v = ""; next
+            }
+            /^[[:space:]]+version:/ {
+                v = $0; sub(/^[[:space:]]+version:[[:space:]]*/, "", v)
+                sub(/[[:space:]]+#.*/, "", v); sub(/[[:space:]]+$/, "", v)
+                gsub(/[\042\047]/, "", v)
+                next
+            }
+            repo != "" && /^    [^[:space:]#][^:]*:/ { next }   # any other field
+            { print "    ! unreadable without a YAML parser, line " NR ": " $0 }
+            END { check() }' "$REPOS_FILE")"
+    fi
+    LAYOUT="$(grep '^    ! ' <<< "$UNPINNED" || true)"
+    UNPINNED="$(grep -v '^    ! ' <<< "$UNPINNED" || true)"
+    if [ -n "$LAYOUT" ]; then
+        log_warn "Lines this pin check could not read:"
+        echo "$LAYOUT"
+        # Fail closed: unread is not the same as pinned.
+        [ "${DEVKIT_REQUIRE_PINNED:-0}" != "1" ] || {
+            log_error "DEVKIT_REQUIRE_PINNED=1 and the .repos file could not be fully read."
+            log_info "Install python3-yaml so the pin check can parse it, or simplify the file."
+            exit 1; }
+    fi
     if [ -n "$UNPINNED" ]; then
-        log_warn "Unpinned repositories (branch refs make builds non-reproducible):"
+        if [ "${DEVKIT_REQUIRE_PINNED:-0}" = "1" ]; then
+            log_error "Unpinned repositories, and DEVKIT_REQUIRE_PINNED=1:"
+            echo "$UNPINNED"
+            log_info "Pin them to full commit hashes, or set DEVKIT_REQUIRE_PINNED=0."
+            exit 1
+        fi
+        log_warn "Unpinned repositories (tags and branches can move):"
         echo "$UNPINNED"
-        log_info "Pin them to a tag or full commit hash for reproducible builds."
+        log_info "Pin them to full commit hashes for reproducible builds."
     fi
 fi
 
 if ! command -v vcs >/dev/null 2>&1; then
-    log_warn "vcstool (vcs) not found. Skipping repository import."
+    if [ -f "$REPOS_FILE" ] && grep -qE '^[[:space:]]+url:' "$REPOS_FILE"; then
+        log_error "dependencies.repos is populated but vcstool is missing. Add python3-vcstool to dependencies/apt.txt."
+        exit 1
+    fi
+    log_info "No external repositories to import."
 elif [ ! -f "$REPOS_FILE" ]; then
     log_info "No .repos file found at ${REPOS_FILE}. Skipping."
 else

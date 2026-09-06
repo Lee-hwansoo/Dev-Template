@@ -5,9 +5,10 @@
 name = "devkit"
 version = "0.1.0"
 description = "Your project. Run: make adopt NAME=my-robot DESC='One line about it'"
-# The image installs UV_PYTHON (3.10 by default) and the extras below need it;
-# ruff also derives its target syntax from this line.
-requires-python = ">=3.10"
+# The floor, not the target: noetic ships Python 3.8 on 20.04, humble 3.10 on
+# 22.04, jazzy 3.12 on 24.04. UV_PYTHON picks which one the venv uses; ruff
+# derives its target syntax from this line, so keep it at the oldest supported.
+requires-python = ">=3.8"
 dependencies = []
 
 # The quality loop's tools, not runtime dependencies. `uv sync` installs the
@@ -18,7 +19,8 @@ dependencies = []
 [dependency-groups]
 dev = [
     "ruff>=0.6",
-    "pytest>=8",
+    "pytest>=7,<9; python_version < '3.9'",
+    "pytest>=8; python_version >= '3.9'",
 ]
 
 [project.optional-dependencies]
@@ -56,6 +58,11 @@ line-length = 100
 select = ["E", "F", "I"]
 
 [tool.uv]
+# src/ is a colcon workspace source directory, not a distributable package: it
+# holds ROS packages that colcon builds into install/, plus thirdparty/. Adding
+# a [build-system] here makes `uv sync` try to build a wheel from it and fail,
+# so the policy is declared rather than left to uv's inference.
+package = false
 conflicts = [
     [ { extra = "cpu" }, { extra = "gpu" } ]
 ]
