@@ -295,6 +295,9 @@ if [ -f "$REPOS_FILE" ] && [ -f "$SYNC_DEPS" ] && \
      | grep -qE '(^|[[:space:],{])url:[[:space:]]*[^[:space:]]'; then
     log_info "First-run: syncing dependencies..."
     bash "$SYNC_DEPS" || log_warn "Dependency sync failed. Re-run with: sync_deps"
+    # This still runs as root, and the clone lands in the bind mount: hand it
+    # over, or neither the container user nor the host can touch the tree.
+    sync_owner_if_root "$THIRD_PARTY"
 fi
 
 # =============================================================================

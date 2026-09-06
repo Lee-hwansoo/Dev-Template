@@ -2866,6 +2866,11 @@ query_fd() {   # query_fd <command…>
     # three status calls ran glxinfo/eglinfo/vulkaninfo for real — 6.6 s, 44 %
     # of the whole suite on a WSLg host.
     ( cd "$ROOT_DIR" && env -u DISPLAY -u WAYLAND_DISPLAY WORKSPACE_PATH="$ROOT_DIR" bash -c '
+# The first-run sync runs BEFORE the privilege drop, as root, into the bind
+# mount. The clone must be handed to the container user or nobody — not the
+# container user, not the host — can modify or remove it afterwards.
+awk '/bash "\$SYNC_DEPS"/ {seen=1} seen && /sync_owner_if_root "\$THIRD_PARTY"/ {ok=1} END {exit ok ? 0 : 1}' docker/entrypoint.sh \
+    || { log_err "docker/entrypoint.sh leaves the first-run sync target root-owned; sync_owner_if_root must follow the sync."; deps_errors=1; }
         exec 9>"'"$out"'"
         source config/util_aliases.sh >/dev/null 2>&1
         before="$(readlink /proc/$$/fd/1)"
