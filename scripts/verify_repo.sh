@@ -40,14 +40,17 @@ log_info(){ echo -e "  \033[0;34m[INFO]\033[0m $*"; }
 # top-level directories so a script under test resolves WS_ROOT there and never
 # writes into the repo. Every check that needs a workspace of its own builds it
 # here, so the cleanup rule lives in one place.
+# A PATH for probes that must HIDE a tool: minimal, but still holding the shell
+# and the core utilities wherever this host keeps them. Hardcoding /usr/bin:/bin
+# broke every such probe on a host that keeps bash in /usr/local/bin.
+probe_min_path="$(dirname "$(command -v bash)"):$(dirname "$(command -v sed)"):/usr/bin:/bin"
+
 probe_dir() {
     local dir name
     dir="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
     for name in "$@"; do ln -s "${ROOT_DIR}/${name}" "${dir}/${name}"; done
     printf '%s' "$dir"
 }
-
-log_info "Verifying DevKit repository structure, shell syntax, and contracts..."
 
 log_info "Verifying DevKit repository structure, shell syntax, and contracts..."
 
@@ -476,6 +479,7 @@ rm -rf "$distro_probe"
     || { log_err "check_env.sh accepts an unknown ROS_DISTRO and picks a base image for it; the image would build on the wrong Ubuntu."; distro_errors=1; }
 [ "$distro_errors" -eq 0 ] \
     && log_ok "Every supported ROS distro has a base image, and an unknown one is refused ($(wc -w <<< "$apt_distros") distros)."
+
 # =============================================================================
 # [host-identity] The container account must survive a base image that already
 #      uses the requested gid, group name or user name. macOS hosts (501:20)
@@ -536,6 +540,7 @@ run_identity_case "a macOS host (501:20)" "" "20:dialout" user 501 20 0
 rm -rf "$identity_probe"
 [ "$identity_errors" -eq 0 ] \
     && log_ok "The container account survives a taken gid, group name or user name (4 host shapes)."
+
 # =============================================================================
 # [ide-service] `make start` and the devcontainer must open the SAME service.
 #      They agree only because both resolve through RESOLVE_SVC_MODE and
@@ -554,9 +559,9 @@ done
 # says nothing, because mv still succeeds.
 # '|| true': an empty result is the finding here, and a bare substitution under
 # 'set -e' would abort the suite instead of reporting it.
-ide_sed="$(sed -n '/sed -E .*"service"/,/> "\$\$DC.tmp"/p' Makefile \
-    | sed -e :a -e '/\\$/N; s/\\\n//; ta' \
-    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]\{2,\}/ /g' -e 's/ && \\*$//' -e 's/\$\$/$/g' || true)"
+ide_sed="$(awk '/sed -E .*"service"/,/> "\$\$DC.tmp"/' Makefile \
+    | awk '{ sub(/\\$/, ""); printf "%s", $0 } END { printf "\n" }' \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]][[:space:]]*/ /g' -e 's/ && *$//' -e 's/\$\$/$/g' || true)"
 [ -n "$ide_sed" ] \
     || { log_err "Makefile: the ide-config recipe no longer rewrites a \"service\" key; VS Code would keep attaching to the committed default."; ide_errors=1; }
 ide_probe="$(probe_dir)"
@@ -588,6 +593,7 @@ grep -qE "^  ${ide_committed}:" docker-compose.dev.yml 2>/dev/null \
     || { log_err ".devcontainer/devcontainer.json points at '${ide_committed}', which is not a service in docker-compose.dev.yml."; ide_errors=1; }
 [ "$ide_errors" -eq 0 ] \
     && log_ok "The editor and 'make start' resolve one service; ide-config rewrites it and every profile exists ($(wc -w <<< "$ide_modes") profiles)."
+
 # =============================================================================
 # [run-record] A batch job nobody watched must still be answerable later: which
 #      image, on what the scheduler granted, against which data, and how it
@@ -657,7 +663,7 @@ printf '#!/bin/sh\ncase "$*" in *"test -x /entrypoint.sh"*) exit 0 ;; *grep*) ex
     > "$record_local/bin/apptainer"
 chmod +x "$record_local/bin/apptainer"
 record_local_rc=0
-( PATH="$record_local/bin:/usr/bin:/bin" WORKSPACE_PATH="$record_local" \
+( PATH="$record_local/bin:$probe_min_path" WORKSPACE_PATH="$record_local" \
   SLURM_RUN_ROOT="$record_local/runs" SIF_FILE="$record_local/a.sif" \
   bash scripts/apptainer_run.sh --mode prod --env dev 'true' ) >/dev/null 2>&1 || record_local_rc=$?
 record_local_file="$(find "$record_local/runs" -name 'devkit-local-*.txt' -print -quit 2>/dev/null || true)"
@@ -692,6 +698,7 @@ rm -rf "$record_sig"
 rm -rf "$record_probe"
 [ "$record_errors" -eq 0 ] \
     && log_ok "Run records carry image hash, granted resources, data version and exit status (0600)."
+
 # =============================================================================
 # [gpu-dispatch] Which run gets --nv. A GPU cannot be probed here, but the
 #      DECISION can: inside an allocation the submitting node's hardware says
@@ -703,7 +710,7 @@ mkdir -p "$gpu_probe/with" "$gpu_probe/without"
 printf '#!/bin/sh\nexit 0\n' > "$gpu_probe/with/nvidia-smi"; chmod +x "$gpu_probe/with/nvidia-smi"
 # gpu_flags_for <bin-dir> <env assignments> — the flags sif_gpu_flags builds.
 gpu_flags_for() {
-    ( export PATH="$1:/usr/bin:/bin"; shift; eval "export $*" 2>/dev/null
+    ( export PATH="$1:$probe_min_path"; shift; eval "export $*" 2>/dev/null
       source config/util_paths.sh && devkit_require util_logging.sh && devkit_require util_sif_common.sh
       sif_gpu_flags; printf '%s' "${GPU_FLAGS[*]-}" ) 2>/dev/null || true
 }
@@ -732,7 +739,7 @@ printf '#!/bin/sh\nshift\nCUDA_VISIBLE_DEVICES=1 exec "$@"\n' > "$gpu_task/bin/s
 printf '#!/bin/sh\ncase "$*" in *"test -x /entrypoint.sh"*) exit 0 ;; *grep*) exit 1 ;; esac\nprintf "%%s" "${APPTAINERENV_CUDA_VISIBLE_DEVICES-<unset>}" > "%s/seen"\nexit 0\n' \
     "$gpu_task" > "$gpu_task/bin/apptainer"
 chmod +x "$gpu_task/bin/srun" "$gpu_task/bin/apptainer"
-( PATH="$gpu_task/bin:/usr/bin:/bin" WORKSPACE_PATH="$gpu_task" \
+( PATH="$gpu_task/bin:$probe_min_path" WORKSPACE_PATH="$gpu_task" \
   SLURM_JOB_ID=99 CUDA_VISIBLE_DEVICES=0,1 \
   bash scripts/slurm_run.sh "$gpu_task/a.sif" 'true' ) >/dev/null 2>&1 || true
 gpu_seen="$(cat "$gpu_task/seen" 2>/dev/null || echo '<nothing>')"
@@ -742,7 +749,7 @@ gpu_seen="$(cat "$gpu_task/seen" 2>/dev/null || echo '<nothing>')"
 # job-wide value — leaving it hands a CPU task GPUs another task is using.
 printf '#!/bin/sh\nshift\nCUDA_VISIBLE_DEVICES= exec "$@"\n' > "$gpu_task/bin/srun"
 rm -f "$gpu_task/seen"
-( PATH="$gpu_task/bin:/usr/bin:/bin" WORKSPACE_PATH="$gpu_task" \
+( PATH="$gpu_task/bin:$probe_min_path" WORKSPACE_PATH="$gpu_task" \
   SLURM_JOB_ID=99 CUDA_VISIBLE_DEVICES=0,1 \
   bash scripts/slurm_run.sh "$gpu_task/a.sif" 'true' ) >/dev/null 2>&1 || true
 gpu_empty="$(cat "$gpu_task/seen" 2>/dev/null || echo '<nothing>')"
@@ -766,6 +773,7 @@ gpu_threads() {   # gpu_threads <env assignments>
 rm -rf "$gpu_probe" "$gpu_task"
 [ "$gpu_errors" -eq 0 ] \
     && log_ok "--nv follows an explicit request, never a login node; each srun task forwards only its own devices and its own core count."
+
 # =============================================================================
 # [slurm-submit] What reaches sbatch. No cluster here, but a stub sbatch shows
 #      the argv exactly: the knobs must arrive, and a MISSING sbatch must stop
@@ -780,7 +788,7 @@ printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/argv"\n' "$submit_probe" > "$submi
 chmod +x "$submit_probe/bin/sbatch"
 
 submit_run() {   # submit_run <extra PATH dir or empty>
-    ( export PATH="${1:+$1:}/usr/bin:/bin" WORKSPACE_PATH="$submit_probe" \
+    ( export PATH="${1:+$1:}$probe_min_path" WORKSPACE_PATH="$submit_probe" \
              SIF_FILE="$submit_probe/artifact.sif" \
              DEVKIT_SLURM_PARTITION=gpu DEVKIT_SLURM_GRES=gpu:2 \
              DEVKIT_SLURM_ARRAY=1-4 DEVKIT_SLURM_ACCOUNT=lab \
@@ -808,7 +816,7 @@ fi
 # The dangerous one: no sbatch must NOT mean "run it here".
 rm -f "$submit_probe/argv"
 submit_norc=0
-( export PATH="/usr/bin:/bin" WORKSPACE_PATH="$submit_probe" \
+( export PATH="$probe_min_path" WORKSPACE_PATH="$submit_probe" \
          SIF_FILE="$submit_probe/artifact.sif"
   bash scripts/apptainer_run.sh --mode slurm --env dev 'python3 -c "pass"' ) >/dev/null 2>&1 || submit_norc=$?
 [ "$submit_norc" -ne 0 ] \
@@ -826,7 +834,7 @@ printf '#!/bin/sh\ncase "$*" in *"test -x /entrypoint.sh"*) exit 0 ;; *grep*) ex
 chmod +x "$submit_probe/bin/srun" "$submit_probe/bin/apptainer"
 submit_launcher_for() {   # submit_launcher_for [job-id]
     rm -f "$submit_probe/launcher"
-    ( export PATH="$submit_probe/bin:/usr/bin:/bin" WORKSPACE_PATH="$submit_probe"
+    ( export PATH="$submit_probe/bin:$probe_min_path" WORKSPACE_PATH="$submit_probe"
       [ -z "${1:-}" ] || export SLURM_JOB_ID="$1"
       bash scripts/slurm_run.sh "$submit_probe/artifact.sif" 'true' ) >/dev/null 2>&1 || true
     cat "$submit_probe/launcher" 2>/dev/null || echo none
@@ -842,6 +850,7 @@ grep -qiE '(다중 노드|multi-node).*(미지원|unsupported)' README.md \
 rm -rf "$submit_probe"
 [ "$submit_errors" -eq 0 ] \
     && log_ok "Every SLURM knob reaches sbatch as one argv, and a missing sbatch stops the job instead of running it locally."
+
 # =============================================================================
 # [slurm-defaults] The job defaults are spelled twice and cannot share code:
 #      SLURM parses #SBATCH before any shell can expand a variable, so a bare
@@ -900,6 +909,7 @@ grep -qE '(컴퓨트 노드|compute node).*(마운트|mount)' docs/SLURM.md \
     || { log_err "docs/SLURM.md does not state that the workspace must sit on a filesystem the compute nodes mount."; slurmdef_errors=1; }
 [ "$slurmdef_errors" -eq 0 ] \
     && log_ok "SLURM job defaults agree between #SBATCH and .env.example, every knob becomes its flag, and the submitter creates the log directory."
+
 # =============================================================================
 # [host-prereqs] The host tools a workflow reaches for must be BOTH checked
 #      before the build and written down. A tool missing from preflight fails
@@ -963,6 +973,7 @@ grep -qE '^[^#]*vcstool' scripts/check_preflight.sh \
     && { log_err "check_preflight.sh requires vcstool on the host; it runs inside the container."; hostdep_errors=1; }
 [ "$hostdep_errors" -eq 0 ] \
     && log_ok "Every blocking host prerequisite is both enforced by preflight and documented ($(wc -w <<< "$hostdep_tools") tools)."
+
 # =============================================================================
 # [macos-fallback] macOS has no CUDA and no DRI passthrough — Docker Desktop
 #      runs a Linux VM. Every macOS host must resolve to cpu even when the
@@ -998,6 +1009,7 @@ grep -qiE 'macOS GPU.*(미지원|unsupported)' README.md \
     || { log_err "README does not state that macOS GPU acceleration is unsupported (CPU fallback only)."; macos_errors=1; }
 [ "$macos_errors" -eq 0 ] \
     && log_ok "A macOS host resolves to cpu even with nvidia-smi on PATH, and the README says Metal/MPS is unsupported."
+
 # =============================================================================
 # [bake-inputs] What a bake actually passes to docker build. ROS_DISTRO decides
 #      BASE_IMAGE and UV_PYTHON inside check_env.sh, and a host `export` never
@@ -1030,7 +1042,7 @@ printf '#!/bin/sh\nexit 0\n' > "$bake_probe/apptainer"
 chmod +x "$bake_probe/docker" "$bake_probe/apptainer"
 bake_arg_for() {   # bake_arg_for <mode> <key>
     rm -f "$bake_probe/argv"
-    ( PATH="$bake_probe:/usr/bin:/bin" bash scripts/apptainer_bake.sh --mode "$1" --env dev ) >/dev/null 2>&1 || true
+    ( PATH="$bake_probe:$probe_min_path" bash scripts/apptainer_bake.sh --mode "$1" --env dev ) >/dev/null 2>&1 || true
     sed -n "s/^$2=//p" "$bake_probe/argv" 2>/dev/null | head -1
 }
 [ "$(bake_arg_for prod DEVKIT_REQUIRE_PINNED)" = "1" ] \
@@ -1088,6 +1100,7 @@ done
 rm -rf "$bake_cli"
 [ "$bake_errors" -eq 0 ] \
     && log_ok "A bake derives its base image and interpreter from ROS_DISTRO (.env or command line), carries the pin policy into the build, and warns on a stale .env."
+
 # =============================================================================
 # [confirm-guard] The gate on irreversible targets. Only an EXACT true value may
 #      skip the question: `-z` on the two concatenated let FORCE=0 and CI=false
@@ -1127,6 +1140,7 @@ CASES
 rm -rf "$confirm_probe"
 [ "$confirm_errors" -eq 0 ] \
     && log_ok "Only an exact true FORCE/CI skips the delete confirmation (9 spellings, off a TTY)."
+
 # =============================================================================
 # [gpg-anchor] The pinned fingerprint must exist and stay in sync with the
 #      updater that maintains it (`make update-gpg`).
@@ -1668,7 +1682,7 @@ chmod +x "$prod_probe/bin/colcon" "$prod_probe/bin/catkin_make"
 mkdir -p "$prod_probe/install/share/p"; : > "$prod_probe/install/share/p/f"
 # $2 selects the ROS generation: 2 = colcon (default), 1 = catkin_make
 build_flags() {
-    env -i PATH="$prod_probe/bin:/usr/bin:/bin" HOME=/tmp WORKSPACE_PATH="$prod_probe" \
+    env -i PATH="$prod_probe/bin:$probe_min_path" HOME=/tmp WORKSPACE_PATH="$prod_probe" \
         ROS_DISTRO=humble ROS_VERSION="${2:-2}" ${1:+DEVKIT_BUILD_TYPE=$1} \
         bash -lc "source $prod_probe/config/util_aliases.sh 2>/dev/null; cbuild" 2>/dev/null
 }
@@ -1708,7 +1722,7 @@ chmod +x "$prod_probe/install/.venv/bin/python3"
 printf '[project]\nname = "p"\nversion = "0"\n' > "$prod_probe/src/pyproject.toml"
 : > "$prod_probe/src/uv.lock"
 sync_flags() {
-    env -i PATH="$prod_probe/bin:/usr/bin:/bin" HOME=/tmp WORKSPACE_PATH="$prod_probe" \
+    env -i PATH="$prod_probe/bin:$probe_min_path" HOME=/tmp WORKSPACE_PATH="$prod_probe" \
         ${1:+DEVKIT_BUILD_TYPE=$1} \
         bash -c "source $prod_probe/config/util_aliases.sh 2>/dev/null; uvs"
 }
@@ -2394,11 +2408,15 @@ stray_venv_py="$(grep -rn '\.venv/bin/python' config scripts | grep -vE '^(confi
     || { log_err "the venv interpreter path is re-composed outside \${WS_VENV_PY}: $(cut -d: -f1,2 <<< "$stray_venv_py" | tr '\n' ' ')"; venv_errors=1; }
 # Rendered, not grepped: PS1 is re-expanded at every prompt, so an active venv
 # must surface there regardless of the order activation and PS1 happen in.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -lt 4 ]; }; then
+    log_info "PS1 rendering needs \${var@P} (bash 4.4+); this shell is ${BASH_VERSION%%(*} — probe skipped."
+else
 ps1_probe="$(bash --norc -ic "VIRTUAL_ENV_PROMPT=__probe__
     WORKSPACE_PATH='${ROOT_DIR}' source config/init_bash.sh >/dev/null 2>&1
     printf %s \"\${PS1@P}\"" 2>/dev/null || true)"
 grep -q '(__probe__)' <<< "$ps1_probe" \
     || { log_err "the interactive prompt does not show the active virtualenv (PS1 lost \${VIRTUAL_ENV_PROMPT})."; venv_errors=1; }
+fi
 grep -q 'VIRTUAL_ENV_DISABLE_PROMPT' config/init_bash.sh \
     || { log_err "VIRTUAL_ENV_DISABLE_PROMPT is unset — running 'activate' would stack a second venv marker."; venv_errors=1; }
 # `uv sync` must pin the venv's own interpreter: against UV_PYTHON uv REPLACES
@@ -2443,7 +2461,7 @@ flag_probe="$(probe_dir)"
 mkdir -p "$flag_probe/bin" "$flag_probe/config"
 cp config/util_aliases.sh config/util_paths.sh "$flag_probe/config/"
 printf '#!/bin/sh\necho "$*"\n' > "$flag_probe/bin/colcon"; chmod +x "$flag_probe/bin/colcon"
-flag_run() { env -i PATH="$flag_probe/bin:/usr/bin:/bin" HOME=/tmp WORKSPACE_PATH="$flag_probe" \
+flag_run() { env -i PATH="$flag_probe/bin:$probe_min_path" HOME=/tmp WORKSPACE_PATH="$flag_probe" \
     ROS_VERSION=2 bash -lc "source $flag_probe/config/util_aliases.sh 2>/dev/null; cbuild $1" 2>/dev/null; }
 # Default: an unoptimised build is a silent performance regression.
 case "$(flag_run '')"        in *-DCMAKE_BUILD_TYPE=RelWithDebInfo*) ;; *) log_err "cbuild lost its default -DCMAKE_BUILD_TYPE=RelWithDebInfo."; flag_errors=1 ;; esac
