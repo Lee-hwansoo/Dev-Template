@@ -268,6 +268,18 @@ make verify && make build && make test
 > WSL2 경로(`/proc/version` 판정·`/dev/dxg`·`/usr/lib/wsl`·WSLg 소켓)는 CI 가 아니라 README 지원 매트릭스의
 > **참조 호스트** 실측으로만 검증됩니다.
 
+**무엇을 바꾸면 무엇이 도나** — 경로 필터가 티어를 고르고, 잡은 병렬이라 벽시계는 가장 긴 잡 하나입니다.
+
+| 바뀐 경로 | 도는 것 | 벽시계 · 러너 시간 |
+| :--- | :--- | :--- |
+| 어디든 (`scripts/`, `config/`, `Makefile`, `docs/` …) | `verify.yml` 두 잡 | ~30 s · ~1 min |
+| `docker/**`, `dependencies/apt*.txt`, apt 헬퍼 두 파일 | + `images.yml` 의 push 잡 (키 경로 3 · apt 해석 3 · 스테이지 빌드 1) | ~1 min · ~6 min |
+| `src/**`, `dependencies/**` | + `project.yml` (dev 이미지 빌드 → `mksync` → lint → test) | ~2 min · ~2 min |
+| 어떤 푸시에도 | 무거운 넷(`runtime-smoke` · `arm64-image` · `sif-artifact` · `prod-artifact`)은 돌지 않음 — 월요일 cron 과 `workflow_dispatch` 만 | — |
+
+> 이 저장소는 공개라 Actions 분은 무제한입니다. 비공개로 바꾸면 macOS 분이 Linux 의 10 배로 계산되므로
+> `macos-host` 를 PR·main 푸시로 좁히는 것이 첫 조정입니다. 같은 브랜치에 연속 푸시하면 이전 실행은 취소됩니다.
+
 ### `verify.yml` — 빠른 티어 (모든 push · PR, 이미지 빌드 없음)
 
 | 잡 | 러너 | 무엇을 증명하나 |
