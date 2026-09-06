@@ -87,8 +87,24 @@ if [ "$IS_MACOS" = "false" ]; then
 fi
 
 # 3. Path, User & Cache Setup
+# Two layers, in the order make reads them: the local .env wins, .env.example
+# carries the committed project answer. This is the ONLY place they are
+# resolved — the cache written here is what every later stage reads, so a second
+# resolution point could only ever disagree with it.
+DEVKIT_ENV_FILE="${DEVKIT_ENV_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.env}"
+DEVKIT_ENV_DEFAULTS="${DEVKIT_ENV_DEFAULTS:-${DEVKIT_ENV_FILE}.example}"
+env_setting() {
+    local value; value="$(devkit_env_value "$1" "$DEVKIT_ENV_FILE")"
+    [ -n "$value" ] || value="$(devkit_env_value "$1" "$DEVKIT_ENV_DEFAULTS")"
+    printf '%s' "$value"
+}
 HOST_WORKSPACE_PATH="${HOST_WORKSPACE_PATH:-$(pwd)}"
+# Read through the same two layers as ROS_DISTRO: a WORKSPACE_PATH or a
+# relocated cache set in .env used to be emitted as the default here, and the
+# include that follows then overwrote the user's answer with it.
+WORKSPACE_PATH="${WORKSPACE_PATH:-$(env_setting WORKSPACE_PATH)}"
 WORKSPACE_PATH="${WORKSPACE_PATH:-/workspace}"
+DOCKER_DEV_CACHE_DIR="${DOCKER_DEV_CACHE_DIR:-$(env_setting DOCKER_DEV_CACHE_DIR)}"
 # Under sudo, bind the invoking user's HOME and ids, not root's. macOS has no
 # getent, hence the fallbacks; each is `|| true` so a missing tool degrades.
 if [ -n "${SUDO_USER:-}" ]; then
@@ -220,17 +236,6 @@ fi
 # 6. ROS distro → base image. make's `export` does not reach $(shell …), so
 # every caller must read .env itself or the detector caches the humble/22.04
 # default. Read, never source: .env is data, not code.
-# Two layers, in the order make reads them: the local .env wins, .env.example
-# carries the committed project answer. This is the ONLY place they are
-# resolved — the cache written here is what every later stage reads, so a second
-# resolution point could only ever disagree with it.
-DEVKIT_ENV_FILE="${DEVKIT_ENV_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.env}"
-DEVKIT_ENV_DEFAULTS="${DEVKIT_ENV_DEFAULTS:-${DEVKIT_ENV_FILE}.example}"
-env_setting() {
-    local value; value="$(devkit_env_value "$1" "$DEVKIT_ENV_FILE")"
-    [ -n "$value" ] || value="$(devkit_env_value "$1" "$DEVKIT_ENV_DEFAULTS")"
-    printf '%s' "$value"
-}
 ROS_DISTRO="${ROS_DISTRO:-$(env_setting ROS_DISTRO)}"
 BASE_IMAGE="${BASE_IMAGE:-$(env_setting BASE_IMAGE)}"
 UV_PYTHON="${UV_PYTHON:-$(env_setting UV_PYTHON)}"

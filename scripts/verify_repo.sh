@@ -1029,6 +1029,7 @@ bake_cache="$bake_cli/.docker_cache/detected-env.mk"
 for bake_target in bake-prod bake-dev help; do
     rm -f "$bake_cache"
     (cd "$bake_cli" && env -u ROS_DISTRO -u BASE_IMAGE -u UV_PYTHON \
+        -u WORKSPACE_PATH -u DOCKER_DEV_CACHE_DIR \
         make -n "$bake_target") >/dev/null 2>&1 || true
     if [ "$bake_target" = help ]; then
         [ ! -f "$bake_cache" ] || { log_err "make help must skip detection."; bake_errors=1; }
@@ -1088,6 +1089,7 @@ for bake_pair in "noetic ubuntu:20.04 3.8" "jazzy ubuntu:24.04 3.12"; do
     # already carries the repo's own BASE_IMAGE/UV_PYTHON and the inner make
     # would read them as environment overrides — exactly what is under test.
     bake_db="$( cd "$bake_cli" && env -u ROS_DISTRO -u BASE_IMAGE -u UV_PYTHON \
+        -u WORKSPACE_PATH -u DOCKER_DEV_CACHE_DIR \
         make -np bake-prod ROS_DISTRO="$1" 2>/dev/null || true )"
     bake_base="$(sed -n 's/^BASE_IMAGE := //p' <<< "$bake_db" | tail -1)"
     bake_py="$(sed -n 's/^UV_PYTHON := //p' <<< "$bake_db" | tail -1)"
@@ -1103,6 +1105,41 @@ done
 rm -rf "$bake_cli"
 [ "$bake_errors" -eq 0 ] \
     && log_ok "A bake derives its base image and interpreter from ROS_DISTRO (.env or command line), carries the pin policy into the build, and warns on a stale .env."
+
+# =============================================================================
+# [path-settings] The paths a user sets must survive host detection. The
+#      detector emitted its own defaults for WORKSPACE_PATH and the cache dir,
+#      and the include that follows overwrote the .env answer with them — so the
+#      cache compose mounted stopped being the one `clean-cache` deletes.
+# =============================================================================
+pathset_errors=0
+pathset_probe="$(probe_dir scripts config docker dependencies)"
+cp Makefile "${ROOT_DIR}/.env.example" "$pathset_probe/"
+printf 'COMPOSE_PROJECT_NAME=myproject\nWORKSPACE_PATH=/devkit-probe-ws\nDOCKER_DEV_CACHE_DIR=%s/relocated\n' \
+    "$pathset_probe" > "$pathset_probe/.env"
+# A detector-running target, so the include order is the one under test.
+pathset_db="$( cd "$pathset_probe" && env -u WORKSPACE_PATH -u DOCKER_DEV_CACHE_DIR \
+    make -np bake-prod 2>/dev/null || true )"
+pathset_value() { sed -n "s/^$1 := //p" <<< "$pathset_db" | tail -1; }
+[ "$(pathset_value WORKSPACE_PATH)" = "/devkit-probe-ws" ] \
+    || { log_err "a WORKSPACE_PATH set in .env resolves to '$(pathset_value WORKSPACE_PATH)'; the detector's default overwrote it."; pathset_errors=1; }
+[ "$(pathset_value HOST_CACHE_DIR)" = "${pathset_probe}/relocated" ] \
+    || { log_err "DOCKER_DEV_CACHE_DIR in .env does not reach HOST_CACHE_DIR (got '$(pathset_value HOST_CACHE_DIR)'); compose would mount one cache and 'make clean-cache' delete another."; pathset_errors=1; }
+# …and a command-line override must win over both, with its own cache key.
+pathset_cli="$( cd "$pathset_probe" && env -u WORKSPACE_PATH \
+    make -np bake-prod WORKSPACE_PATH=/devkit-cli-ws 2>/dev/null || true )"
+[ "$(sed -n 's/^WORKSPACE_PATH :\{0,1\}= //p' <<< "$pathset_cli" | tail -1)" = "/devkit-cli-ws" ] \
+    || { log_err "'make WORKSPACE_PATH=…' does not reach the detector; the override is lost behind .env."; pathset_errors=1; }
+# A command-line override must also reach the values the DETECTOR derives.
+# make's own precedence hides this: WORKSPACE_PATH would look right in the
+# database while HOST_CACHE_DIR was still computed from the old workspace.
+pathset_derived="$( cd "$pathset_probe" && env -u DOCKER_DEV_CACHE_DIR \
+    make -np bake-prod "DOCKER_DEV_CACHE_DIR=$pathset_probe/cli-cache" 2>/dev/null || true )"
+[ "$(sed -n 's/^HOST_CACHE_DIR := //p' <<< "$pathset_derived" | tail -1)" = "${pathset_probe}/cli-cache" ] \
+    || { log_err "'make DOCKER_DEV_CACHE_DIR=…' never reaches the detector, so HOST_CACHE_DIR keeps the old location while compose mounts the new one."; pathset_errors=1; }
+rm -rf "$pathset_probe"
+[ "$pathset_errors" -eq 0 ] \
+    && log_ok "Workspace and cache paths set in .env or on the command line survive host detection."
 
 # =============================================================================
 # [confirm-guard] The gate on irreversible targets. Only an EXACT true value may

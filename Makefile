@@ -41,7 +41,7 @@ USER_GPU_MODE := $(GPU_MODE)
 endif
 # Capture detector overrides before file assignments hide their origin.
 shell_quote = '$(subst ','"'"',$(1))'
-DETECT_INPUTS := ROS_DISTRO BASE_IMAGE UV_PYTHON
+DETECT_INPUTS := ROS_DISTRO BASE_IMAGE UV_PYTHON WORKSPACE_PATH DOCKER_DEV_CACHE_DIR
 DETECT_OVERRIDES := $(strip $(foreach v,$(DETECT_INPUTS),\
 	$(if $(filter command line environment override,$(origin $(v))),$(call shell_quote,$(v)=$($(v))))))
 # Committed defaults, followed by local overrides.
