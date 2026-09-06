@@ -9,7 +9,9 @@ set -euo pipefail
 # The path SSOT (WS_VENV_PY, WS_ROOT) and the log verbs, before anything that
 # reports. Sourced explicitly: a `docker build` RUN layer runs before the
 # entrypoint writes the BASH_ENV file, so nothing has exported these yet.
-# Best-effort — metadata must never fail a build; util_paths.sh stubs the verbs.
+# Loading the log verbs is best-effort (util_paths.sh stubs them). Writing the
+# manifest is not: a missing interpreter, a malformed SOURCE_DATE_EPOCH or an
+# unwritable output all stop the build rather than ship an unlabelled artifact.
 source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || true
 devkit_require "util_logging.sh" 2>/dev/null || true
 LOG_PREFIX="[Release Meta]"
@@ -49,11 +51,11 @@ MANIFEST_DIR="$(dirname "$OUTPUT_FILE")"
 # =============================================================================
 # Build manifests: record what was ACTUALLY resolved.
 # -----------------------------------------------------------------------------
-# Some inputs cannot be pinned upstream — packages.ros.org publishes no snapshot
-# mirror, and `rosdep` resolves at build time. Recording the exact versions that
-# landed in the image makes such a build auditable and re-pinnable after the
-# fact: diff two manifests to see what moved, or paste a line back into
-# dependencies/apt.txt as `package=version` to freeze it.
+# Pinning the inputs (APT_SNAPSHOT_DATE, ROS_SNAPSHOT_DATE, a locked pyproject)
+# still leaves whatever `rosdep` and transitive dependencies resolve at build
+# time. Recording the exact versions that landed makes such a build auditable
+# and re-pinnable after the fact: diff two manifests to see what moved, or paste
+# a line back into dependencies/apt.txt as `package=version` to freeze it.
 # =============================================================================
 APT_MANIFEST="${MANIFEST_DIR}/devkit-apt-manifest.txt"
 PIP_MANIFEST="${MANIFEST_DIR}/devkit-pip-manifest.txt"

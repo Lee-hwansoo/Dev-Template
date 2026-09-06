@@ -2,8 +2,9 @@
 """
 Starter test for DevKit — the counterpart of starter_node.py.
 
-Runs under `mtest` (pure Python / CMake workspaces, via pytest) and under
-`colcon test` in a ROS 2 ament_python package, which invokes pytest itself.
+Runs under `mtest` in a pure-Python workspace (pytest) and under `colcon test`
+in a ROS 2 ament_python package, which invokes pytest itself. A CMake workspace
+runs ctest instead, so this file is not what `mtest` executes there.
 Keep it, replace it, or delete it: `mtest` reports an empty suite as a note
 rather than a failure.
 """

@@ -97,10 +97,8 @@ DEVKIT_STRIP_SOURCE=1 DEVKIT_FAIL_ON_SOURCE=1 make bake-prod ENV=ros
 `DEVKIT_REQUIRE_PINNED=1` 검사는 템플릿의 블록형 `.repos` 형식(저장소명 2칸, 필드 4칸 들여쓰기)을 사용합니다. 태그·짧은 해시·누락된 버전·지원하지 않는 형식은 거부합니다.
 
 ```bash
-# 1) Python 의존성 잠금 — 파생 프로젝트에서 최초 1회 후 커밋
-#    DevKit 자체는 lock을 커밋하지 않습니다: 템플릿이 특정 시점의 해석 결과를
-#    배포하면 모든 fork가 그 스냅샷을 물려받습니다. lock은 제품이 되는 저장소의
-#    것이므로, 이 저장소를 복제한 뒤 여기서 커밋하세요.
+# 1) Python 의존성 잠금 — 의존성을 바꿀 때마다 갱신해 커밋
+#    src/uv.lock 은 이 저장소에 커밋되어 있고 prod 빌드가 --locked 로 읽습니다.
 mksync && git add src/uv.lock && git commit -m "chore: pin python dependencies"
 
 # 2) 베이스 이미지 다이제스트 고정 (.env)
@@ -152,8 +150,8 @@ docker run --rm img cat /etc/devkit/devkit-release.json | grep sha256
 
 0. **APT 신뢰 앵커 고정**: `packages.ros.org`의 서명키는 `scripts/util_apt_helper.sh` 최상단의
    `ROS_GPG_FINGERPRINT` 상수와 대조한 뒤에만 설치됩니다.
-   - `STRICT_GPG_CHECK=true` → 지문 불일치 시 **빌드 중단** (CI/운영 권장, `.env` 또는 빌드 인자로 설정)
-   - 기본값 → 경고 후 진행
+   - 기본값이 `true` 입니다 → 지문 불일치 시 **빌드 중단**
+   - 명시적으로 `STRICT_GPG_CHECK=false` 로 둘 때만 경고 후 진행
    - 업스트림이 키를 교체하면 호스트에서 **`make update-gpg`** 를 실행하세요. 이 명령이 상수를 갱신합니다.
 1. **동적 권한 매핑**: 호스트 UID/GID를 컨테이너의 non-root 개발자 계정에 매핑합니다.
 2. **`privileged`는 기본 `false`**: USB 센서·카메라·SocketCAN이 필요할 때만 `.env`에서 켜세요

@@ -308,7 +308,6 @@ MAJOR 상승은 "파생 프로젝트가 무언가 고쳐야 한다"는 뜻입니
   - `bake-prod` 산출물 구조, 소스 비유출 옵션, 고정 가능/불가 계층과 빌드 매니페스트.
 - 🏥 [**진단 (docs/DIAGNOSTICS.md)**](docs/DIAGNOSTICS.md)
   - `make check`/`status`, `hwcheck` 6섹션 스캔, `gpus` 렌더링 스택 리포트.
-- [**구현·주석·문서 분석 보고서 (2026-09-06)**](docs/PROJECT_REVIEW.md)
   - 재현한 문제, 필요한 최소 수정, 검증 조건 및 정리 대상.
 - 🛰️ [**원격 서버 &amp; SLURM 클러스터 배포 매뉴얼 (docs/SLURM.md)**](docs/SLURM.md)
   - Apptainer SIF 빌드 및 원격 서버 스토리지 분리 구조, `sbatch` 배치 작업 제출, 실시간 로그 모니터링.

@@ -164,7 +164,7 @@
         "cwd": "${workspaceFolder}"
       },
       "problemMatcher": [],
-      "detail": "Clone external repos from dependencies.repos and install rosdep packages"
+      "detail": "Clone external repos listed in dependencies.repos (no rosdep)"
     },
     {
       "label": "🧪 Project: Test (mtest)",

@@ -71,7 +71,8 @@ dev = [ "ruff>=0.6", "pytest>=8" ]   # 정확한 버전은 파생 프로젝트�
 - **`colcon.meta` & `CMAKE_EXTRA_ARGS`**: 대용량 외부 빌드 시간 단축(`BUILD_TESTING=OFF`) 및 GTSAM/Eigen 메모리 충돌(ODR Violation) 방지 옵션 주입.
   `colcon.meta` 는 `cbuild --meta` 로 전달됩니다(전달하지 않으면 colcon 이 읽지 않습니다).
 - **`OPENCV_CUDA`**: OpenCV 를 소스에서 빌드하는 프로젝트를 위한 CMake 플래그를 `cbuild`/`mbuild` 에 **자동 주입**합니다.
-  `auto` 는 NVIDIA 런타임과 `nvcc` 가 모두 있을 때만 CUDA 를 켜고(없으면 `-DWITH_CUDA=OFF`), 감지된 GPU 아키텍처만
+  `auto` 는 `nvcc` 가 있으면 CUDA 를 켭니다(없으면 `-DWITH_CUDA=OFF`). 판단 기준은 빌드 호스트의 GPU 가 아니라
+  툴체인입니다 — GPU 없는 빌더에서도 CUDA 이미지를 만들 수 있어야 하기 때문입니다. 감지된 GPU 아키텍처만
   컴파일합니다(`-DCUDA_ARCH_BIN=<compute_cap>+PTX`). 값만 확인하려면 `gpu opencv_args`.
 
 ### 3. 시스템 패키지 태깅 규칙 (`dependencies/apt.txt`, `dependencies/apt_ros.txt`)

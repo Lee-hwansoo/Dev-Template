@@ -152,7 +152,8 @@ __gpu_software() {
 }
 
 # CMake flags for source builds of OpenCV: `cmake $(gpu opencv_args) …`.
-# auto enables CUDA only with runtime AND nvcc present — -DWITH_CUDA=ON without
+# auto enables CUDA when nvcc is present: the flag describes the TARGET, so a
+# GPU-less builder still produces a CUDA image. -DWITH_CUDA=ON without
 # a compiler fails deep inside the OpenCV build. off forces the CPU path.
 __opencv_cmake_args() {
     if [ "${OPENCV_CUDA:-auto}" = "off" ] || ! can_build_cuda 2>/dev/null; then
@@ -304,8 +305,9 @@ esac
 
 __gpu_reset
 
-# Resolve 'auto'. Tegra first: a Jetson has /dev/nvhost-* and an nvgpu DRI node
-# but no /dev/nvidiactl, so a plain NVIDIA probe drops it to software.
+# Resolve 'auto', most specific first: a discrete NVIDIA device node, then a
+# Jetson (which has /dev/nvhost-* and an nvgpu DRI node but no /dev/nvidiactl),
+# then ROCm, then the DRI vendors, then WSL's D3D12 node.
 if [ "$__gpu_req_mode" = "auto" ]; then
     if has_nvidia 2>/dev/null;      then __gpu_req_mode="nvidia"
     elif has_tegra 2>/dev/null;     then __gpu_req_mode="tegra"
