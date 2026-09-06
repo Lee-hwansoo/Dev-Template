@@ -280,6 +280,21 @@ make verify && make build && make test
 > 이 저장소는 공개라 Actions 분은 무제한입니다. 비공개로 바꾸면 macOS 분이 Linux 의 10 배로 계산되므로
 > `macos-host` 를 PR·main 푸시로 좁히는 것이 첫 조정입니다. 같은 브랜치에 연속 푸시하면 이전 실행은 취소됩니다.
 
+**켜고 끄기** — 코드를 고치지 않습니다. 켜짐·꺼짐의 진실은 GitHub 에 있고(`gh workflow list`), DevKit 은 그것을
+읽고 쓰는 스위치만 제공합니다 — `.env` 에 값을 두면 GitHub 이 읽지 못하는 사본이 되어 어긋날 뿐이라 두지 않습니다.
+파일을 지우는 것도 권하지 않습니다: 상류 갱신 때 되살아납니다.
+
+| 범위 | 끄기 | 켜기 · 확인 |
+| :--- | :--- | :--- |
+| 저장소의 **모든 워크플로** | `make ci-off` | `make ci-on` · 상태는 `make ci`(워크플로별) 또는 `make status` 의 `GitHub CI:` 한 줄 |
+| 워크플로 **하나** (push · cron · 수동 모두) | `gh workflow disable images` | `gh workflow enable images` · `gh workflow list --all` |
+| 저장소 **전체 Actions** | `gh api -X PUT repos/<owner>/<repo>/actions/permissions -f enabled=false` | 같은 명령에 `true` |
+| 이 **커밋 한 번**만 | 커밋 메시지에 `[skip ci]` | — |
+
+`make ci*` 는 GitHub CLI(`gh`, 로그인 상태)가 필요합니다 — 없으면 `make check` 가 경고하고 `make ci` 는 상태를 unknown 으로 표시합니다. 끈 워크플로는
+`workflow_dispatch` 도 막히므로 무거운 잡을 손으로 돌리려면 먼저 켭니다. `make verify` 의 [host-prereqs] 가 이 스위치를
+스텁 `gh` 위에서 실행으로 검증합니다.
+
 ### `verify.yml` — 빠른 티어 (모든 push · PR, 이미지 빌드 없음)
 
 | 잡 | 러너 | 무엇을 증명하나 |

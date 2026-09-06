@@ -35,7 +35,8 @@ HOST_REQUIRED='python3|yes|repository verification and host detection
 git|yes|make adopt, the git_commit in a baked artifact, safe.directory
 curl|no|make update-gpg fetches the archive signing keys
 gpg|no|make update-gpg verifies those keys
-xauth|no|GUI forwarding writes the X cookie the container reads'
+xauth|no|GUI forwarding writes the X cookie the container reads
+gh|no|make ci switches GitHub Actions on and off'
 while IFS='|' read -r tool blocking why; do
     [ -n "$tool" ] || continue
     command -v "$tool" >/dev/null 2>&1 && continue

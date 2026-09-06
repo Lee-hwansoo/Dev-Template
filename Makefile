@@ -76,7 +76,7 @@ export
 # Help/teardown/validation targets skip detection and never pay the
 # nvidia-smi / docker-info probe.
 # Bakes require detection to derive BASE_IMAGE and UV_PYTHON from ROS_DISTRO.
-DETECTOR_EXEMPT := help setup adopt verify stop down logs clean clean-cache clean-all docker-clean slurm-status slurm-cancel completion completion-install check-host env-check run-sif
+DETECTOR_EXEMPT := help setup adopt verify ci ci-on ci-off stop down logs clean clean-cache clean-all docker-clean slurm-status slurm-cancel completion completion-install check-host env-check run-sif
 # A bare `make` runs the default target (help), so it must not pay for
 # detection either — substitute 'help' before filtering.
 NEEDS_DETECTOR  := $(filter-out $(DETECTOR_EXEMPT),$(or $(MAKECMDGOALS),help))
@@ -108,7 +108,7 @@ endif
 # Fail fast on input that would silently pick the wrong compose profile.
 # Scoped to every target consuming ENV — including down/clean-all, where
 # `make down ENV=ros2` would volume-delete the wrong profile without a word.
-ENV_EXEMPT := help h setup adopt verify clean clean-cache docker-clean update-gpg xauth gpus slurm-status slurm-cancel completion completion-install
+ENV_EXEMPT := help h setup adopt verify ci ci-on ci-off clean clean-cache docker-clean update-gpg xauth gpus slurm-status slurm-cancel completion completion-install
 ifneq ($(filter-out $(ENV_EXEMPT),$(or $(MAKECMDGOALS),help)),)
 ifeq ($(filter ros dev,$(ENV)),)
 $(error ENV must be 'ros' or 'dev' (got: '$(ENV)'))
@@ -211,7 +211,7 @@ define CONFIRM
 	fi
 endef
 
-.PHONY: help h setup adopt status check verify xauth gpus build start stop restart shell exec test lint term bake-dev bake-prod run-sif slurm-status slurm-cancel stats top logs update-gpg down clean clean-cache clean-all docker-clean ide-config
+.PHONY: help h setup adopt status check verify ci ci-on ci-off xauth gpus build start stop restart shell exec test lint term bake-dev bake-prod run-sif slurm-status slurm-cancel stats top logs update-gpg down clean clean-cache clean-all docker-clean ide-config
 
 # =============================================================================
 # Help & Setup
@@ -229,6 +229,7 @@ help:
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "status / check" "Diagnose project, container & host status"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "gpus" "Monitor host-side GPU (NVIDIA/iGPU) status"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "verify" "Run fast repository validation checks"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "ci / ci-on / ci-off" "Show GitHub Actions state / switch every workflow on or off"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "xauth" "Refresh X11 GUI authentication"
 	@echo -e "\n$(CYAN)[ Docker Container Workflows ] ======================$(NC)"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "build / start / stop" "Build image, launch containers, stop"
@@ -333,6 +334,8 @@ status: check
 	@printf "  %-19s %s\n" "ROS Version:"        "$(ROS_DISTRO)"
 	@$(RESOLVE_SVC_MODE); \
 	printf "  %-19s %s\n" "GPU Mode:" "$${GPU_MODE:-auto} → $$TARGET_SVC"
+	@# Live, not cached: it reads GitHub, so it belongs here rather than under the wiring header.
+	@$(CI_STATE); printf "  %-19s %s\n" "GitHub CI:" "$$CI_SUMMARY"
 	@echo -e "\n$(BCYAN)[Detected Host Wiring]$(NC)  (refresh: make clean-cache)"
 	@printf "  %-19s %s\n" "GPU devices:"  "$(HOST_DRI_MOUNT) | $(HOST_DXG_MOUNT)"
 	@printf "  %-19s %s\n" "WSL libs:"     "$(WSL_LIB_DIR_MOUNT)"
@@ -398,6 +401,40 @@ verify:
 	$(call GUARD_HOST_ONLY)
 	@echo -e "\n$(BCYAN)[Repository Validation]$(NC)"
 	@bash scripts/verify_repo.sh
+
+# CI_STATE: read the GitHub Actions switch ONCE into CI_LIST (gh's table) and
+# CI_SUMMARY (one line). The truth lives on GitHub, never in a local file.
+define CI_STATE
+CI_LIST=""; \
+if ! command -v gh >/dev/null 2>&1; then CI_SUMMARY="unknown — GitHub CLI 'gh' not installed (https://cli.github.com)"; \
+elif ! CI_LIST="$$(gh workflow list --all 2>/dev/null)"; then CI_SUMMARY="unknown — gh cannot reach GitHub (gh auth login?)"; \
+else \
+	CI_TOTAL=$$(grep -c . <<< "$$CI_LIST"); CI_ACTIVE=$$(awk -F'\t' '$$2 == "active"' <<< "$$CI_LIST" | grep -c .); \
+	if [ "$$CI_ACTIVE" -eq "$$CI_TOTAL" ]; then CI_SUMMARY="on  ($$CI_ACTIVE/$$CI_TOTAL workflows active)"; \
+	elif [ "$$CI_ACTIVE" -eq 0 ]; then CI_SUMMARY="off (0/$$CI_TOTAL workflows active)"; \
+	else CI_SUMMARY="mixed ($$CI_ACTIVE/$$CI_TOTAL active)"; fi; \
+fi
+endef
+
+## @target ci : Show the GitHub Actions switch (per workflow); ci-on / ci-off flip it
+# A switch, not a setting: the state is read from and written to GitHub through
+# gh, so a copy in .env could only drift. Every workflow FILE is switched, so a
+# fork's own one is covered; disabling stops push, cron and dispatch alike.
+ci:
+	$(call GUARD_HOST_ONLY)
+	@$(CI_STATE); \
+	printf "  %-19s %s\n" "GitHub CI:" "$$CI_SUMMARY"; \
+	[ -z "$$CI_LIST" ] || sed 's/^/    /' <<< "$$CI_LIST"
+
+ci-on ci-off:
+	$(call GUARD_HOST_ONLY)
+	@command -v gh >/dev/null 2>&1 || { \
+		echo -e "  $(ERROR) GitHub CLI 'gh' is required (https://cli.github.com); log in once with 'gh auth login'." >&2; exit 1; }
+	@ACTION=$(if $(filter ci-on,$@),enable,disable); \
+	for wf in .github/workflows/*.yml; do \
+		gh workflow "$$ACTION" "$${wf##*/}" || exit 1; \
+	done; \
+	$(CI_STATE); echo -e "  $(OK) GitHub CI: $$CI_SUMMARY"
 
 # =============================================================================
 # Docker Workflows

@@ -77,7 +77,18 @@ git add src/uv.lock && git commit -m "chore: pin python dependencies"
 
 이 파일만 프로젝트의 것입니다. 기본은 `ENV: dev` 로 몇 분 안에 끝나도록 되어 있으니, ROS
 프로젝트라면 `ENV: ros` 로 바꾸고 `timeout-minutes` 를 올리세요. `verify.yml` 과 `images.yml`
-은 키트를 검증하므로 보통 그대로 둡니다 ([DEVELOPMENT.md 의 CI 절](DEVELOPMENT.md#-ci-github-actions)).
+은 키트를 검증하므로 보통 그대로 둡니다.
+
+CI 스위치는 `make ci`(상태) · `make ci-on` · `make ci-off` 입니다. 템플릿은 켜져 있습니다. 키트 CI 가 필요
+없는 포크는 파일을 지우지 말고 끄세요 — 지운 파일은 상류 갱신 때 되살아납니다.
+
+```bash
+make ci                              # 워크플로별 켜짐·꺼짐 (gh 로그인 필요)
+make ci-off                          # 셋 다 끄기
+gh workflow enable project           # 프로젝트 루프만 다시 켜기 (부분 조정은 gh 로)
+```
+
+([DEVELOPMENT.md 의 CI 절](DEVELOPMENT.md#-ci-github-actions) — 무엇을 바꾸면 어떤 잡이 도는지, 비용)
 
 ### 6. 스타터 예제 정리
 

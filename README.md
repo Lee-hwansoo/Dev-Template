@@ -94,6 +94,7 @@ mksync
 | **`make gpus`** | **호스트 GPU 모니터링**: 호스트 PC의 NVIDIA GPU / iGPU 실시간 VRAM 및 가속 상태 조회 |
 | **`make status`** | **진단 리포트**: 프로젝트 설정, 감지된 호스트 배선, 실행 중 컨테이너 (`check` 를 먼저 수행) |
 | **`make test / lint`** | **품질 루프**: 프로젝트 테스트 실행 / 스타일·린트 검사 (`FIX=1`로 자동 수정). 러너는 워크스페이스 형태(ROS·CMake·순수 Python)에서 자동 결정 |
+| **`make ci / ci-on / ci-off`** | **CI 스위치**: GitHub Actions 워크플로의 상태 표시 / 일괄 켜기 / 일괄 끄기 (`gh` 로그인 필요; `make status`에도 한 줄) |
 | **`make verify`** | **무결성 검증**: 문법·Makefile·호스트 감지·APT 태그 필터·셸 환경 동등성·GPG 핀·정리 의미론·SIF 파이프라인·IDE 설정·보안 기본값 등 **58개 계약**을 실행으로 검증 |
 | **`make bake-prod`** | **Apptainer SIF 추출**: 원격 HPC/SLURM 배포용 단일 바이너리 이미지 생성 |
 | **`make run-sif`** | **HPC / SLURM 실행**: SIF 이미지를 로컬에서 구동하거나 원격 SLURM 클러스터로 배치 투고 |

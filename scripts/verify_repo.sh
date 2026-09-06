@@ -194,8 +194,9 @@ grep -q '^\.PHONY:.*\\$' Makefile \
     && log_err ".PHONY uses a line continuation — the parsers here and in tab completion assume one line."
 phony_targets="$(awk '/^\.PHONY:/ { sub(/^\.PHONY:[[:space:]]*/, ""); print }' Makefile)"
 bad_targets=()
+# A rule may name several targets on one line (`ci-on ci-off:`).
 for t in $phony_targets; do
-    grep -qE "^${t}:" Makefile || bad_targets+=("$t")
+    grep -qE "^([^:[:space:]]+ )*${t}( [^:[:space:]]+)*:" Makefile || bad_targets+=("$t")
 done
 if [ "${#bad_targets[@]}" -eq 0 ] && make -n help >/dev/null 2>&1; then
     log_ok "Makefile parses and every .PHONY target is defined ($(echo "$phony_targets" | wc -w) targets)."
@@ -1024,7 +1025,7 @@ done
 # iterates checks nothing.
 hostdep_probe="$(probe_dir)"
 mkdir -p "$hostdep_probe/bin"
-for hostdep_bin in sh bash sed awk grep cut tr cat head tail env dirname basename \
+for hostdep_bin in sh bash sed awk grep cut tr cat head tail env dirname basename make ls sort \
                    $hostdep_tools docker; do
     hostdep_path="$(command -v "$hostdep_bin" 2>/dev/null || true)"
     [ -n "$hostdep_path" ] && ln -sf "$hostdep_path" "$hostdep_probe/bin/$hostdep_bin"
@@ -1043,6 +1044,38 @@ while IFS='|' read -r hostdep_tool hostdep_block _; do
     [ "$hostdep_rc" -ne 0 ] \
         || { log_err "check_preflight.sh exits 0 without '${hostdep_tool}', which it calls blocking."; hostdep_errors=1; }
 done <<< "$hostdep_table"
+# The GitHub Actions switch. Its truth lives on GitHub, so `make ci` reads it
+# through gh and ci-on/ci-off write it — every workflow file, both directions,
+# a refusal with the install hint when gh is missing, and the same one-line
+# state in `make status`. Against a stub gh that records its argv; "no gh" is
+# the farm above with gh taken out.
+ci_probe="$(probe_dir .github scripts config docker dependencies)"
+cp Makefile "${ROOT_DIR}/.env.example" "$ci_probe/"; mkdir -p "$ci_probe/bin"
+printf '#!/bin/sh\necho "$*" >> "%s/gh.log"\n[ "$1 $2" = "workflow list" ] && printf "verify\\tactive\\t1\\nimages\\tdisabled_manually\\t2\\nproject\\tactive\\t3\\n"\nexit 0\n' \
+    "$ci_probe" > "$ci_probe/bin/gh"; chmod +x "$ci_probe/bin/gh"
+ci_workflows="$(cd "$ci_probe" && ls .github/workflows/*.yml | sed 's|.*/||' | sort | tr '\n' ' ')"
+for ci_case in "ci-off disable" "ci-on enable"; do
+    set -- $ci_case
+    : > "$ci_probe/gh.log"
+    ( cd "$ci_probe" && PATH="$ci_probe/bin:$probe_min_path" make "$1" ) >/dev/null 2>&1 \
+        || { log_err "'make $1' fails against a working gh."; hostdep_errors=1; }
+    ci_seen="$(sed -n "s/^workflow $2 //p" "$ci_probe/gh.log" | sort | tr '\n' ' ')"
+    [ "$ci_seen" = "$ci_workflows" ] \
+        || { log_err "'make $1' ${2}s '${ci_seen}' but the repository has '${ci_workflows}'."; hostdep_errors=1; }
+done
+ci_state="$(cd "$ci_probe" && PATH="$ci_probe/bin:$probe_min_path" make ci 2>/dev/null || true)"
+grep -q 'mixed (2/3 active)' <<< "$ci_state" && grep -q 'images.*disabled_manually' <<< "$ci_state" \
+    || { log_err "'make ci' does not report the summary and the per-workflow table gh returned (got: ${ci_state%%$'\n'*})."; hostdep_errors=1; }
+rm -f "$hostdep_probe/bin/gh"
+ci_nogh_rc=0
+ci_nogh_out="$(cd "$ci_probe" && PATH="$hostdep_probe/bin" make ci-off 2>&1)" || ci_nogh_rc=$?
+{ [ "$ci_nogh_rc" -ne 0 ] && grep -q 'cli.github.com' <<< "$ci_nogh_out"; } \
+    || { log_err "'make ci-off' without gh exits ${ci_nogh_rc} without pointing at the GitHub CLI install."; hostdep_errors=1; }
+grep -q 'cli.github.com' <<< "$(cd "$ci_probe" && PATH="$hostdep_probe/bin" make ci 2>&1 || true)" \
+    || { log_err "'make ci' without gh does not say the state is unknown for want of the GitHub CLI."; hostdep_errors=1; }
+awk '/^status:/{inside=1; next} inside && /^[^\t]/{inside=0} inside && /CI_STATE/{found=1} END{exit found ? 0 : 1}' Makefile \
+    || { log_err "'make status' no longer shows the GitHub Actions state (CI_STATE)."; hostdep_errors=1; }
+rm -rf "$ci_probe"
 rm -rf "$hostdep_probe"
 # The NVIDIA runtime notice, ONE place: an explicit GPU_MODE=nvidia without the
 # runtime must block, a detected GPU under auto must only warn (auto falls back

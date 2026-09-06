@@ -20,6 +20,7 @@
 | **git** | `make adopt`, 아티팩트의 `git_commit`, `safe.directory` 설정 | preflight 차단 |
 | **curl**, **gpg** | `make update-gpg` (아카이브 서명키 확인) | preflight 경고 |
 | **xauth** | GUI/X11 전달 (컨테이너가 읽을 쿠키를 씀) | preflight 경고 |
+| **gh** (GitHub CLI, 로그인 상태) | `make ci` / `ci-on` / `ci-off` — GitHub Actions 스위치 | preflight 경고 |
 | **nvidia-container-toolkit** | `GPU_MODE=nvidia` 로 빌드/실행할 때 | 해당 모드에서만 차단 |
 | **apptainer** 또는 **singularity** | `make bake-dev` / `make bake-prod`, `make run-sif` | 해당 명령이 명확히 실패 |
 | **sbatch / srun** | `SIF_MODE=slurm` 제출 호스트 | 해당 명령이 명확히 실패 |
