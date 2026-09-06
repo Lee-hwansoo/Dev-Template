@@ -2335,6 +2335,15 @@ grep -Eq '^[^#]*for E in.*"local:' Makefile \
 grep -Eq "^[^#]*tr -c 'a-z0-9_-'" Makefile \
     || { log_err "make setup lost the username sanitize — non-[a-z0-9_-] usernames would break compose project naming."; sec_errors=1; }
 # mclean rm -rf roots must use ${WS_ROOT:?}: with util_paths sourced '|| true',
+# …and it must open the window as the container user with the flag terminator
+# has. It ran as root with `-u <config>` — -u is --no-dbus, the path became a
+# positional argument and terminator exited before drawing; `docker exec -d`
+# reports 0 for a detached process, so nothing ever said so.
+term_recipe="$(make -n term 2>/dev/null | grep -E 'docker exec -d' || true)"
+[ -n "$term_recipe" ] && ! grep -qvE 'USER_FLAG' <<< "$term_recipe" \
+    || { log_err "'make term' launches a terminal without the EXEC_USER_FLAG the other attach targets use; every pane would be a root shell."; sec_errors=1; }
+grep -qE 'terminator -g ' <<< "$term_recipe" && ! grep -qE 'terminator -u' <<< "$term_recipe" \
+    || { log_err "'make term' passes the terminator layout with a flag other than -g (-u is --no-dbus; a positional path aborts the launch)."; sec_errors=1; }
 # a plain ${WS_ROOT} expands empty and deletes /build /log /install.
 awk '/^mclean\(\)/,/^}/' config/util_aliases.sh | grep -E '\$\{WS_ROOT\}/' -q \
     && { log_err "mclean references \${WS_ROOT} without :? — empty WS_ROOT turns cleanup into rm -rf /build /install."; sec_errors=1; }

@@ -221,12 +221,9 @@ COPY scripts/ ${WORKSPACE_PATH}/scripts/
 RUN chmod +x /entrypoint.sh ${WORKSPACE_PATH}/scripts/*.sh ${WORKSPACE_PATH}/config/*.sh && \
     printf '\n# DevKit: single environment definition (see config/init_bash.sh)\n[ -r /etc/devkit/shell-env.sh ] && . /etc/devkit/shell-env.sh\n' \
         | tee -a /root/.bashrc >> /home/${CONTAINER_USER}/.bashrc && \
-    mkdir -p /root/.config/terminator /home/${CONTAINER_USER}/.config/terminator && \
-    if [ -f ${WORKSPACE_PATH}/config/terminator_config ]; then \
-    cp ${WORKSPACE_PATH}/config/terminator_config /root/.config/terminator/config && \
-    cp ${WORKSPACE_PATH}/config/terminator_config /home/${CONTAINER_USER}/.config/terminator/config; \
-    fi && \
-    chown -R ${CONTAINER_USER}:$(id -g ${CONTAINER_USER}) /home/${CONTAINER_USER} /opt/uv
+# The terminator layout is not copied into a HOME: `make term` passes it with
+# -g from the bind-mounted config/, so an edit there needs no rebuild.
+    chown -R ${CONTAINER_USER}:$(id -g ${CONTAINER_USER}) /home/${CONTAINER_USER}  /opt/uv
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["bash"]
 

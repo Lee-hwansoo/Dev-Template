@@ -498,18 +498,22 @@ lint:
 ## @target term : Launch in-container Terminator GUI window (2x2 grid layout)
 # Probes with xdpyinfo (x11-utils), not xset: the image ships no
 # x11-xserver-utils, and xset reported "no display" on a working WSLg host.
+# Same user as `shell`/`exec`, or every pane is a root shell writing root-owned
+# files into the bind mount. terminator's config flag is -g; -u is --no-dbus,
+# and a stray positional argument makes it exit before drawing — silently,
+# because `docker exec -d` returns 0 whatever the detached process does.
 term:
 	$(call GUARD_HOST_ONLY)
 	@$(MAKE) xauth >/dev/null 2>&1 || true
 	@$(REQUIRE_CONTAINER); \
+	$(EXEC_USER_FLAG); \
 	if docker exec $$CONTAINER xdpyinfo >/dev/null 2>&1; then \
 		echo -e "  $(INFO) Launching in-container Terminator GUI ($$CONTAINER)..."; \
 		TERM_BIN="$${TERMINAL:-terminator}"; \
 		if [ "$$TERM_BIN" = "terminator" ]; then \
-			docker exec -d $$CONTAINER terminator -u $(WORKSPACE_PATH)/config/terminator_config 2>/dev/null \
-				|| docker exec -d $$CONTAINER terminator; \
+			docker exec -d $$USER_FLAG -w "$(WORKSPACE_PATH)" $$CONTAINER terminator -g "$(WORKSPACE_PATH)/config/terminator_config"; \
 		else \
-			docker exec -d $$CONTAINER "$$TERM_BIN"; \
+			docker exec -d $$USER_FLAG -w "$(WORKSPACE_PATH)" $$CONTAINER "$$TERM_BIN"; \
 		fi; \
 	else \
 		echo -e "  $(WARN) In-container Terminator GUI requires an active X11 display server."; \
