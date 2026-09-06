@@ -25,6 +25,10 @@ OVERLAY_DIR="${DEPS_DIR}/overlay"
 # compares against ${WS_ROOT}/*) rejects it.
 TARGET_DIR="${SYNC_TARGET_DIR:-src/thirdparty}"
 case "$TARGET_DIR" in /*) ;; *) TARGET_DIR="${WS_ROOT}/${TARGET_DIR}" ;; esac
+# Resolve before anything is created or destroyed here: the fence below compares
+# against the workspace, and 'src/thirdparty/../../../outside' passed a string
+# prefix test while pointing at another tree entirely.
+TARGET_DIR="$(devkit_resolve_path "$TARGET_DIR")"
 # bash 3.2 (macOS) has no ${var,,}.
 _devkit_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
@@ -46,6 +50,21 @@ for arg in "$@"; do
         *) log_error "Unknown option: $arg"; exit 2 ;;
     esac
 done
+
+# 'git clean -ffdx' outside the workspace is a foot-gun. Checked BEFORE the
+# directory is created or imported into, on the resolved path.
+if [ "$FORCE_MODE" = true ]; then
+    # No blanket /tmp exemption: DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET is the
+    # explicit opt-in, and a wildcard for one directory made the fence advisory.
+    case "${TARGET_DIR}/" in
+        "$(devkit_resolve_path "$WS_ROOT")"/*) ;;
+        *)  if ! _truthy "${DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET:-false}"; then
+                log_error "--force would 'git clean -ffdx' outside the workspace: ${TARGET_DIR}"
+                log_error "Set DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET=1 to allow."
+                exit 2
+            fi ;;
+    esac
+fi
 
 mkdir -p "$TARGET_DIR"
 
@@ -147,16 +166,6 @@ else
 
     # Force-reset: discard local changes in third-party repos
     if [ "$FORCE_MODE" = true ]; then
-        # 'git clean -ffdx' outside the workspace is a foot-gun; refuse unless
-        # the user explicitly opted in.
-        case "$TARGET_DIR" in
-            "${WS_ROOT}"/*|/tmp/*) ;;
-            *)  if ! _truthy "${DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET:-false}"; then
-                    log_error "--force would 'git clean -ffdx' outside the workspace: ${TARGET_DIR}"
-                    log_error "Set DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET=1 to allow."
-                    exit 2
-                fi ;;
-        esac
         log_warn "Force mode: resetting all third-party repos to HEAD..."
         while IFS= read -r -d '' git_dir; do
             repo_dir="$(dirname "$git_dir")"

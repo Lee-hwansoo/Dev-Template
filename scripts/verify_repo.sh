@@ -1145,6 +1145,81 @@ rm -rf "$confirm_probe"
     && log_ok "Only an exact true FORCE/CI skips the delete confirmation (9 spellings, off a TTY)."
 
 # =============================================================================
+# [delete-boundary] Destructive commands are aimed by configuration, so the
+#      guard must run on the RESOLVED path. '<ws>/cache/../../<ws>' carries the
+#      word 'cache' and reached `rm -rf` on the workspace; a SYNC_TARGET_DIR
+#      spelled '<ws>/src/thirdparty/../../../outside' passed a "starts with the
+#      workspace" test and `git clean -ffdx` ran in another tree.
+# =============================================================================
+rmguard_errors=0
+# Canonical from the start: the guard deletes the RESOLVED path, and on macOS
+# $TMPDIR is /var/… -> /private/var/…, so an unresolved probe path would
+# never match the mock rm log and every allowed delete would read as refused.
+rmguard_probe="$(cd "$(probe_dir)" && pwd -P)"
+mkdir -p "$rmguard_probe/ws/cache" "$rmguard_probe/realcache" "$rmguard_probe/bin"
+cp Makefile "$rmguard_probe/ws/"
+for rmguard_link in scripts config docker dependencies; do
+    ln -s "${ROOT_DIR}/${rmguard_link}" "$rmguard_probe/ws/${rmguard_link}"
+done
+printf '#!/bin/sh\necho "$*" >> "%s/rm.log"\n' "$rmguard_probe" > "$rmguard_probe/bin/rm"
+chmod +x "$rmguard_probe/bin/rm"
+# rmguard_case <label> <expect deleted|refused> <make args…>
+rmguard_case() {
+    local label="$1" want="$2"; shift 2
+    : > "$rmguard_probe/rm.log"
+    ( cd "$rmguard_probe/ws" && PATH="$rmguard_probe/bin:$PATH" make clean-cache "$@" ) >/dev/null 2>&1 || true
+    # The recipe removes other things too, so only a call naming the guarded
+    # path counts as "the guard let it through". ${*##…} strips per word and
+    # would leave FORCE=1 glued to the front.
+    local got=refused target="" arg
+    for arg in "$@"; do case "$arg" in DOCKER_DEV_CACHE_DIR=*) target="${arg#*=}" ;; esac; done
+    grep -qF -- "$target" "$rmguard_probe/rm.log" 2>/dev/null && got=deleted
+    [ "$got" = "$want" ] \
+        || { log_err "clean-cache on ${label}: ${got}, expected ${want}."; rmguard_errors=1; }
+}
+rmguard_case "a path that resolves back to the workspace" refused \
+    FORCE=1 "DOCKER_DEV_CACHE_DIR=$rmguard_probe/ws/cache/../../ws"
+rmguard_case "FORCE=0 with a non-cache path" refused \
+    FORCE=0 "DOCKER_DEV_CACHE_DIR=$rmguard_probe/elsewhere"
+rmguard_case "a real cache directory" deleted \
+    "DOCKER_DEV_CACHE_DIR=$rmguard_probe/realcache"
+rmguard_case "a non-cache path the user forced" deleted \
+    FORCE=1 "DOCKER_DEV_CACHE_DIR=$rmguard_probe/elsewhere"
+
+# …and the sync fence must refuse BEFORE anything writes into the directory it
+# is protecting: it used to run after `vcs import` had already populated it.
+mkdir -p "$rmguard_probe/sync/ws/config" "$rmguard_probe/sync/ws/dependencies" \
+         "$rmguard_probe/sync/outside/repo/.git" "$rmguard_probe/sync/bin"
+for rmguard_lib in util_paths.sh util_logging.sh; do
+    ln -s "${ROOT_DIR}/config/${rmguard_lib}" "$rmguard_probe/sync/ws/config/${rmguard_lib}"
+done
+printf 'repositories:\n  a:\n    type: git\n    url: https://example.invalid/a.git\n    version: %s\n' \
+    "0123456789abcdef0123456789abcdef01234567" > "$rmguard_probe/sync/ws/dependencies/dependencies.repos"
+for rmguard_cmd in git vcs; do
+    printf '#!/bin/sh\necho "%s $*" >> "%s/sync/calls.log"\n' "$rmguard_cmd" "$rmguard_probe" \
+        > "$rmguard_probe/sync/bin/$rmguard_cmd"
+    chmod +x "$rmguard_probe/sync/bin/$rmguard_cmd"
+done
+rmguard_sync() {   # rmguard_sync <label> <expect refused|ran> [env…]
+    local label="$1" want="$2"; shift 2
+    : > "$rmguard_probe/sync/calls.log"
+    local out; out="$( PATH="$rmguard_probe/sync/bin:$PATH" WORKSPACE_PATH="$rmguard_probe/sync/ws" \
+        env "$@" bash scripts/setup_sync_deps.sh --force 2>&1 || true )"
+    local got=ran
+    { grep -qi 'would .git clean' <<< "$out" && [ ! -s "$rmguard_probe/sync/calls.log" ]; } && got=refused
+    [ "$got" = "$want" ] \
+        || { log_err "sync --force on ${label}: ${got}, expected ${want} (a refusal must precede every command)."; rmguard_errors=1; }
+}
+rmguard_sync "a target that resolves outside the workspace" refused \
+    SYNC_TARGET_DIR="src/thirdparty/../../../outside"
+rmguard_sync "the same target, explicitly allowed" ran \
+    SYNC_TARGET_DIR="src/thirdparty/../../../outside" DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET=1
+rmguard_sync "a target inside the workspace" ran SYNC_TARGET_DIR="src/thirdparty"
+rm -rf "$rmguard_probe"
+[ "$rmguard_errors" -eq 0 ] \
+    && log_ok "Destructive guards resolve the path first: a workspace round-trip, a false FORCE and an external sync target are all refused."
+
+# =============================================================================
 # [gpg-anchor] The pinned fingerprint must exist and stay in sync with the
 #      updater that maintains it (`make update-gpg`).
 # =============================================================================

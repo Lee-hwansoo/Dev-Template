@@ -659,21 +659,29 @@ clean-cache:
 		exit 1; \
 	fi
 	@# DOCKER_DEV_CACHE_DIR relocates ccache/uv caches (see .env.example).
-	@# Guards: refuse '/', relative paths and the workspace root outright, and
-	@# require any other absolute path to LOOK like a cache dir ('cache' in the
-	@# name) unless FORCE=1 — this is an rm -rf aimed by a config variable.
+	@# Guards run on the RESOLVED path: '<ws>/cache/../../<ws>' carries the word
+	@# 'cache' and used to pass, aiming this rm -rf at the workspace itself.
 	@CACHE_DIR="$(or $(DOCKER_DEV_CACHE_DIR),.docker_cache)"; \
-	case "$$CACHE_DIR" in \
-		.docker_cache) ;; \
-		/|"$(HOST_WORKSPACE_PATH)"|"$(HOST_WORKSPACE_PATH)/") \
-			echo -e "  $(ERROR) Refusing to delete '$$CACHE_DIR'."; exit 1 ;; \
-		/*cache*) ;; \
-		/*) if [ -z "$$FORCE" ]; then \
-				echo -e "  $(ERROR) '$$CACHE_DIR' does not look like a cache directory (no 'cache' in the path)."; \
-				echo -e "  $(INFO) Re-run with FORCE=1 if this really is your relocated cache."; exit 1; \
-			fi ;; \
-		*)  echo -e "  $(ERROR) DOCKER_DEV_CACHE_DIR must be an absolute path (got: $$CACHE_DIR)"; exit 1 ;; \
-	esac; \
+	if [ "$$CACHE_DIR" != .docker_cache ]; then \
+		case "$$CACHE_DIR" in \
+			/*) ;; \
+			*)  echo -e "  $(ERROR) DOCKER_DEV_CACHE_DIR must be an absolute path (got: $$CACHE_DIR)"; exit 1 ;; \
+		esac; \
+		eval "$$(bash -c 'source config/util_paths.sh >/dev/null 2>&1; \
+			printf "REAL_CACHE=%s\nREAL_WS=%s\n" "$$(devkit_resolve_path "$$1")" "$$(devkit_resolve_path "$$2")"' \
+			_ "$$CACHE_DIR" "$(HOST_WORKSPACE_PATH)")"; \
+		case "$$REAL_CACHE" in \
+			/|"$$REAL_WS") echo -e "  $(ERROR) '$$CACHE_DIR' resolves to '$$REAL_CACHE'; refusing to delete it."; exit 1 ;; \
+		esac; \
+		case "$$REAL_CACHE" in \
+			*cache*) ;; \
+			*)  if ! bash -c 'source config/util_paths.sh >/dev/null 2>&1; devkit_is_true "$$1"' _ "$$FORCE"; then \
+					echo -e "  $(ERROR) '$$REAL_CACHE' does not look like a cache directory (no 'cache' in the resolved path)."; \
+					echo -e "  $(INFO) Re-run with FORCE=1 if this really is your relocated cache."; exit 1; \
+				fi ;; \
+		esac; \
+		CACHE_DIR="$$REAL_CACHE"; \
+	fi; \
 	if ! rm -rf "$$CACHE_DIR" .docker_cache 2>/dev/null; then \
 		echo -e "  $(ERROR) $$CACHE_DIR contains root-owned entries and cannot be removed."; \
 		$(call HINT_ROOT_OWNED,.docker_cache); \

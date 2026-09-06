@@ -34,6 +34,45 @@ export WS_UV_CACHE_DIR="/cache/uv"
 # with the quotes and CR compose tolerates stripped. READ, never source: .env is
 # data, not code, and make's `export` does not reach $(shell …), so every caller
 # that needs a value before compose runs has to read the file itself.
+# devkit_resolve_path <path> — absolute, with '..' and symlinks resolved. Used
+# before anything destructive: a string test let '<ws>/cache/../../<ws>' pass a
+# "must contain cache" guard and reach `rm -rf` on the workspace itself.
+# No `realpath -m` / `readlink -f`: macOS ships neither in a usable form, so the
+# deepest EXISTING directory is resolved physically and the missing tail
+# appended.
+devkit_resolve_path() {
+    local path="$1" probe tail="" out comp
+    [ -n "$path" ] || return 1
+    case "$path" in /*) ;; *) path="${PWD}/${path}" ;; esac
+    # Deepest EXISTING directory, resolved physically (symlinks and all)…
+    probe="$path"
+    while [ ! -d "$probe" ] && [ "$probe" != / ]; do
+        tail="${probe##*/}${tail:+/$tail}"
+        probe="${probe%/*}"; [ -n "$probe" ] || probe=/
+    done
+    out="$(cd "$probe" 2>/dev/null && pwd -P)" || return 1
+    # …then fold what is left. '..' has to be popped here: the components below
+    # may not exist, so the kernel cannot resolve them and a lexical pass is the
+    # only way '<ws>/src/thirdparty/../../../outside' stops looking internal.
+    while [ -n "$tail" ]; do
+        comp="${tail%%/*}"
+        case "$tail" in */*) tail="${tail#*/}" ;; *) tail="" ;; esac
+        case "$comp" in
+            ''|.) ;;
+            ..)   out="${out%/*}"; [ -n "$out" ] || out=/ ;;
+            *)    out="${out%/}/${comp}" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+# devkit_is_true <value> — the one spelling of truth for destructive guards.
+# `FORCE=0` and `CI=false` are answers, not absence, and a presence test read
+# them as "yes".
+devkit_is_true() {
+    case "$1" in 1|true|TRUE|True|yes|YES|Yes|on|ON|On) return 0 ;; *) return 1 ;; esac
+}
+
 devkit_env_value() {
     local key="$1" file="${2:-${WS_ROOT}/.env}"
     [ -f "$file" ] || return 0
