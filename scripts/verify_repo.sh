@@ -2545,6 +2545,18 @@ grep -Eq "^[^#]*tr -c 'a-z0-9_-'" Makefile \
 # /tmp/util_paths.sh that no image ever holds.
 tmp_source="$(grep -nE '^[^#]*source +"?/tmp/' scripts/*.sh config/*.sh docker/*.sh 2>/dev/null | grep -v verify_repo.sh || true)"
 [ -z "$tmp_source" ] \
+# terminator and its font are OPT-IN: offered in dependencies/apt.txt as a
+# commented '# gui' line, absent from the Dockerfile, nothing fetched from
+# GitHub into every image — and `make term` must probe for the binary and say
+# how to opt in, since a detached exec cannot report a missing program.
+grep -v '^[[:space:]]*#' docker/Dockerfile | grep -qE '(^|[[:space:]])terminator([[:space:]\\]|$)' \
+    && { log_err "docker/Dockerfile installs terminator into every dev image; it is opt-in through dependencies/apt.txt."; sec_errors=1; }
+grep -qE '^# terminator # gui' dependencies/apt.txt \
+    || { log_err "dependencies/apt.txt no longer offers the commented 'terminator # gui' line; there is no way left to opt in."; sec_errors=1; }
+grep -qE '^[^#]*curl [^#]*github\.com' docker/Dockerfile \
+    && { log_err "docker/Dockerfile downloads from GitHub into the image (the D2Coding font once did); fonts are opt-in via dependencies/."; sec_errors=1; }
+make -n term 2>/dev/null | grep -q 'command -v "$TERM_BIN"' && make -n term 2>/dev/null | grep -q 'dependencies/apt.txt' \
+    || { log_err "'make term' does not probe for the terminal binary and point at dependencies/apt.txt; with terminator opt-in it would silently launch nothing."; sec_errors=1; }
     || { log_err "a script sources a file under /tmp (world-writable, and absent from every image): $(cut -d: -f1,2 <<< "$tmp_source" | tr '\n' ' ')"; sec_errors=1; }
 # mclean with no WS_ROOT (util_paths sourced '|| true' and failed) must stop
 # before its first find/rm: a plain ${WS_ROOT} once turned it into rm -rf /build.

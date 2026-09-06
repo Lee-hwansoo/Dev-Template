@@ -131,7 +131,7 @@ mksync && git add src/uv.lock && git commit -m "chore: pin python dependencies"
 | **`make check`** | **사전 점검**: Docker/Compose v2/BuildKit, `.env` 키 누락, WSL2, NVIDIA 런타임 설정 여부를 해결 명령과 함께 진단 |
 | **`make build [ENV=...]`** | **이미지 빌드**: ROS 1/2 (`ENV=ros`) 또는 C++/Python (`ENV=dev`) 도커 이미지 빌드 |
 | **`make start [ENV=...]`** | **컨테이너 기동**: 백그라운드 개발 컨테이너 시작 |
-| **`make shell / term`** | **컨테이너 진입**: 대화형 셸 진입 / 새 터미널 창 오픈 |
+| **`make shell / term`** | **컨테이너 진입**: 대화형 셸 진입 / 새 터미널 창 오픈 (`term`은 opt-in — `dependencies/apt.txt`의 `terminator # gui` 주석 해제) |
 | **`make gpus`** | **호스트 GPU 모니터링**: 호스트 PC의 NVIDIA GPU / iGPU 실시간 VRAM 및 가속 상태 조회 |
 | **`make status / check`** | **진단 리포트**: 프로젝트 설정, GPU/GUI 모드, 렌더링 디바이스 종합 점검 |
 | **`make test / lint`** | **품질 루프**: 프로젝트 테스트 실행 / 스타일·린트 검사 (`FIX=1`로 자동 수정). 러너는 워크스페이스 형태(ROS·CMake·순수 Python)에서 자동 결정 |

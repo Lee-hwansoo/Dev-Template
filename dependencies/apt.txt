@@ -19,6 +19,11 @@
 ccache
 ninja-build
 
+# GUI terminal for `make term` (opt-in). terminator pulls GTK/VTE into every
+# dev image, so it is offered, not installed. A matching font is opt-in too:
+# drop D2Coding.zip (github.com/naver/d2codingfont) into dependencies/.
+# terminator # gui
+
 # Quality loop (opt-in). The editor formats C/C++ with the copy bundled in the
 # C/C++ extension, so `mlint`'s CLI half is the only thing that needs this —
 # and clang-format pulls libllvm, which the dev image otherwise avoids.

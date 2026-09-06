@@ -184,14 +184,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     sudo bash-completion gdb htop iproute2 lsb-release net-tools nvtop tree unzip wget \
     fonts-noto-color-emoji fonts-font-awesome \
     # gui-tools
-    dbus-x11 clinfo fontconfig libegl1-mesa-dev libgl1 libgl1-mesa-dri libglfw3-dev libglx-mesa0 libqt5waylandclient5 libvulkan-dev libwayland-client0 libxkbcommon0 mesa-utils mesa-vulkan-drivers qtwayland5 terminator vulkan-tools vulkan-validationlayers x11-apps x11-utils && \
-    # Install D2Coding Font
+    dbus-x11 clinfo fontconfig libegl1-mesa-dev libgl1 libgl1-mesa-dri libglfw3-dev libglx-mesa0 libqt5waylandclient5 libvulkan-dev libwayland-client0 libxkbcommon0 mesa-utils mesa-vulkan-drivers qtwayland5 vulkan-tools vulkan-validationlayers x11-apps x11-utils && \
+    # Opt-in terminal font: a D2Coding.zip dropped into dependencies/ is
+    # installed; nothing is downloaded from GitHub into every image any more.
     if [ -f ${WORKSPACE_PATH}/dependencies/D2Coding.zip ]; then \
     unzip -q ${WORKSPACE_PATH}/dependencies/D2Coding.zip -d /usr/share/fonts/truetype/d2coding; \
-    else \
-    curl -sfL --retry 3 --retry-delay 2 https://github.com/naver/d2codingfont/releases/download/VER1.3.2/D2Coding-Ver1.3.2-20180524.zip -o /tmp/d2coding.zip && \
-    echo "0f1c9192eac7d56329dddc620f9f1666b707e9c8ed38fe1f988d0ae3e30b24e6  /tmp/d2coding.zip" | sha256sum -c --quiet && \
-    unzip -q /tmp/d2coding.zip -d /usr/share/fonts/truetype/d2coding && rm -f /tmp/d2coding.zip; \
     fi; \
     fc-cache -f && \
     apt-get autoremove -y && \
@@ -220,8 +217,8 @@ ENV BASH_ENV=/etc/devkit/shell-env.sh
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY config/  ${WORKSPACE_PATH}/config/
 COPY scripts/ ${WORKSPACE_PATH}/scripts/
-# The terminator layout is not copied into a HOME: `make term` passes it with
-# -g from the bind-mounted config/, so an edit there needs no rebuild.
+# The terminator layout (opt-in, dependencies/apt.txt) is not copied into a
+# HOME: `make term` passes it with -g from the bind-mounted config/.
 RUN chmod +x /entrypoint.sh ${WORKSPACE_PATH}/scripts/*.sh ${WORKSPACE_PATH}/config/*.sh && \
     printf '\n# DevKit: single environment definition (see config/init_bash.sh)\n[ -r /etc/devkit/shell-env.sh ] && . /etc/devkit/shell-env.sh\n' \
         | tee -a /root/.bashrc >> /home/${CONTAINER_USER}/.bashrc && \

@@ -489,6 +489,8 @@ lint:
 	@$(MAKE) --no-print-directory exec CMD='mlint $(if $(filter 1 true,$(FIX)),--fix,)'
 
 ## @target term : Launch in-container Terminator GUI window (2x2 grid layout)
+# terminator is opt-in (dependencies/apt.txt), so the binary is probed first:
+# `docker exec -d` would report success for a launch that never happened.
 # Probes with xdpyinfo (x11-utils), not xset: the image ships no
 # x11-xserver-utils, and xset reported "no display" on a working WSLg host.
 # Same user as `shell`/`exec`, or every pane is a root shell writing root-owned
@@ -500,9 +502,13 @@ term:
 	@$(MAKE) xauth >/dev/null 2>&1 || true
 	@$(REQUIRE_CONTAINER); \
 	$(EXEC_USER_FLAG); \
-	if docker exec $$CONTAINER xdpyinfo >/dev/null 2>&1; then \
+	TERM_BIN="$${TERMINAL:-terminator}"; \
+	if ! docker exec $$CONTAINER command -v "$$TERM_BIN" >/dev/null 2>&1; then \
+		echo -e "  $(ERROR) '$$TERM_BIN' is not installed in this image." >&2; \
+		echo -e "  $(INFO) Uncomment 'terminator # gui' in dependencies/apt.txt and run 'make build' (or set TERMINAL= in .env)."; \
+		exit 1; \
+	elif docker exec $$CONTAINER xdpyinfo >/dev/null 2>&1; then \
 		echo -e "  $(INFO) Launching in-container Terminator GUI ($$CONTAINER)..."; \
-		TERM_BIN="$${TERMINAL:-terminator}"; \
 		if [ "$$TERM_BIN" = "terminator" ]; then \
 			docker exec -d $$USER_FLAG -w "$(WORKSPACE_PATH)" $$CONTAINER terminator -g "$(WORKSPACE_PATH)/config/terminator_config"; \
 		else \

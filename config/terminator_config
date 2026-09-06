@@ -1,6 +1,8 @@
 # =============================================================================
 # config/terminator_config — 2x2 grid (main, monitoring, two log panes) with
-# Alt-based split/broadcast keys and the D2Coding font. Used by `make term`.
+# Alt-based split/broadcast keys. Used by `make term` (terminator is opt-in,
+# see dependencies/apt.txt); the font follows the system unless D2Coding.zip
+# was dropped into dependencies/ — then switch the two lines below.
 # =============================================================================
 
 [global_config]
@@ -40,9 +42,9 @@
     [[default]]
         login_shell = True
 
-        use_system_font = False
-        font = D2Coding 12
-        title_font = D2Coding 12
+        use_system_font = True
+        # font = D2Coding 12
+        # title_font = D2Coding 12
         encoding = UTF-8
 
         background_color = "#1e1e1e"
