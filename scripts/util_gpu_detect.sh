@@ -68,9 +68,9 @@ has_nvidia() {
     return 1
 }
 
-# CUDA build capability: NVIDIA runtime plus compiler/toolkit availability
+# CUDA compilation requires the toolkit, independently of host GPU hardware.
 can_build_cuda() {
-    has_nvidia && command -v nvcc >/dev/null 2>&1
+    command -v nvcc >/dev/null 2>&1
 }
 
 # Intel iGPU: DRI device with vendor ID 0x8086
@@ -265,4 +265,3 @@ get_cuda_metadata() {
             ;;
     esac
 }
-

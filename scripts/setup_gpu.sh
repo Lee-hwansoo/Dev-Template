@@ -60,8 +60,6 @@ __gpu_persist() {
         for dir in ${GPU_LIB_DIRS[@]+"${GPU_LIB_DIRS[@]}"}; do
             printf 'case ":${LD_LIBRARY_PATH}:" in *":%s:"*) ;; *) export LD_LIBRARY_PATH="%s${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;; esac\n' "$dir" "$dir"
         done
-        # Optional dependency group for `uvs` (pyproject [project.optional-dependencies])
-        printf 'export UV_EXTRA=%s\n' "${GPU_UV_EXTRA:-cpu}"
     } > "$GPU_ENV_FILE" 2>/dev/null || true
 }
 
@@ -70,7 +68,6 @@ __gpu_nvidia_native() {
     export __NV_PRIME_RENDER_OFFLOAD=1
     export __VK_LAYER_NV_optimus=NVIDIA_only
     export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
-    GPU_UV_EXTRA="gpu"
 
     if has_dxg 2>/dev/null; then
         # WSL2: CUDA is native but OpenGL always crosses the Mesa D3D12
@@ -118,7 +115,6 @@ __gpu_wsl_d3d12() {
     [ -z "$adapter" ] && has_nvidia 2>/dev/null && adapter="NVIDIA"
     [ -n "$adapter" ] && export MESA_D3D12_DEFAULT_ADAPTER_NAME="$adapter"
     __gpu_path_prepend "/usr/lib/wsl/lib"
-    has_nvidia 2>/dev/null && GPU_UV_EXTRA="gpu"
     LOG_PREFIX="[GPU]" log_ok "WSL2 Mesa/D3D12 bridge active${adapter:+ (adapter: ${adapter})}"
 }
 
@@ -139,7 +135,6 @@ __gpu_tegra() {
     export LIBGL_ALWAYS_SOFTWARE=0
     __gpu_path_prepend "/usr/lib/aarch64-linux-gnu/tegra"
     __gpu_path_prepend "/usr/lib/aarch64-linux-gnu/tegra-egl"
-    GPU_UV_EXTRA="gpu"
     LOG_PREFIX="[GPU]" log_ok "NVIDIA Tegra/Jetson integrated GPU active (L4T stack)"
 }
 
@@ -308,7 +303,6 @@ case "$__gpu_req_mode" in
 esac
 
 __gpu_reset
-GPU_UV_EXTRA="cpu"
 
 # Resolve 'auto'. Tegra first: a Jetson has /dev/nvhost-* and an nvgpu DRI node
 # but no /dev/nvidiactl, so a plain NVIDIA probe drops it to software.

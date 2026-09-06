@@ -952,6 +952,41 @@ grep -qE '^[^#]*vcstool' scripts/check_preflight.sh \
 [ "$hostdep_errors" -eq 0 ] \
     && log_ok "Every blocking host prerequisite is both enforced by preflight and documented ($(wc -w <<< "$hostdep_tools") tools)."
 # =============================================================================
+# [macos-fallback] macOS has no CUDA and no DRI passthrough — Docker Desktop
+#      runs a Linux VM. Every macOS host must resolve to cpu even when the
+#      machine has a GPU and nvidia-smi happens to be on PATH, or compose picks
+#      a profile whose devices do not exist and the container fails to start.
+# =============================================================================
+macos_errors=0
+macos_probe="$(probe_dir)"
+# A host that looks like macOS AND advertises an NVIDIA GPU: detection must
+# believe the platform, not the tool that happens to be installed.
+printf '#!/bin/sh\n[ "$1" = -s ] && { echo Darwin; exit 0; }\nexec /usr/bin/uname "$@"\n' \
+    > "$macos_probe/uname"; chmod +x "$macos_probe/uname"
+printf '#!/bin/sh\nexit 0\n' > "$macos_probe/nvidia-smi"; chmod +x "$macos_probe/nvidia-smi"
+macos_env="$( PATH="$macos_probe:$PATH" bash scripts/check_env.sh --makefile 2>/dev/null || true )"
+for macos_expect in 'IS_MACOS := true' 'HAS_NVIDIA := false' 'HAS_TOOLKIT := false' 'HAS_DRI := false'; do
+    grep -qF -- "$macos_expect" <<< "$macos_env" \
+        || { log_err "on a macOS host check_env.sh does not emit '${macos_expect}'; compose would select a profile whose devices do not exist."; macos_errors=1; }
+done
+rm -rf "$macos_probe"
+# …and those three flags must actually land on the cpu profile. The REAL
+# resolver from the Makefile, so a change to the branch order is caught here
+# rather than by a Mac user whose container will not start.
+macos_resolver="$(sed -n '/^define RESOLVE_SVC_MODE/,/^endef/p' Makefile \
+    | sed -e '1d' -e '$d' \
+          -e 's/\$(HAS_NVIDIA)/false/g; s/\$(HAS_TOOLKIT)/false/g; s/\$(HAS_DRI)/false/g' \
+          -e 's/\$(SERVICE_PREFIX)/ros/g' -e 's/\$\$/$/g' -e 's/ \\$//' || true)"
+macos_svc="$( unset GPU_MODE; eval "$macos_resolver" >/dev/null 2>&1; printf '%s' "${TARGET_SVC:-}" )"
+[ "$macos_svc" = "ros-cpu" ] \
+    || { log_err "a macOS host resolves to '${macos_svc:-<nothing>}', not ros-cpu; the selected profile requests devices macOS cannot pass through."; macos_errors=1; }
+# …and the support matrix must say so, rather than letting a reader assume
+# Metal/MPS works because the GPU section does not mention macOS.
+grep -qiE 'macOS GPU.*(미지원|unsupported)' README.md \
+    || { log_err "README does not state that macOS GPU acceleration is unsupported (CPU fallback only)."; macos_errors=1; }
+[ "$macos_errors" -eq 0 ] \
+    && log_ok "A macOS host resolves to cpu even with nvidia-smi on PATH, and the README says Metal/MPS is unsupported."
+# =============================================================================
 # [bake-inputs] What a bake actually passes to docker build. ROS_DISTRO decides
 #      BASE_IMAGE and UV_PYTHON inside check_env.sh, and a host `export` never
 #      crosses into a build — both were silently lost on the bake path.
