@@ -76,6 +76,39 @@ jobs:
               bash scripts/util_apt_helper.sh setup-cuda-repo 12.4
               apt-cache policy cuda-nvcc-12-4 | grep -q Candidate:'
 
+  apt-lists-resolve:
+    # The dev image's apt list is spelled once in the Dockerfile, for three
+    # Ubuntu releases the kit advertises. `libgl1-mesa-glx` vanished in 24.04
+    # and every jazzy/kilted/rolling build died at dev-base-tools while CI,
+    # building only 22.04 stages, stayed green. Resolve, don't build: ~30 s.
+    name: dev apt list resolves (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:20.04', 'ubuntu:22.04', 'ubuntu:24.04']
+    steps:
+      - uses: actions/checkout@v4
+      - name: every Dockerfile apt package has a candidate on this base
+        run: |
+          # Package words of the multi-line `apt-get install` in the stages that
+          # every image shares; comment lines inside the RUN are skipped.
+          pkgs=$(awk '/^FROM /{s=$NF}
+                      (s=="build-core"||s=="dev-base-tools"||s=="prod-base") && /--no-install-recommends \\$/ {grab=1; next}
+                      grab && /^ *#/ {next}
+                      grab {line=$0; if (line ~ /&&/) {grab=0; sub(/&&.*/, "", line)}; gsub(/\\/, "", line); print line}' \
+                 docker/Dockerfile | tr -s ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')
+          [ "$(wc -w <<< "$pkgs")" -ge 40 ] || { echo "package extraction collapsed: '$pkgs'"; exit 1; }
+          docker run --rm -e DEBIAN_FRONTEND=noninteractive -e PKGS="$pkgs" ${{ matrix.image }} bash -c '
+            apt-get update -qq >/dev/null
+            missing=""
+            for p in $PKGS; do
+              apt-cache policy "$p" 2>/dev/null | grep -q "Candidate: [^(]" || missing="$missing $p"
+            done
+            [ -z "$missing" ] || { echo "no candidate on this base:$missing"; exit 1; }
+            echo "all $(wc -w <<< "$PKGS") packages resolve"'
+
   image-stages:
     name: image stages (base, build-core)
     runs-on: ubuntu-latest

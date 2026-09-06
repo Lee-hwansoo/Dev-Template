@@ -179,7 +179,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     sudo bash-completion gdb htop iproute2 lsb-release net-tools nvtop tree unzip wget \
     fonts-noto-color-emoji fonts-font-awesome \
     # gui-tools
-    dbus-x11 clinfo fontconfig libegl1-mesa-dev libgl1-mesa-dri libgl1-mesa-glx libglfw3-dev libglx-mesa0 libqt5waylandclient5 libvulkan-dev libwayland-client0 libxkbcommon0 mesa-utils mesa-vulkan-drivers qtwayland5 terminator vulkan-tools vulkan-validationlayers x11-apps x11-utils && \
+    dbus-x11 clinfo fontconfig libegl1-mesa-dev libgl1 libgl1-mesa-dri libglfw3-dev libglx-mesa0 libqt5waylandclient5 libvulkan-dev libwayland-client0 libxkbcommon0 mesa-utils mesa-vulkan-drivers qtwayland5 terminator vulkan-tools vulkan-validationlayers x11-apps x11-utils && \
     # Install D2Coding Font
     if [ -f ${WORKSPACE_PATH}/dependencies/D2Coding.zip ]; then \
     unzip -q ${WORKSPACE_PATH}/dependencies/D2Coding.zip -d /usr/share/fonts/truetype/d2coding; \
