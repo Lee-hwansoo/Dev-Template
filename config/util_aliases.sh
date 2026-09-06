@@ -536,7 +536,15 @@ alias ccc='ccache -C'
 #   status (default) | opencv_args | auto | nvidia | tegra | intel | amd | igpu | cpu
 #   Sourced, so a mode switch applies to the current shell. setup_gpu.sh owns
 #   the vocabulary and answers --help; a second copy of the list here drifted.
-gpu() { source "${WS_SCRIPTS}/setup_gpu.sh" "${1:-status}"; }
+# A mode change must reach the CALLER's environment, so those stay sourced.
+# The read-only views must not: setup_gpu.sh strips colour by rewiring stdout,
+# and sourced into the caller that rewiring stayed after `gpu status` returned.
+gpu() {
+    case "${1:-status}" in
+        status|-h|--help) ( source "${WS_SCRIPTS}/setup_gpu.sh" "${1:-status}" ) ;;
+        *)                source "${WS_SCRIPTS}/setup_gpu.sh" "$1" ;;
+    esac
+}
 
 alias gpu_check='glxinfo 2>&1 | grep -E "OpenGL (vendor|renderer|version)" || echo "No display / glxinfo unavailable"'
 alias vulkan_check='vulkaninfo --summary 2>/dev/null | head -20 || echo "Vulkan not available"'

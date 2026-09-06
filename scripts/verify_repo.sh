@@ -2816,6 +2816,41 @@ rm -rf "$deps_probe"
     && log_ok "One answer for 'are there external repositories': both YAML styles, an empty file, .gitkeep and a custom target."
 
 # =============================================================================
+# [query-side-effects] A read-only view must leave the caller's shell as it
+#      found it. `gpu` sources setup_gpu.sh, and the colour stripping there
+#      rewires stdout with `exec > >(sed …)` — after `gpu status` returned, the
+#      user's shell was still writing through that filter.
+# =============================================================================
+query_errors=0
+# The verdict leaves on fd 9: a redirection on the CALL would scope the exec
+# under test and hide exactly the effect being measured, so the command runs
+# with the shell's own stdout.
+query_fd() {   # query_fd <command…>
+    local out; out="$(mktemp "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+    ( cd "$ROOT_DIR" && WORKSPACE_PATH="$ROOT_DIR" bash -c '
+        exec 9>"'"$out"'"
+        source config/util_aliases.sh >/dev/null 2>&1
+        before="$(readlink /proc/$$/fd/1)"
+        '"$1"'
+        after="$(readlink /proc/$$/fd/1)"
+        [ "$before" = "$after" ] && echo same >&9 || echo changed >&9' ) >/dev/null 2>&1 || true
+    cat "$out" 2>/dev/null; rm -f "$out"
+}
+# Three calls, not one: a rewire that reinstalls itself each time stacks filter
+# processes on the caller's stdout, and one call cannot tell that apart.
+[ "$(query_fd 'NO_COLOR=1 gpu status; NO_COLOR=1 gpu status; NO_COLOR=1 gpu status')" = "same" ] \
+    || { log_err "'gpu status' leaves the caller's stdout rewired; every later line goes through a filter it never asked for."; query_errors=1; }
+# …while a mode change must still reach the caller: that is why it is sourced.
+query_mode="$( WORKSPACE_PATH="$ROOT_DIR" bash -c '
+    source config/util_aliases.sh >/dev/null 2>&1
+    gpu cpu >/dev/null 2>&1
+    printf %s "${LIBGL_ALWAYS_SOFTWARE:-unset}"' 2>/dev/null || true )"
+[ "$query_mode" = "1" ] \
+    || { log_err "'gpu cpu' no longer reaches the caller's environment (LIBGL_ALWAYS_SOFTWARE=${query_mode})."; query_errors=1; }
+[ "$query_errors" -eq 0 ] \
+    && log_ok "A GPU status query leaves the caller's shell untouched; a mode change still reaches it."
+
+# =============================================================================
 # Result
 # =============================================================================
 echo ""
