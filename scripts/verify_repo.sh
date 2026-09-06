@@ -406,6 +406,65 @@ child_fns="$(__DEVKIT_ENV_READY="$ROOT_DIR" WORKSPACE_PATH="$ROOT_DIR" bash -c \
 [ "$bridge_errors" -eq 0 ] && log_ok "Runtime env reaches login, interactive and non-interactive shells; rosdep cache seeded."
 
 # =============================================================================
+# [ros-distro-set] The supported ROS distros are spelled in two files that
+#      cannot share code: check_env.sh maps distro → Ubuntu release, and
+#      util_apt_helper.sh is bind-mounted ALONE into a build layer. They must
+#      still agree, or a distro one accepts builds on a base the other rejects.
+# =============================================================================
+distro_errors=0
+# Set equality is a textual property, so compare the two lists by parsing —
+# behaviour is proved by the two probes below. Running the host detector once
+# per distro would cost 0.7 s of docker/nvidia probing to learn nothing extra.
+apt_distros="$(sed -n 's/^ *humble|iron|\(.*\)) ;;$/humble iron \1/p' scripts/util_apt_helper.sh \
+               | tr '|' ' ' | tr -s ' ')"
+env_distros="$(sed -n 's/^ *\([a-z|]*\)) *distro_base=.*/\1/p' scripts/check_env.sh | tr '|' ' ' | tr -s ' ')"
+{ [ "$(wc -w <<< "$apt_distros")" -ge 8 ] && [ "$(wc -w <<< "$env_distros")" -ge 6 ]; } \
+    || { log_err "the ROS distro lists could not be parsed (apt='${apt_distros}' base='${env_distros}')."; distro_errors=1; }
+for ros_distro in $apt_distros; do
+    case "$ros_distro" in melodic|kinetic) continue ;; esac   # ROS 1, pre-20.04 bases
+    grep -qw -- "$ros_distro" <<< "$env_distros" \
+        || { log_err "check_env.sh has no base image for '${ros_distro}', which util_apt_helper.sh accepts."; distro_errors=1; }
+done
+
+# The pairing must be DERIVED end to end: changing ROS_DISTRO alone has to move
+# the Ubuntu release with it. Probed through the REAL .env.example, so a
+# BASE_IMAGE pinned in the committed layer — which would silently override the
+# derivation for every local override — fails here rather than at apt.
+distro_probe="$(probe_dir)"
+printf 'ROS_DISTRO=foxy\n' > "$distro_probe/.env"
+distro_base="$( unset ROS_DISTRO BASE_IMAGE
+    DEVKIT_ENV_FILE="$distro_probe/.env" DEVKIT_ENV_DEFAULTS="${ROOT_DIR}/.env.example" \
+    bash scripts/check_env.sh --makefile 2>/dev/null | sed -n 's/^BASE_IMAGE := //p' || true )"
+rm -rf "$distro_probe"
+[ "$distro_base" = "ubuntu:20.04" ] \
+    || { log_err "ROS_DISTRO alone does not decide the base image (foxy gave '${distro_base}', expected ubuntu:20.04) — is BASE_IMAGE pinned in .env.example?"; distro_errors=1; }
+
+# …and the interpreter must move WITH it. apt puts rclpy/rospy in the system
+# Python, so a venv on any other version imports neither — a failure that shows
+# up only when the first ROS import runs, long after a green build.
+for distro_pair in "noetic 3.8" "humble 3.10" "jazzy 3.12"; do
+    set -- $distro_pair
+    distro_probe="$(probe_dir)"
+    printf 'ROS_DISTRO=%s\n' "$1" > "$distro_probe/.env"
+    distro_py="$( unset ROS_DISTRO BASE_IMAGE UV_PYTHON
+        DEVKIT_ENV_FILE="$distro_probe/.env" DEVKIT_ENV_DEFAULTS="${ROOT_DIR}/.env.example" \
+        bash scripts/check_env.sh --makefile 2>/dev/null | sed -n 's/^UV_PYTHON := //p' || true )"
+    rm -rf "$distro_probe"
+    [ "$distro_py" = "$2" ] \
+        || { log_err "ROS_DISTRO=$1 resolves UV_PYTHON to '${distro_py}', not $2; the venv could not import the apt-installed rclpy/rospy."; distro_errors=1; }
+done
+# …and a distro in neither list must be REFUSED, not handed a default base: a
+# catch-all here builds foxy on 22.04 and only fails much later, at apt.
+rc=0; distro_probe="$(probe_dir)"
+printf 'ROS_DISTRO=devkit-bogus-distro\n' > "$distro_probe/.env"
+( unset ROS_DISTRO BASE_IMAGE; DEVKIT_ENV_FILE="$distro_probe/.env" \
+    bash scripts/check_env.sh --makefile >/dev/null 2>&1 ) || rc=$?
+rm -rf "$distro_probe"
+[ "$rc" -ne 0 ] \
+    || { log_err "check_env.sh accepts an unknown ROS_DISTRO and picks a base image for it; the image would build on the wrong Ubuntu."; distro_errors=1; }
+[ "$distro_errors" -eq 0 ] \
+    && log_ok "Every supported ROS distro has a base image, and an unknown one is refused ($(wc -w <<< "$apt_distros") distros)."
+# =============================================================================
 # [gpg-anchor] The pinned fingerprint must exist and stay in sync with the
 #      updater that maintains it (`make update-gpg`).
 # =============================================================================

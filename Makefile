@@ -39,6 +39,13 @@ ERROR  := $(RED)[ERROR]$(NC)
 ifeq ($(origin GPU_MODE),environment)
 USER_GPU_MODE := $(GPU_MODE)
 endif
+# Capture detector overrides before file assignments hide their origin.
+shell_quote = '$(subst ','"'"',$(1))'
+DETECT_INPUTS := ROS_DISTRO BASE_IMAGE UV_PYTHON
+DETECT_OVERRIDES := $(strip $(foreach v,$(DETECT_INPUTS),\
+	$(if $(filter command line environment override,$(origin $(v))),$(call shell_quote,$(v)=$($(v))))))
+# Committed defaults, followed by local overrides.
+-include .env.example
 -include .env
 ifdef USER_GPU_MODE
 GPU_MODE := $(USER_GPU_MODE)
@@ -70,23 +77,28 @@ export
 # =============================================================================
 # Help/teardown/validation targets skip detection and never pay the
 # nvidia-smi / docker-info probe.
-DETECTOR_EXEMPT := help setup adopt verify stop down logs clean clean-cache clean-all docker-clean slurm-status slurm-cancel completion completion-install check-host env-check
+# Bakes require detection to derive BASE_IMAGE and UV_PYTHON from ROS_DISTRO.
+DETECTOR_EXEMPT := help setup adopt verify stop down logs clean clean-cache clean-all docker-clean slurm-status slurm-cancel completion completion-install check-host env-check run-sif
 # A bare `make` runs the default target (help), so it must not pay for
 # detection either — substitute 'help' before filtering.
 NEEDS_DETECTOR  := $(filter-out $(DETECTOR_EXEMPT),$(or $(MAKECMDGOALS),help))
 
-DETECTED_ENV_FILE := .docker_cache/detected-env.mk
+# Explicit distro/interpreter overrides must not reuse another pairing's cache.
+DETECTED_ENV_FILE := .docker_cache/detected-env$(if $(DETECT_OVERRIDES),-$(shell printf '%s' $(call shell_quote,$(DETECT_OVERRIDES)) | cksum | cut -d' ' -f1)).mk
 ifneq ($(NEEDS_DETECTOR),)
 # Included AFTER .env, so its `:=` wins — stale whenever .env is newer, or a
 # cache built before an edit overrides ROS_DISTRO forever. `shell test`, not
 # `wildcard`: make caches directory listings within a run.
-DETECTED_ENV_FRESH := $(shell [ -f "$(DETECTED_ENV_FILE)" ] && [ ! .env -nt "$(DETECTED_ENV_FILE)" ] && echo yes)
+DETECTED_ENV_FRESH := $(shell [ -f "$(DETECTED_ENV_FILE)" ] \
+	&& [ ! .env -nt "$(DETECTED_ENV_FILE)" ] \
+	&& [ ! .env.example -nt "$(DETECTED_ENV_FILE)" ] \
+	&& [ ! scripts/check_env.sh -nt "$(DETECTED_ENV_FILE)" ] && echo yes)
 ifeq ($(DETECTED_ENV_FRESH),)
 # Write via temp + mv: a failed or interrupted probe must never leave a partial
 # cache behind, because the freshness guard above would then reuse it forever and
 # every host mount would silently degrade to its placeholder default.
 DETECT_STATUS := $(shell mkdir -p .docker_cache && tmp=$$(mktemp "$(DETECTED_ENV_FILE).XXXXXX") && \
-	{ bash scripts/check_env.sh --makefile > "$$tmp" && mv "$$tmp" "$(DETECTED_ENV_FILE)" && echo ok; } || \
+	{ env $(DETECT_OVERRIDES) bash scripts/check_env.sh --makefile > "$$tmp" && mv "$$tmp" "$(DETECTED_ENV_FILE)" && echo ok; } || \
 	{ rm -f "$$tmp"; echo fail; })
 ifeq ($(DETECT_STATUS),fail)
 $(error Host environment detection failed. Run 'bash scripts/check_env.sh' to see the error)

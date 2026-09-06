@@ -166,7 +166,10 @@ fi
 # 5. Display, Authentication & Session Sockets
 DISPLAY_TYPE="X11"
 if [ "$IS_MACOS" = "true" ]; then
-    HOST_DISPLAY="${DISPLAY:-host.docker.internal:0}"
+    case "${DISPLAY:-}" in
+        ""|/private/*|/tmp/*) HOST_DISPLAY="host.docker.internal:0" ;;
+        *) HOST_DISPLAY="$DISPLAY" ;;
+    esac
 else
     HOST_DISPLAY="${DISPLAY:-:0}"
 fi
@@ -217,16 +220,53 @@ fi
 # 6. ROS distro → base image. make's `export` does not reach $(shell …), so
 # every caller must read .env itself or the detector caches the humble/22.04
 # default. Read, never source: .env is data, not code.
+# Two layers, in the order make reads them: the local .env wins, .env.example
+# carries the committed project answer. This is the ONLY place they are
+# resolved — the cache written here is what every later stage reads, so a second
+# resolution point could only ever disagree with it.
 DEVKIT_ENV_FILE="${DEVKIT_ENV_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.env}"
-ROS_DISTRO="${ROS_DISTRO:-$(devkit_env_value ROS_DISTRO "$DEVKIT_ENV_FILE")}"
-BASE_IMAGE="${BASE_IMAGE:-$(devkit_env_value BASE_IMAGE "$DEVKIT_ENV_FILE")}"
+DEVKIT_ENV_DEFAULTS="${DEVKIT_ENV_DEFAULTS:-${DEVKIT_ENV_FILE}.example}"
+env_setting() {
+    local value; value="$(devkit_env_value "$1" "$DEVKIT_ENV_FILE")"
+    [ -n "$value" ] || value="$(devkit_env_value "$1" "$DEVKIT_ENV_DEFAULTS")"
+    printf '%s' "$value"
+}
+ROS_DISTRO="${ROS_DISTRO:-$(env_setting ROS_DISTRO)}"
+BASE_IMAGE="${BASE_IMAGE:-$(env_setting BASE_IMAGE)}"
+UV_PYTHON="${UV_PYTHON:-$(env_setting UV_PYTHON)}"
 ROS_DISTRO="${ROS_DISTRO:-humble}"
+# One distro fixes BOTH the Ubuntu release and its Python: apt installs rclpy and
+# rospy into the SYSTEM interpreter, so a venv on any other version imports
+# neither. Derived together — pinning BASE_IMAGE by digest must not silently
+# leave the interpreter behind.
+case "$ROS_DISTRO" in
+    noetic|foxy)          distro_base="ubuntu:20.04"; distro_python="3.8"  ;;
+    jazzy|kilted|rolling) distro_base="ubuntu:24.04"; distro_python="3.12" ;;
+    humble|iron)          distro_base="ubuntu:22.04"; distro_python="3.10" ;;
+    *)                    distro_base="";             distro_python=""     ;;
+esac
 if [ -z "${BASE_IMAGE:-}" ]; then
-    case "$ROS_DISTRO" in
-        noetic)               BASE_IMAGE="ubuntu:20.04" ;;
-        jazzy|kilted|rolling) BASE_IMAGE="ubuntu:24.04" ;;
-        humble|iron|*)        BASE_IMAGE="ubuntu:22.04" ;;
+    [ -n "$distro_base" ] || {
+        log_error "Unsupported ROS_DISTRO '${ROS_DISTRO}'. Each distro is bound to one Ubuntu release:"
+        log_detail "20.04: noetic, foxy | 22.04: humble, iron | 24.04: jazzy, kilted, rolling" >&2
+        log_detail "Set BASE_IMAGE yourself to build against a pairing DevKit does not know." >&2
+        exit 2; }
+    BASE_IMAGE="$distro_base"
+fi
+UV_PYTHON="${UV_PYTHON:-${distro_python:-3.10}}"
+
+# An explicit value WINS — DEPLOY.md tells you to pin BASE_IMAGE by digest — but
+# a .env written before ROS_DISTRO changed pins the OLD pairing and nothing says
+# so until apt fails deep in the build. Say it here, once, and keep going.
+if [ -n "$distro_base" ]; then
+    case "$BASE_IMAGE" in
+        "$distro_base"|*"${distro_base#ubuntu:}"*) ;;
+        *) log_warn "ROS_DISTRO=${ROS_DISTRO} expects ${distro_base}, but BASE_IMAGE is '${BASE_IMAGE}'." >&2
+           log_detail "Comment BASE_IMAGE out in .env to follow ROS_DISTRO, or ignore this if the pin is deliberate." >&2 ;;
     esac
+    [ "$UV_PYTHON" = "$distro_python" ] \
+        || { log_warn "ROS_DISTRO=${ROS_DISTRO} ships Python ${distro_python}, but UV_PYTHON is '${UV_PYTHON}'." >&2
+             log_detail "The venv will not import the apt-installed rclpy/rospy. Comment UV_PYTHON out in .env." >&2; }
 fi
 
 # 7. Output key-value pairs
@@ -234,6 +274,7 @@ fi
 #       scripts/verify_repo.sh check [host-detect-contract] in sync when adding a compose variable.
 emit_env "ROS_DISTRO" "$ROS_DISTRO"
 emit_env "BASE_IMAGE" "$BASE_IMAGE"
+emit_env "UV_PYTHON" "$UV_PYTHON"
 emit_env "HOST_WORKSPACE_PATH" "$HOST_WORKSPACE_PATH"
 emit_env "WORKSPACE_PATH" "$WORKSPACE_PATH"
 emit_env "IS_WSL" "$IS_WSL"
