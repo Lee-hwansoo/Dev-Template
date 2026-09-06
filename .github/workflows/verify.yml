@@ -47,3 +47,31 @@ jobs:
           docker build --check -f docker/Dockerfile \
             --build-arg BASE_IMAGE=ubuntu:22.04 \
             --build-arg ROS_DISTRO=humble .
+
+  # The host half of DevKit runs on the developer's machine, where sed, awk,
+  # stat and date are BSD, not GNU. The suite is offline and needs no docker,
+  # so the whole host contract is checkable on a real macOS runner for ~1 min.
+  macos-host:
+    name: macOS host (BSD sed/awk/stat)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: make verify
+      # Detection must survive a host with no /sys, no /proc and no docker.
+      - name: host detection resolves on macOS
+        run: |
+          bash scripts/check_env.sh --makefile > env.mk
+          grep -q '^IS_MACOS := true' env.mk || { echo "IS_MACOS not detected"; cat env.mk; exit 1; }
+          grep -q '^HOST_UID := ' env.mk || { echo "HOST_UID missing"; exit 1; }
+          # GPU_MODE is an INPUT, not an emitted key: the Makefile resolves the
+          # profile from the three flags below. macOS must land on all-false.
+          for flag in 'HAS_NVIDIA := false' 'HAS_TOOLKIT := false' 'HAS_DRI := false'; do
+            grep -qF "$flag" env.mk || { echo "expected '$flag' on macOS"; cat env.mk; exit 1; }
+          done
+          make -n start ENV=ros >/dev/null
+      - name: every CLI still answers --help under BSD userland
+        run: |
+          for s in scripts/*.sh; do
+            bash "$s" --help >/dev/null 2>&1 || { echo "$s --help failed on macOS"; exit 1; }
+          done

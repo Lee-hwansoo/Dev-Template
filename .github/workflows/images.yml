@@ -32,7 +32,7 @@ jobs:
   apt-key-paths:
     # The ROS 1 key import once aborted inside `docker build` for want of
     # /dev/tty while every host test passed — so run it where it failed.
-    name: apt keys (${{ matrix.distro }} on ${{ matrix.image }})
+    name: apt keys (${{ matrix.distro }}, ${{ matrix.snapshot }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -42,14 +42,21 @@ jobs:
           - image: ubuntu:20.04
             distro: noetic
             package: ros-noetic-ros-base
+            snapshot: latest
           - image: ubuntu:22.04
             distro: humble
             package: ros-humble-ros-base
+            snapshot: latest
+          - image: ubuntu:22.04
+            distro: humble
+            package: ros-humble-ros-base
+            snapshot: '2025-05-16'
     steps:
       - uses: actions/checkout@v4
       - name: setup-ros-repo
         run: |
           docker run --rm -v "$PWD:/w" -w /w -e DEBIAN_FRONTEND=noninteractive \
+            -e ROS_SNAPSHOT_DATE=${{ matrix.snapshot }} \
             ${{ matrix.image }} bash -c '
               set -e
               apt-get update -qq
@@ -59,7 +66,7 @@ jobs:
               # resolvable candidate proves the keyring landed correctly.
               apt-cache policy ${{ matrix.package }} | tee /dev/stderr | grep -q Candidate:'
       - name: cuda repo (fingerprint-pinned)
-        if: matrix.image == 'ubuntu:22.04'
+        if: matrix.image == 'ubuntu:22.04' && matrix.snapshot == 'latest'
         run: |
           docker run --rm -v "$PWD:/w" -w /w -e DEBIAN_FRONTEND=noninteractive \
             ${{ matrix.image }} bash -c '
@@ -75,11 +82,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      # Gate: the contract suite is ~15 s and needs no docker. A tree that fails
-      # it cannot teach us anything about an image, and the steps below cost
-      # minutes — the push before this gate existed burned six of them on a tree
-      # whose own suite was red in nine seconds.
-      - name: contracts first (a red tree teaches an image build nothing)
+      # Run inexpensive repository checks before building images.
+      - name: repository contracts
         run: make verify
       - name: build the cheap stages
         run: |
@@ -109,6 +113,24 @@ jobs:
             PY=$(find "$UV_PYTHON_INSTALL_DIR" -maxdepth 3 -path "*/bin/python3" -print -quit)
             [ -n "$PY" ] || { echo "no managed interpreter under $UV_PYTHON_INSTALL_DIR"; exit 1; }
             su -s /bin/sh nobody -c "$PY -V"'
+      # A base image that already uses the requested gid, group name or user name
+      # must not abort the build with a raw groupadd error. Proved here against
+      # the real shadow-utils; verify_repo.sh runs the same block offline.
+      - name: host uid/gid conflicts resolve, or fail naming the cause
+        run: |
+          docker build --target base -f docker/Dockerfile \
+            --build-arg BASE_IMAGE=ubuntu:24.04 --build-arg CONTAINER_USER=user \
+            --build-arg USER_UID=501 --build-arg USER_GID=20 -t devkit-ci:macos-ids .
+          [ "$(docker run --rm devkit-ci:macos-ids id -u user)" = 501 ] \
+            || { echo "a macOS uid/gid pair did not survive the build"; exit 1; }
+          rc=0
+          docker build --target base -f docker/Dockerfile \
+            --build-arg BASE_IMAGE=ubuntu:24.04 --build-arg CONTAINER_USER=ubuntu \
+            --build-arg USER_UID=1001 --build-arg USER_GID=1001 \
+            -t devkit-ci:clashing-ids . >clash.log 2>&1 || rc=$?
+          [ "$rc" -ne 0 ] || { echo "a CONTAINER_USER taken at another uid must fail the build"; exit 1; }
+          grep -q 'already exists at uid' clash.log \
+            || { echo "the build failed without naming the cause:"; tail -20 clash.log; exit 1; }
 
   runtime-smoke:
     name: runtime smoke (build, run, ROS python)
@@ -124,7 +146,7 @@ jobs:
       # it cannot teach us anything about an image, and the steps below cost
       # minutes — the push before this gate existed burned six of them on a tree
       # whose own suite was red in nine seconds.
-      - name: contracts first (a red tree teaches an image build nothing)
+      - name: repository contracts
         run: make verify
       - name: setup (.env + completion + xauth)
         run: make setup
@@ -150,6 +172,98 @@ jobs:
         if: always()
         run: make down ENV=ros
 
+  arm64-image:
+    name: arm64 stages (Apple Silicon -> HPC)
+    # Cron and manual only: QEMU emulation makes this slow.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: repository contracts
+        run: make verify
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      # A Mac developer bakes for an x86 cluster and vice versa. The arch that
+      # names the artifact must be the arch the image actually is.
+      - name: the arm64 image must be arm64, and sif_arch must agree
+        run: |
+          docker buildx build --platform linux/arm64 --target base \
+            -f docker/Dockerfile --build-arg BASE_IMAGE=ubuntu:22.04 \
+            --build-arg ROS_DISTRO=humble --load -t devkit-ci:arm64 .
+          got=$(docker image inspect --format '{{.Architecture}}' devkit-ci:arm64)
+          [ "$got" = arm64 ] || { echo "built image reports '$got', not arm64"; exit 1; }
+          named=$(TARGETARCH=arm64 bash -c '
+            source config/util_paths.sh
+            devkit_require util_logging.sh
+            devkit_require util_sif_common.sh
+            sif_arch')
+          [ "$named" = arm64 ] || { echo "sif_arch names '$named' for an arm64 target"; exit 1; }
+
+  sif-artifact:
+    name: SIF conversion and run (real Apptainer)
+    # Cron and manual only: this bakes the production chain into a SIF.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: reclaim runner disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc 2>/dev/null || true
+      - name: repository contracts
+        run: make verify
+      - name: install apptainer
+        run: |
+          version=1.5.3
+          curl -fsSLO "https://github.com/apptainer/apptainer/releases/download/v${version}/apptainer_${version}_amd64.deb"
+          sudo apt-get install -y "./apptainer_${version}_amd64.deb"
+          apptainer --version
+      # Apptainer runs as the invoking UID; verify access to the baked venv.
+      - name: bake a production SIF
+        run: |
+          make setup
+          make bake-prod ENV=dev
+          ls -lh ./*.sif ./*.sif.sha256 ./*.sif.provenance
+      - name: the artifact must identify itself
+        run: |
+          sif=$(ls ./*.sif | head -1)
+          grep -qE '^[0-9a-f]{64} ' "${sif}.sha256" || { echo "no sha256 sidecar"; exit 1; }
+          grep -q '^oci_image_id=sha256:' "${sif}.provenance" || { cat "${sif}.provenance"; exit 1; }
+          grep -q '^base_image=' "${sif}.provenance" || { cat "${sif}.provenance"; exit 1; }
+      - name: the SIF venv must be accessible to the invoking uid
+        run: |
+          sif=$(ls ./*.sif | head -1)
+          # No --env here: sif_entry_args probes for it and the production
+          # entrypoint does not take it. Hardcoding it fails with a bare
+          # "exec: --: invalid option".
+          # One line: a YAML block keeps its indentation, and python3 -c reads
+          # that as an IndentationError before it ever looks at the venv.
+          apptainer exec "$sif" /entrypoint.sh python3 -c 'import sys, pathlib; print("interpreter:", sys.executable); assert "/install/.venv/" in sys.executable, sys.executable; assert pathlib.Path(sys.executable).exists()'
+      - name: production excludes sources and exposes the venv interpreter
+        run: |
+          sif=$(ls ./*.sif | head -1)
+          # src/ is not in a production artifact; only install/ is. This is the
+          # claim docs/SLURM.md makes to readers, asserted rather than promised.
+          apptainer exec "$sif" test ! -e /workspace/src \
+            || { echo "the production SIF still carries src/"; exit 1; }
+          apptainer exec "$sif" sh -c 'command -v python3 | grep -q "/install/.venv/bin/"'
+      - name: a job run must leave a closed record
+        run: |
+          sif=$(ls ./*.sif | head -1)
+          SLURM_RUN_ROOT="$PWD/runs" bash scripts/slurm_run.sh "$sif" 'python3 -c "print(1)"'
+          record=$(ls runs/devkit-local-*.txt | head -1)
+          cat "$record"
+          grep -q '^exit_status=0' "$record" || { echo "the record has no exit status"; exit 1; }
+          grep -q '^oci_image_id=' "$record" || { echo "the record does not reach the OCI image"; exit 1; }
+      - name: a failing job must be recorded as failing
+        run: |
+          sif=$(ls ./*.sif | head -1)
+          rc=0
+          SLURM_RUN_ROOT="$PWD/runs-fail" bash scripts/slurm_run.sh "$sif" 'exit 7' || rc=$?
+          [ "$rc" = 7 ] || { echo "slurm_run.sh returned $rc, not the job's 7"; exit 1; }
+          grep -q '^exit_status=7' "$(ls runs-fail/devkit-local-*.txt | head -1)" \
+            || { echo "a failed job was not recorded as failed"; exit 1; }
+
   prod-artifact:
     name: production artifact (non-root, venv intact)
     # Cron and manual only: this builds the production chain.
@@ -164,7 +278,7 @@ jobs:
       # it cannot teach us anything about an image, and the steps below cost
       # minutes — the push before this gate existed burned six of them on a tree
       # whose own suite was red in nine seconds.
-      - name: contracts first (a red tree teaches an image build nothing)
+      - name: repository contracts
         run: make verify
       - name: build the production runtime
         run: |

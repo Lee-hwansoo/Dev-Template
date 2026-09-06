@@ -47,8 +47,8 @@ jobs:
           make build
           make start
       # mksync installs the project's dependencies and the `dev` group that
-      # carries the runners. A GPU-less runner selects UV_EXTRA=cpu, so heavy
-      # extras (torch) are paid for here — set UV_EXTRA= to skip them.
+      # carries the runners. UV_EXTRA comes from .env.example/.env, so a heavy
+      # extra (torch) is paid for here whenever the project declares one.
       - name: sync the workspace
         run: make exec CMD='mksync'
       - run: make lint
