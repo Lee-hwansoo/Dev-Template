@@ -161,15 +161,20 @@ __print_container_help() {
 
 # --- ROS 1 / ROS 2 Environment & Build --------------------------------------
 __smart_source() {
-    if [ -f "${WS_ROOT}/install/setup.bash" ]; then
-        source "${WS_ROOT}/install/setup.bash"
-        log_ok "Sourced ${WS_ROOT}/install/setup.bash"
-    elif [ -f "/opt/ros/${ROS_DISTRO:-humble}/setup.bash" ]; then
-        source "/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
-        log_ok "Sourced /opt/ros/${ROS_DISTRO:-humble}/setup.bash"
-    else
+    local setup rc=0
+    setup="$(devkit_overlay_setup)" || setup="/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
+    if [ ! -f "$setup" ]; then
         log_error "No ROS setup.bash found!"
+        return 1
     fi
+    # A setup.bash that fails must not be reported as sourced: the shell is then
+    # missing the very packages the log said it had.
+    source "$setup" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        log_error "Failed to source ${setup} (exit ${rc})."
+        return "$rc"
+    fi
+    log_ok "Sourced ${setup}"
 }
 
 alias s='__smart_source'

@@ -54,10 +54,10 @@ if [ "${__DEVKIT_ENV_READY:-}" != "$WS_ROOT" ]; then
         source "/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
     fi
 
-    # Workspace overlay (present after a colcon build)
-    if [ -f "${WS_INSTALL:-${WS_ROOT}/install}/setup.bash" ]; then
-        source "${WS_INSTALL:-${WS_ROOT}/install}/setup.bash"
-    fi
+    # Workspace overlay: install/ after colcon, devel/ after a ROS 1 dev build.
+    __devkit_overlay="$(devkit_overlay_setup 2>/dev/null)" \
+        && source "$__devkit_overlay"
+    unset __devkit_overlay
 
     # ROS version-specific configuration (RMW, domain, CYCLONEDDS_URI)
     ROS_ENV_INIT="${WS_CONFIG:-${WS_ROOT}/config}/init_ros_env.sh"

@@ -73,6 +73,24 @@ devkit_is_true() {
     case "$1" in 1|true|TRUE|True|yes|YES|Yes|on|ON|On) return 0 ;; *) return 1 ;; esac
 }
 
+# devkit_overlay_setup — the setup.bash a build in THIS workspace produced.
+# ROS 1's catkin_make writes devel/ and only fills install/ when asked for it,
+# so a dev build's packages were invisible to every shell that looked only at
+# install/. Production keeps its own install-only entrypoint on purpose.
+devkit_overlay_setup() {
+    local first second candidate
+    case "${ROS_DISTRO:-}" in
+        noetic|melodic|kinetic) first=devel;   second=install ;;
+        *)                      first=install; second=devel   ;;
+    esac
+    for candidate in "$first" "$second"; do
+        if [ -f "${WS_ROOT}/${candidate}/setup.bash" ]; then
+            printf '%s' "${WS_ROOT}/${candidate}/setup.bash"; return 0
+        fi
+    done
+    return 1
+}
+
 devkit_env_value() {
     local key="$1" file="${2:-${WS_ROOT}/.env}"
     [ -f "$file" ] || return 0

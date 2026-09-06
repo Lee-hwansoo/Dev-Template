@@ -229,8 +229,8 @@ ROS_SETUP="/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
 if [ -f "$ROS_SETUP" ]; then
     source_runtime_file "$ROS_SETUP" && log_ok "ROS ${ROS_DISTRO:-humble} sourced"
 fi
-if [ -f "${WS_ROOT}/install/setup.bash" ]; then
-    source_runtime_file "${WS_ROOT}/install/setup.bash" 2>/dev/null && log_ok "Workspace overlay sourced" || true
+if devkit_overlay="$(devkit_overlay_setup 2>/dev/null)"; then
+    source_runtime_file "$devkit_overlay" 2>/dev/null && log_ok "Workspace overlay sourced (${devkit_overlay##*/${WS_ROOT##*/}/})" || true
 fi
 source_runtime_file "${WS_ROOT}/config/init_ros_env.sh" 2>/dev/null || true
 

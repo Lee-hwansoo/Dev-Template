@@ -2632,6 +2632,43 @@ rm -rf "$layout_probe"
     && log_ok "The project type and the CMake entry point are one answer, and mbuild configures it (5 layouts)."
 
 # =============================================================================
+# [workspace-overlay] Which setup.bash a shell picks up. ROS 1's catkin_make
+#      writes devel/ and only fills install/ when asked, so a dev build's
+#      packages were invisible to every shell — all three sites looked at
+#      install/ alone. Production keeps its install-only entrypoint on purpose.
+# =============================================================================
+overlay_errors=0
+overlay_probe="$(probe_dir config scripts)"
+mkdir -p "$overlay_probe/devel" "$overlay_probe/install"
+printf 'export DEVKIT_OVERLAY=devel\n'   > "$overlay_probe/devel/setup.bash"
+printf 'export DEVKIT_OVERLAY=install\n' > "$overlay_probe/install/setup.bash"
+overlay_pick() {   # overlay_pick <distro>
+    ( WORKSPACE_PATH="$overlay_probe" ROS_DISTRO="$1" \
+      bash -c 'source config/util_paths.sh >/dev/null 2>&1; devkit_overlay_setup' 2>/dev/null || true )
+}
+[ "$(overlay_pick noetic)" = "$overlay_probe/devel/setup.bash" ] \
+    || { log_err "a ROS 1 workspace picks '$(overlay_pick noetic)', not devel/setup.bash; a catkin_make build stays invisible."; overlay_errors=1; }
+[ "$(overlay_pick humble)" = "$overlay_probe/install/setup.bash" ] \
+    || { log_err "a ROS 2 workspace no longer picks install/setup.bash."; overlay_errors=1; }
+# A setup.bash that fails must not be reported as sourced.
+printf 'return 17\n' > "$overlay_probe/install/setup.bash"
+overlay_rc="$( WORKSPACE_PATH="$overlay_probe" ROS_DISTRO=humble bash -c \
+    'source config/util_aliases.sh >/dev/null 2>&1; __smart_source >/dev/null 2>&1; printf %s $?' 2>/dev/null || true )"
+[ "$overlay_rc" = "17" ] \
+    || { log_err "__smart_source returns ${overlay_rc:-0} for a setup.bash that failed; the shell is missing the packages the log claims."; overlay_errors=1; }
+rm -rf "$overlay_probe"
+# Every shell that loads an overlay must go through the one rule.
+for overlay_site in config/init_bash.sh docker/entrypoint.sh config/util_aliases.sh; do
+    grep -qE '^[^#]*devkit_overlay_setup' "$overlay_site" \
+        || { log_err "${overlay_site} resolves the workspace overlay itself instead of through devkit_overlay_setup."; overlay_errors=1; }
+done
+# …but the shipped artifact does not: it carries install/ and nothing else.
+grep -qE '^[^#]*devkit_overlay_setup' docker/prod_entrypoint.sh \
+    && { log_err "docker/prod_entrypoint.sh looks for a devel/ overlay; the production image copies install/ only."; overlay_errors=1; }
+[ "$overlay_errors" -eq 0 ] \
+    && log_ok "ROS 1 loads devel/, ROS 2 loads install/, a failed setup.bash propagates, and prod stays install-only."
+
+# =============================================================================
 # Result
 # =============================================================================
 echo ""
