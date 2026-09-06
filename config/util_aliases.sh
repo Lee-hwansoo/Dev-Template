@@ -611,22 +611,44 @@ mbuild() {
 # These are volume mount points, so rm empties them but cannot remove them
 # (EBUSY) — hence the suppressed stderr; leftover CONTENT is the real failure.
 mclean() {
-    local dirs=("${WS_ROOT:?}/build" "${WS_ROOT:?}/log" "${WS_ROOT:?}/install/bin" "${WS_ROOT:?}/install/lib")
-    local what="build, log and install output directories (--all removes install/ too)"
+    # Same scope as the host's `make clean`: build/, devel/, log/ and everything
+    # in install/ except the venv. Naming install/bin and install/lib alone left
+    # colcon's per-package trees (install/<pkg>/…), install/share and a ROS 1
+    # devel/ behind while reporting success.
+    local keep_venv=true
+    local what="build, devel, log and install output (the virtualenv is kept)"
     # A destructive command must not swallow an unknown argument — falling
     # through to the default clean would delete the build output.
     case "${1:-}" in
         "") ;;
         --all)
-            dirs=("${WS_ROOT:?}/build" "${WS_ROOT:?}/log" "${WS_ROOT:?}/devel" "${WS_ROOT:?}/install")
+            keep_venv=false
             what="ALL build output including install/ and the virtualenv (re-run mksync)" ;;
         -h|--help) echo "Usage: mclean [--all]   (--all also removes install/ and the venv)"; return 0 ;;
         *) log_error "mclean: unknown option: $1"; return 2 ;;
     esac
-    rm -rf "${dirs[@]}" 2>/dev/null || true
-    if [ -n "$(find "${dirs[@]}" -mindepth 1 -print -quit 2>/dev/null)" ]; then
-        log_error "Some entries could not be removed (root-owned? permissions?)."
-        log_detail "Inspect with: ls -la ${WS_ROOT:?}/build ${WS_ROOT:?}/install" >&2
+    # Empty the directories rather than removing them: build/ and install/ are
+    # compose volume mount points, and unlinking those fails with EBUSY.
+    local dir
+    for dir in build devel log; do
+        [ -d "${WS_ROOT:?}/${dir}" ] || continue
+        find "${WS_ROOT:?}/${dir}" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+    done
+    if [ -d "${WS_ROOT:?}/install" ]; then
+        if [ "$keep_venv" = true ]; then
+            find "${WS_ROOT:?}/install" -mindepth 1 -maxdepth 1 ! -name '.venv' \
+                -exec rm -rf {} + 2>/dev/null || true
+        else
+            find "${WS_ROOT:?}/install" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+        fi
+    fi
+    # What is LEFT decides the exit status, and the venv is left on purpose.
+    local leftover
+    leftover="$(find "${WS_ROOT:?}/build" "${WS_ROOT:?}/devel" "${WS_ROOT:?}/log" "${WS_ROOT:?}/install" \
+        -mindepth 1 -maxdepth 1 $([ "$keep_venv" = true ] && printf '%s' "! -name .venv") \
+        -print -quit 2>/dev/null || true)"
+    if [ -n "$leftover" ]; then
+        log_error "Some entries could not be removed (root-owned? permissions?): ${leftover}"
         return 1
     fi
     log_ok "Emptied ${what}."

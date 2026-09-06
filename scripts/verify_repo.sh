@@ -2669,6 +2669,50 @@ grep -qE '^[^#]*devkit_overlay_setup' docker/prod_entrypoint.sh \
     && log_ok "ROS 1 loads devel/, ROS 2 loads install/, a failed setup.bash propagates, and prod stays install-only."
 
 # =============================================================================
+# [in-container-clean] `mclean` must empty what a build produced, with the same
+#      scope the host's `make clean` uses. Naming install/bin and install/lib
+#      alone left colcon's per-package trees, install/share and a ROS 1 devel/
+#      in place — and still reported success.
+# =============================================================================
+mclean_errors=0
+mclean_tree() {   # rebuild a workspace with every layout a build can leave
+    local probe="$1"
+    mkdir -p "$probe/build/x" "$probe/devel/old" "$probe/log/y" \
+             "$probe/install/.venv/bin" "$probe/install/bin" \
+             "$probe/install/pkg/lib/node" "$probe/install/share/x"
+    : > "$probe/install/.venv/bin/python3"; : > "$probe/install/pkg/lib/node/n"
+    : > "$probe/install/share/x/f"; : > "$probe/devel/old/f"; : > "$probe/build/x/o"
+}
+mclean_left() {   # what survived, workspace-relative
+    ( cd "$1" && find build devel log install -mindepth 1 2>/dev/null | sort | tr '\n' ' ' )
+}
+mclean_probe="$(probe_dir config scripts)"; mclean_tree "$mclean_probe"
+( WORKSPACE_PATH="$mclean_probe" bash -c 'source config/util_aliases.sh >/dev/null 2>&1; mclean' ) >/dev/null 2>&1 || true
+[ "$(mclean_left "$mclean_probe")" = "install/.venv install/.venv/bin install/.venv/bin/python3 " ] \
+    || { log_err "mclean left '$(mclean_left "$mclean_probe")'; the default scope must empty build/, devel/, log/ and install/ except the venv."; mclean_errors=1; }
+rm -rf "$mclean_probe"
+
+mclean_probe="$(probe_dir config scripts)"; mclean_tree "$mclean_probe"
+( WORKSPACE_PATH="$mclean_probe" bash -c 'source config/util_aliases.sh >/dev/null 2>&1; mclean --all' ) >/dev/null 2>&1 || true
+[ -z "$(mclean_left "$mclean_probe")" ] \
+    || { log_err "mclean --all left '$(mclean_left "$mclean_probe")'; it must remove the venv too."; mclean_errors=1; }
+rm -rf "$mclean_probe"
+
+# A leftover the command could not remove must fail, not be reported as clean.
+mclean_probe="$(probe_dir config scripts)"; mclean_tree "$mclean_probe"
+chmod -w "$mclean_probe/install/share" 2>/dev/null
+mclean_rc=0
+( WORKSPACE_PATH="$mclean_probe" bash -c 'source config/util_aliases.sh >/dev/null 2>&1; mclean' ) >/dev/null 2>&1 || mclean_rc=$?
+chmod +w "$mclean_probe/install/share" 2>/dev/null
+if [ "$(id -u)" -ne 0 ]; then
+    [ "$mclean_rc" -ne 0 ] \
+        || { log_err "mclean reports success while an entry it could not delete is still there."; mclean_errors=1; }
+fi
+rm -rf "$mclean_probe"
+[ "$mclean_errors" -eq 0 ] \
+    && log_ok "mclean empties build/, devel/, log/ and install/ (keeping the venv), and fails on what it could not remove."
+
+# =============================================================================
 # Result
 # =============================================================================
 echo ""
