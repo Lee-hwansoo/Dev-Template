@@ -6,18 +6,24 @@
 # =============================================================================
 name: images
 
+# The apt manifests are inputs too: an entry added there is installed into the
+# ROS image and the prod chain, which project.yml (dev image only) never builds.
 on:
   push:
     paths:
       - 'docker/**'
       - 'scripts/util_apt_helper.sh'
       - 'scripts/util_cuda_apt.sh'
+      - 'dependencies/apt.txt'
+      - 'dependencies/apt_ros.txt'
       - '.github/workflows/images.yml'
   pull_request:
     paths:
       - 'docker/**'
       - 'scripts/util_apt_helper.sh'
       - 'scripts/util_cuda_apt.sh'
+      - 'dependencies/apt.txt'
+      - 'dependencies/apt_ros.txt'
       - '.github/workflows/images.yml'
   schedule:
     # Monday 03:00 UTC.
