@@ -457,9 +457,10 @@ mlint() {
     # clang-format is opt-in (it pulls libllvm); the editor uses the copy
     # bundled with the C/C++ extension.
     local cpp_files=()
-    mapfile -t cpp_files < <(find "$src" -path '*/thirdparty' -prune -o -type f \
-        \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \) \
-        -print 2>/dev/null)
+    while IFS= read -r cpp_file; do cpp_files+=("$cpp_file"); done < <(
+        find "$src" -path '*/thirdparty' -prune -o -type f \
+            \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \) \
+            -print 2>/dev/null)
     if [ "${#cpp_files[@]}" -gt 0 ]; then
         if command -v clang-format >/dev/null 2>&1; then
             checked=1

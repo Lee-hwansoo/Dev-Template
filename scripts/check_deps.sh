@@ -118,7 +118,8 @@ project_py() {
         ! -path "*/launch/*" -print 2>/dev/null || true
 }
 
-mapfile -t py_files < <(project_py)
+py_files=()
+while IFS= read -r py_file; do py_files+=("$py_file"); done < <(project_py)
 launch_count="$(find "$TARGET_DIR" -path "*/.venv" -prune -o -type f -name '*.py' -path "*/launch/*" -print 2>/dev/null | wc -l)"
 
 log_info "Source exposure: ${#py_files[@]} python module(s), ${launch_count} launch script(s)."

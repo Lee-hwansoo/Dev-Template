@@ -307,7 +307,7 @@ case "$COMMAND" in
             exit 1
         fi
         pkgs=()
-        [ -n "$pkg_list" ] && mapfile -t pkgs <<< "$pkg_list"
+        while IFS= read -r pkg_line; do [ -n "$pkg_line" ] && pkgs+=("$pkg_line"); done <<< "$pkg_list"
 
         # DEVKIT_DRY_RUN=1 prints the resolved selection without touching APT.
         # Used by scripts/verify_repo.sh to assert the filter contract.

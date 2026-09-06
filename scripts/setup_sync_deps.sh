@@ -25,8 +25,10 @@ OVERLAY_DIR="${DEPS_DIR}/overlay"
 # compares against ${WS_ROOT}/*) rejects it.
 TARGET_DIR="${SYNC_TARGET_DIR:-src/thirdparty}"
 case "$TARGET_DIR" in /*) ;; *) TARGET_DIR="${WS_ROOT}/${TARGET_DIR}" ;; esac
+# bash 3.2 (macOS) has no ${var,,}.
+_devkit_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
-_truthy() { case "${1,,}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac; }
+_truthy() { case "$(_devkit_lower "$1")" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac; }
 
 # --- Argument parsing ---------------------------------------------------------
 FORCE_MODE=false

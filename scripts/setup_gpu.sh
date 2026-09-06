@@ -234,7 +234,7 @@ case "$__gpu_req_mode" in
         __gpu_head "[OpenGL / GLX]"
         __gpu_load < <(probe_gl)
         if [ -n "${__p_gl_renderer:-}" ]; then
-            case "${__p_gl_renderer,,}" in
+            case "$(printf '%s' "$__p_gl_renderer" | tr '[:upper:]' '[:lower:]')" in
                 *llvmpipe*|*softpipe*|*swrast*)
                     __gpu_row "renderer" "$(printf '\033[33m%s  (SOFTWARE rendering)\033[0m' "$__p_gl_renderer")" ;;
                 *)  __gpu_row "renderer" "$(printf '\033[32m%s\033[0m' "$__p_gl_renderer")" ;;

@@ -60,11 +60,23 @@ _log_write() {
     [ -n "${__DEVKIT_LOG_PATH:-}" ] || return 0
     # The FILE always carries a date and time, whatever LOG_SHOW_TIME says: that
     # knob is about console noise, while this file accumulates across container
-    # restarts. printf's %()T is a builtin — no `date` fork per line.
-    local when; printf -v when '%(%F %T)T' -1
+    # restarts. printf's %()T is a builtin — no `date` fork per line — but it
+    # arrived in bash 4.2, and macOS still ships 3.2, where it printed nothing.
+    local when=""
+    if [ "${__DEVKIT_PRINTF_TIME:-}" = 1 ]; then printf -v when '%(%F %T)T' -1
+    else when="$(date '+%F %T')"; fi
     echo -e "${when} $3" >> "$__DEVKIT_LOG_PATH" 2>/dev/null
     return 0
 }
+
+# printf '%()T' is bash 4.2+; probe once so the per-line path stays fork-free
+# where it can be, and falls back to `date` on the shells that lack it.
+if [ -z "${__DEVKIT_PRINTF_TIME:-}" ]; then
+    if printf -v __devkit_t '%(%F)T' -1 2>/dev/null && [ -n "${__devkit_t:-}" ]; then
+        __DEVKIT_PRINTF_TIME=1
+    else __DEVKIT_PRINTF_TIME=0; fi
+    unset __devkit_t
+fi
 
 _log_base() {
     local type="$1" color="$2" symbol="$3" msg="$4"
