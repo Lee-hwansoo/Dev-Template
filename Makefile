@@ -208,19 +208,22 @@ define HINT_ROOT_OWNED
 	echo -e "  $(INFO)   docker run --rm -v \"$(HOST_WORKSPACE_PATH):/w\" alpine rm -rf /w/$(1)"
 endef
 
-# CONFIRM: interactive guard for irreversible targets. Skipped off-TTY or with
-# FORCE=1 / CI=true, so scripts keep working; a human always gets the ask.
+# CONFIRM: cleanup requires interactive consent or an exact true FORCE/CI value.
 define CONFIRM
-	@if [ -z "$$FORCE$$CI" ] && [ -t 0 ]; then \
+	@SKIP=; \
+	for flag in "$$FORCE" "$$CI"; do \
+		case "$$flag" in 1|true|TRUE|True|yes|YES|Yes|on|ON|On) SKIP=1 ;; esac; \
+	done; \
+	if [ -z "$$SKIP" ] && [ -t 0 ]; then \
 		printf "  $(YELLOW)[CONFIRM]$(NC) %s [y/N]: " "$(1)"; \
 		read -r REPLY; \
 		case "$$REPLY" in y|Y|yes|YES) ;; *) echo -e "  $(INFO) Aborted."; exit 1 ;; esac; \
-	elif [ -z "$$FORCE$$CI" ]; then \
-		echo -e "  $(INFO) Non-interactive shell: proceeding (set FORCE=1 to silence this notice)."; \
+	elif [ -z "$$SKIP" ]; then \
+		echo -e "  $(ERROR) Non-interactive cleanup requires FORCE=1." >&2; exit 2; \
 	fi
 endef
 
-.PHONY: help h setup adopt status check verify xauth gpus build start stop restart shell exec test lint term bake-dev bake-prod run-sif slurm-status slurm-cancel stats top logs update-gpg down clean clean-cache clean-all docker-clean
+.PHONY: help h setup adopt status check verify xauth gpus build start stop restart shell exec test lint term bake-dev bake-prod run-sif slurm-status slurm-cancel stats top logs update-gpg down clean clean-cache clean-all docker-clean ide-config
 
 # =============================================================================
 # Help & Setup

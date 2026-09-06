@@ -979,6 +979,45 @@ rm -rf "$bake_cli"
 [ "$bake_errors" -eq 0 ] \
     && log_ok "A bake derives its base image and interpreter from ROS_DISTRO (.env or command line), carries the pin policy into the build, and warns on a stale .env."
 # =============================================================================
+# [confirm-guard] The gate on irreversible targets. Only an EXACT true value may
+#      skip the question: `-z` on the two concatenated let FORCE=0 and CI=false
+#      through, and a prefix glob then let FORCE=10 and "truegarbage" through.
+# =============================================================================
+confirm_errors=0
+# The REAL macro, on a harmless target — never by running a destructive one.
+confirm_probe="$(probe_dir)"
+{
+    sed -n '/^define CONFIRM/,/^endef/p' Makefile
+    printf 'YELLOW:=\nNC:=\nINFO:=\nERROR:=\nprobe:\n\t$(call CONFIRM,probe)\n\t@echo PROCEEDED\n'
+} > "$confirm_probe/Makefile"
+confirm_says() {   # confirm_says <VAR=value>…
+    ( cd "$confirm_probe" && env -u FORCE -u CI "$@" make -s probe </dev/null 2>&1 || true )
+}
+# <label>|<env>|proceed|refuse
+while IFS='|' read -r confirm_label confirm_env confirm_want; do
+    [ -n "$confirm_label" ] || continue
+    confirm_out="$(confirm_says $confirm_env)"
+    case "$confirm_want" in
+        proceed) grep -q PROCEEDED <<< "$confirm_out" \
+            || { log_err "CONFIRM: ${confirm_label} should skip the question but did not."; confirm_errors=1; } ;;
+        refuse)  grep -q PROCEEDED <<< "$confirm_out" \
+            && { log_err "CONFIRM: ${confirm_label} skipped the question; only an exact true value may."; confirm_errors=1; } ;;
+    esac
+done <<'CASES'
+FORCE=1|FORCE=1|proceed
+CI=true|CI=true|proceed
+FORCE=yes|FORCE=yes|proceed
+FORCE=0|FORCE=0|refuse
+CI=false|CI=false|refuse
+FORCE=10|FORCE=10|refuse
+FORCE=truegarbage|FORCE=truegarbage|refuse
+FORCE=nottrue|FORCE=nottrue|refuse
+neither set|DEVKIT_UNUSED=1|refuse
+CASES
+rm -rf "$confirm_probe"
+[ "$confirm_errors" -eq 0 ] \
+    && log_ok "Only an exact true FORCE/CI skips the delete confirmation (9 spellings, off a TTY)."
+# =============================================================================
 # [gpg-anchor] The pinned fingerprint must exist and stay in sync with the
 #      updater that maintains it (`make update-gpg`).
 # =============================================================================
