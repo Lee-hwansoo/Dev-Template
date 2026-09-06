@@ -353,11 +353,23 @@ done
 # [detector-cache] The cache write must be atomic and a failed probe fatal: a
 #     partial cache is reused forever and every mount degrades silently.
 # =============================================================================
-if grep -q 'mktemp "$(DETECTED_ENV_FILE)' Makefile && grep -q 'DETECT_STATUS),fail' Makefile; then
-    log_ok "Host detection cache is written atomically and fails the build on error."
-else
-    log_err "Makefile must write detected-env.mk via mktemp+mv and \$(error) on failure."
-fi
+# Run, in a probe tree: a detector input the detector refuses (a relative cache
+# dir) must stop make with the named error and leave NO cache file behind — not
+# a partial one, not a mktemp leftover; a good run leaves exactly one.
+cache_errors=0
+cache_probe="$(probe_dir scripts config docker dependencies)"
+cp Makefile "${ROOT_DIR}/.env.example" "$cache_probe/"
+cache_rc=0
+cache_out="$(cd "$cache_probe" && env -u DOCKER_DEV_CACHE_DIR make -n bake-prod DOCKER_DEV_CACHE_DIR=relative/cache 2>&1)" || cache_rc=$?
+{ [ "$cache_rc" -ne 0 ] && grep -q 'Host environment detection failed' <<< "$cache_out"; } \
+    || { log_err "a failed host probe does not stop make with 'Host environment detection failed' (rc ${cache_rc})."; cache_errors=1; }
+[ -z "$(find "$cache_probe/.docker_cache" -name 'detected-env*' 2>/dev/null)" ] \
+    || { log_err "a failed host probe left a cache file behind ($(cd "$cache_probe/.docker_cache" && ls detected-env* | tr '\n' ' ')); the freshness guard would reuse it forever."; cache_errors=1; }
+(cd "$cache_probe" && env -u DOCKER_DEV_CACHE_DIR make -n bake-prod) >/dev/null 2>&1 || true
+[ "$(find "$cache_probe/.docker_cache" -name 'detected-env*' 2>/dev/null | wc -l)" -eq 1 ] \
+    || { log_err "a successful host probe did not leave exactly one detected-env*.mk (found: $(cd "$cache_probe/.docker_cache" 2>/dev/null && ls detected-env* 2>/dev/null | tr '\n' ' '))."; cache_errors=1; }
+rm -rf "$cache_probe"
+[ "$cache_errors" -eq 0 ] && log_ok "Host detection cache: a failed probe stops make and leaves no file; a good one leaves exactly one."
 
 # =============================================================================
 # [advertised-shortcuts] Every shortcut the help screen or MOTD names must
@@ -437,7 +449,26 @@ child_fns="$(__DEVKIT_ENV_READY="$ROOT_DIR" WORKSPACE_PATH="$ROOT_DIR" bash -c \
     2>/dev/null || true)"
 [ -z "$child_fns" ] \
     || { log_err "shell functions missing in a child shell ($(tr '\n' ' ' <<< "$child_fns")): 'make exec CMD=mksync' would fail."; bridge_errors=1; }
-[ "$bridge_errors" -eq 0 ] && log_ok "Runtime env reaches login, interactive and non-interactive shells; rosdep cache seeded."
+# The entrypoint itself, run as this user in a probe workspace: it must reach
+# the command, keep its boot log, and its --env mode must hand the command a
+# resolved environment. The root-only parts (profile.d, bashrc bridge, the
+# privilege drop) are what runtime-smoke in images.yml exercises.
+ep_probe="$(probe_dir config scripts)"
+ep_rc=0
+ep_out="$(cd "$ep_probe" && env -i PATH="$probe_min_path" HOME="$ep_probe" WORKSPACE_PATH="$ep_probe" GPU_MODE=cpu \
+    bash "${ROOT_DIR}/docker/entrypoint.sh" sh -c 'echo "reached:$WORKSPACE_PATH"' 2>&1)" || ep_rc=$?
+{ [ "$ep_rc" -eq 0 ] && grep -qF "reached:$ep_probe" <<< "$ep_out"; } \
+    || { log_err "docker/entrypoint.sh does not reach its command as a non-root user (rc ${ep_rc}): ${ep_out##*$'\n'}"; bridge_errors=1; }
+grep -q '\[Entrypoint\]' "$ep_probe/log/entrypoint.log" 2>/dev/null \
+    || { log_err "the entrypoint keeps no boot log under log/entrypoint.log; a post-mortem has nothing once docker logs are gone."; bridge_errors=1; }
+[ -s "$ep_probe/.gpu_env.sh" ] \
+    || { log_err "a boot with GPU_MODE=cpu did not persist ~/.gpu_env.sh; docker exec shells would lose the GPU settings."; bridge_errors=1; }
+ep_env="$(cd "$ep_probe" && env -i PATH="$probe_min_path" HOME="$ep_probe" WORKSPACE_PATH="$ep_probe" \
+    bash "${ROOT_DIR}/docker/entrypoint.sh" --env sh -c 'echo "$WS_ROOT"' 2>/dev/null || true)"
+[ "$ep_env" = "$ep_probe" ] \
+    || { log_err "'/entrypoint.sh --env <cmd>' hands the command no resolved environment (WS_ROOT='${ep_env}')."; bridge_errors=1; }
+rm -rf "$ep_probe"
+[ "$bridge_errors" -eq 0 ] && log_ok "Runtime env reaches login, interactive and non-interactive shells; the entrypoint boots, logs and wraps a command as a user."
 
 # =============================================================================
 # [ros-distro-set] The supported ROS distros are spelled in two files that
@@ -1593,20 +1624,41 @@ done
 # [clean-semantics] `make clean` must not destroy install/.venv — it costs a
 #       full mksync to rebuild, and mclean already preserves it.
 # =============================================================================
-{ grep -q "rm -rf build devel log" Makefile \
-  && grep -qF "find install -mindepth 1 -maxdepth 1 ! -name '.venv'" Makefile; } \
-    && log_ok "'make clean' removes build/devel/log output while preserving install/.venv." \
-    || log_err "'make clean' must remove build/ devel/ log/ and exclude install/.venv (KEEP_VENV=0 opts into deleting it)."
-# The workspace convenience links point into build/ and install/ with the
-# container path, so clean must drop them too or the tree keeps dead symlinks.
-grep -q 'compile_commands.json .venv colcon.meta' Makefile \
-    || log_err "'make clean' must remove the generated workspace symlinks (they dangle once build/install are gone)."
-grep -q 'rmdir install' Makefile \
-    || log_err "'make clean' must drop install/ once it is empty; the entrypoint recreates it as root, making a leftover un-removable."
-# A root-owned build/ (Docker creates a bind-mount source as root) must get the
-# same way out install/ gets; a raw rm failure stopped make with no hint.
-awk '/rm -rf build devel log/ {seen=1} seen && /HINT_ROOT_OWNED,build/ {ok=1} END {exit ok ? 0 : 1}' Makefile \
-    || log_err "'make clean' fails on a root-owned build/ without the HINT_ROOT_OWNED remediation install/ gets."
+# `make clean` for real, in a probe workspace carrying every layout a build
+# leaves: build/, devel/ (ROS 1), log/, install/ output, the venv, and the
+# three convenience links (dangling, as they are on the host).
+clean_errors=0
+clean_probe="$(probe_dir scripts config docker dependencies)"
+cp Makefile "${ROOT_DIR}/.env.example" "$clean_probe/"
+clean_tree() {
+    mkdir -p "$1/build/x" "$1/devel/x" "$1/log" "$1/install/.venv/bin" "$1/install/share/p"
+    : > "$1/build/x/o"; : > "$1/devel/x/f"; : > "$1/log/l"; : > "$1/install/.venv/bin/python3"; : > "$1/install/share/p/f"
+    ln -sfn /workspace/build/compile_commands.json "$1/compile_commands.json"
+    ln -sfn install/.venv "$1/.venv"; ln -sfn config/colcon.meta "$1/colcon.meta"
+}
+clean_tree "$clean_probe"
+(cd "$clean_probe" && make clean) >/dev/null 2>&1 \
+    || { log_err "'make clean' fails on an ordinary workspace."; clean_errors=1; }
+clean_left="$(cd "$clean_probe" && ls -d build devel log install/share compile_commands.json .venv colcon.meta 2>/dev/null | tr '\n' ' ' || true)"
+[ -z "$clean_left" ] \
+    || { log_err "'make clean' left: ${clean_left}— build/, devel/, log/, the install output and the three links must go."; clean_errors=1; }
+[ -f "$clean_probe/install/.venv/bin/python3" ] \
+    || { log_err "'make clean' removed install/.venv; recreating it costs a full mksync (KEEP_VENV=0 opts in)."; clean_errors=1; }
+(cd "$clean_probe" && make clean KEEP_VENV=0 FORCE=1) >/dev/null 2>&1 || true
+[ ! -e "$clean_probe/install" ] \
+    || { log_err "'make clean KEEP_VENV=0' leaves install/ behind; the entrypoint recreates it as root and a later rm cannot remove it."; clean_errors=1; }
+# Output Docker made root-owned cannot be removed from the host: `clean` must
+# say how (the docker run hint) and go on, not die on a raw rm error.
+clean_tree "$clean_probe"; mkdir -p "$clean_probe/build/locked"; : > "$clean_probe/build/locked/f"; chmod 555 "$clean_probe/build/locked"
+clean_rc=0; clean_out="$(cd "$clean_probe" && make clean 2>&1)" || clean_rc=$?
+chmod 755 "$clean_probe/build/locked" 2>/dev/null
+if [ "$(id -u)" -ne 0 ]; then
+    { [ "$clean_rc" -eq 0 ] && grep -q 'docker run --rm' <<< "$clean_out"; } \
+        || { log_err "'make clean' on an unremovable build/ exits ${clean_rc} without the docker-run remediation hint."; clean_errors=1; }
+fi
+rm -rf "$clean_probe"
+[ "$clean_errors" -eq 0 ] \
+    && log_ok "'make clean' empties build/devel/log, the install output and the links, keeps the venv unless asked, and hints on root-owned output."
 # Match the compose invocation, not the phrase: the explanatory comment above
 # it would satisfy a bare grep for '--rmi local'.
 grep -qE '\$\(COMPOSE\).*down .*--rmi local' Makefile \
@@ -1781,10 +1833,25 @@ help_piped="$(bash --norc -c "WORKSPACE_PATH='${ROOT_DIR}' source config/util_al
 #      still has to pin itself is listed in docs/DEVELOPMENT.md.
 # =============================================================================
 repro_errors=0
-grep -q 'snapshot.ubuntu.com' scripts/util_apt_helper.sh || { log_err "APT snapshot pinning (APT_SNAPSHOT_DATE) is not implemented."; repro_errors=1; }
-grep -q 'SOURCE_DATE_EPOCH' scripts/apptainer_bake.sh    || { log_err "bake does not forward SOURCE_DATE_EPOCH."; repro_errors=1; }
-grep -q 'ROS_GPG_FINGERPRINT' scripts/util_apt_helper.sh || { log_err "ROS key is not fingerprint-pinned."; repro_errors=1; }
-grep -q 'dpkg-query -W' scripts/util_release_metadata.sh || { log_err "Release metadata must record an APT manifest (unpinnable layers need auditability)."; repro_errors=1; }
+# The APT snapshot switch, by execution — every branch below returns before it
+# writes under /etc: a malformed date is refused (2), an unreachable
+# snapshot.ubuntu.com fails CLOSED (1) unless APT_SNAPSHOT_FALLBACK opts into
+# the rolling mirrors, and 'latest' is a no-op.
+snap_probe="$(probe_dir)"
+printf '#!/bin/sh\nexit 6\n' > "$snap_probe/curl"; chmod +x "$snap_probe/curl"
+snap_rc() { local rc=0; ( PATH="$snap_probe:$probe_min_path" env "$@" bash scripts/util_apt_helper.sh configure-snapshot "${SNAP_DATE}" ) >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
+[ "$(SNAP_DATE=2026-01-01 snap_rc)" = 2 ] \
+    || { log_err "configure-snapshot accepts a date that is not YYYYMMDDTHHMMSSZ; apt would be pointed at a mirror path that does not exist."; repro_errors=1; }
+[ "$(SNAP_DATE=20260101T000000Z snap_rc)" = 1 ] \
+    || { log_err "configure-snapshot proceeds while snapshot.ubuntu.com is unreachable; the build would silently fall back to rolling mirrors."; repro_errors=1; }
+[ "$(SNAP_DATE=20260101T000000Z snap_rc APT_SNAPSHOT_FALLBACK=1)" = 0 ] \
+    || { log_err "APT_SNAPSHOT_FALLBACK=1 no longer lets a build past an unreachable snapshot server."; repro_errors=1; }
+[ "$(SNAP_DATE=latest snap_rc)" = 0 ] \
+    || { log_err "configure-snapshot latest is not a no-op."; repro_errors=1; }
+rm -rf "$snap_probe"
+# The timestamp reaches the image build as a build arg (the manifest's build_date).
+grep -qxF 'SOURCE_DATE_EPOCH=1700000000' <<< "$(bake_argv prod dev SOURCE_DATE_EPOCH=1700000000)" \
+    || { log_err "a bake does not forward SOURCE_DATE_EPOCH to docker build; the release manifest's build_date would float."; repro_errors=1; }
 # The .repos pin, by EXECUTION on a real branch ref: warn by default (a branch
 # is a legitimate choice mid-development) but REFUSE under DEVKIT_REQUIRE_PINNED,
 # which prod bakes set — a release must not be built from a branch that moved.
@@ -2084,6 +2151,12 @@ if bash scripts/util_release_metadata.sh "$version_probe/r.json" >/dev/null 2>&1
     # Separator-agnostic: the generator emits compact JSON.
     grep -qE "\"devkit_version\": ?\"${devkit_version}\"" "$version_probe/r.json" \
         || { log_err "the release manifest does not record devkit_version=${devkit_version} (a baked artifact cannot name its template)."; version_errors=1; }
+    # The unpinnable layers are made auditable by recording what landed: on a
+    # host with dpkg the apt manifest must exist, be non-empty and be counted.
+    if command -v dpkg-query >/dev/null 2>&1; then
+        { [ -s "$version_probe/devkit-apt-manifest.txt" ] && grep -qE '"apt_packages":[1-9]' "$version_probe/r.json"; } \
+            || { log_err "the release manifest records no APT package list; an unpinnable rosdep layer could not be audited after the fact."; version_errors=1; }
+    fi
 else
     log_err "scripts/util_release_metadata.sh failed; a baked artifact would ship without a manifest."; version_errors=1
 fi
@@ -2237,6 +2310,19 @@ sif_errors=0
 sif_argv="$(bake_argv prod ros CUDA_VERSION=12.4)"
 grep -qxF 'CUDA_VERSION=12.4' <<< "$sif_argv" \
     || { log_err "apptainer_bake.sh no longer forwards CUDA_VERSION — baked SIFs would silently ship without CUDA."; sif_errors=1; }
+grep -qxF 'PROD_ENV=ros' <<< "$sif_argv" && grep -qxF 'prod-runtime' <<< "$sif_argv" \
+    || { log_err "a prod bake for ENV=ros does not build '--target prod-runtime --build-arg PROD_ENV=ros'."; sif_errors=1; }
+grep -qxF 'PROD_ENV=dev' <<< "$(bake_argv prod dev)" \
+    || { log_err "a prod bake for ENV=dev does not pass PROD_ENV=dev; the ROS builder base would be used."; sif_errors=1; }
+# …and every ENV the bake accepts needs its builder base, or `FROM
+# builder-base-${PROD_ENV}` fails to resolve inside docker build.
+for sif_env in $(sed -n 's/^sif_require_choice --env "\$ENV_NAME" \(.*\) || exit 2$/\1/p' scripts/apptainer_bake.sh); do
+    grep -qE "^FROM .* AS builder-base-${sif_env}$" docker/Dockerfile \
+        || { log_err "docker/Dockerfile has no 'builder-base-${sif_env}' stage; 'make bake-prod ENV=${sif_env}' cannot resolve its FROM."; sif_errors=1; }
+done
+grep -qE '^FROM builder-base-\$\{PROD_ENV\} AS prod-builder$' docker/Dockerfile \
+    || { log_err "docker/Dockerfile: prod-builder no longer derives its base from PROD_ENV; the flavours would drift into two copies again."; sif_errors=1; }
+# setup-cuda-repo needs the network and root; images.yml apt-key-paths runs it.
 grep -Eq '^[^#]*sources\.list\.d/cuda\.list' scripts/util_apt_helper.sh \
     || { log_err "util_apt_helper.sh setup-cuda-repo no longer configures the NVIDIA repository."; sif_errors=1; }
 # The managed interpreter must sit where ANY uid can traverse: a baked venv
@@ -2288,8 +2374,6 @@ case "$last_user" in
 esac
 rc=0; bash scripts/apptainer_bake.sh --bogus-flag >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || { log_err "apptainer_bake.sh must reject unknown flags with exit 2, not silently ignore them."; sif_errors=1; }
-grep -Eq '^[^#]*\$\{SYNC_TARGET_DIR' scripts/setup_sync_deps.sh \
-    || { log_err "setup_sync_deps.sh no longer honours SYNC_TARGET_DIR (Dockerfile stages stage into /tmp)."; sif_errors=1; }
 grep -Eq '^[^#]*source "/opt/ros/.*setup\.bash' scripts/check_deps.sh \
     || { log_err "check_deps.sh no longer sources the ROS environment — prod ROS 1 builds would fail their binding check."; sif_errors=1; }
 # Execution-based: a typo'd ENV must die in make's read phase, before any
@@ -2302,30 +2386,23 @@ rc=0; env_probe="$(make -n down ENV=__bogus__ 2>&1)" || rc=$?
 # or the documented STRICT_GPG_CHECK=false override never reaches setup-cuda-repo.
 awk '/^FROM .* AS base$/,/^FROM [^ ]* AS build-core$/' docker/Dockerfile | grep -q '^ARG STRICT_GPG_CHECK' \
     || { log_err "Dockerfile base stage lost 'ARG STRICT_GPG_CHECK' — the documented escape hatch cannot reach setup-cuda-repo."; sif_errors=1; }
-# slurm command scheme: argv array preserved end-to-end (a "$*" join + bash -c
-# re-parse would re-interpret metacharacters inside legitimate arguments).
-{ grep -q 'CMD=( "$@" )' scripts/slurm_run.sh && grep -q '"${CMD\[@\]}"' scripts/slurm_run.sh; } \
-    || { log_err "slurm_run.sh lost the argv-preserving CMD array scheme."; sif_errors=1; }
+# A multi-word job command must reach the container as separate argv words (a
+# "$*" join + bash -c re-parse would re-interpret metacharacters inside them).
+# Against a stub runtime that records what it was handed.
+argv_probe="$(probe_dir config scripts)"
+mkdir -p "$argv_probe/bin"; : > "$argv_probe/a.sif"
+printf '#!/bin/sh\ncase "$*" in *"test -x /entrypoint.sh"*) exit 0 ;; *grep*) exit 1 ;; esac\nprintf "%%s\\n" "$@" > "%s/argv"\nexit 0\n' \
+    "$argv_probe" > "$argv_probe/bin/apptainer"; chmod +x "$argv_probe/bin/apptainer"
+( PATH="$argv_probe/bin:$probe_min_path" WORKSPACE_PATH="$argv_probe" SLURM_RUN_ROOT="$argv_probe/runs" \
+  bash scripts/slurm_run.sh "$argv_probe/a.sif" python3 'a b' c ) >/dev/null 2>&1 || true
+{ grep -qxF 'a b' "$argv_probe/argv" 2>/dev/null && grep -qxF 'c' "$argv_probe/argv"; } \
+    || { log_err "slurm_run.sh no longer hands a multi-word command to the runtime word for word (got: $(tr '\n' '|' < "$argv_probe/argv" 2>/dev/null))."; sif_errors=1; }
+rm -rf "$argv_probe"
 # Host/container path confusion: the Makefile exports WORKSPACE_PATH=/workspace
 # to EVERY recipe, host-side ones included, so a script that trusts it resolves
 # /workspace/scripts/... and dies — invisibly to every flag assertion above.
-grep -qxF 'PROD_ENV=ros' <<< "$sif_argv" && grep -qxF 'prod-runtime' <<< "$sif_argv" \
-    || { log_err "a prod bake for ENV=ros does not build '--target prod-runtime --build-arg PROD_ENV=ros'."; sif_errors=1; }
-grep -qxF 'PROD_ENV=dev' <<< "$(bake_argv prod dev)" \
-    || { log_err "a prod bake for ENV=dev does not pass PROD_ENV=dev; the ROS builder base would be used."; sif_errors=1; }
-# …and every ENV the bake accepts needs its builder base, or `FROM
-# builder-base-${PROD_ENV}` fails to resolve inside docker build.
-for sif_env in $(sed -n 's/^sif_require_choice --env "\$ENV_NAME" \(.*\) || exit 2$/\1/p' scripts/apptainer_bake.sh); do
-    grep -qE "^FROM .* AS builder-base-${sif_env}$" docker/Dockerfile \
-        || { log_err "docker/Dockerfile has no 'builder-base-${sif_env}' stage; 'make bake-prod ENV=${sif_env}' cannot resolve its FROM."; sif_errors=1; }
-done
-grep -qE '^FROM builder-base-\$\{PROD_ENV\} AS prod-builder$' docker/Dockerfile \
-    || { log_err "docker/Dockerfile: prod-builder no longer derives its base from PROD_ENV; the flavours would drift into two copies again."; sif_errors=1; }
-# setup-cuda-repo needs the network and root; images.yml apt-key-paths runs it.
 [ "$(WORKSPACE_PATH=/nonexistent-devkit bash -c 'source config/util_paths.sh; printf %s "$WS_ROOT"')" = "$ROOT_DIR" ] \
     || { log_err "config/util_paths.sh trusts WORKSPACE_PATH even when it is not a DevKit tree here — host scripts resolve /workspace/..."; sif_errors=1; }
-grep -qE '^WS_ROOT="\$\{WORKSPACE_PATH' scripts/apptainer_bake.sh scripts/apptainer_run.sh \
-    && { log_err "apptainer_*.sh derive the repo root from WORKSPACE_PATH (the container path) but run on the host."; sif_errors=1; }
 # `apptainer exec` skips the image ENTRYPOINT, so both run paths must route
 # through it or the job starts with no ROS/venv (`import rclpy` failed).
 # By EXECUTION against a stub runtime: the prefix differs per image, and a
@@ -2373,9 +2450,16 @@ for sif_arch_caller in scripts/apptainer_bake.sh scripts/apptainer_run.sh; do
     grep -qE '^[^#]*sif_arch' "$sif_arch_caller" \
         || { log_err "${sif_arch_caller} spells the architecture tag itself instead of using sif_arch; bake and run would disagree."; sif_errors=1; }
 done
-# slurm submits the PRODUCTION artifact; probing for a *-slurm.sif never hits.
-grep -qE '^[^#]*ARTIFACT_MODE="prod"' scripts/apptainer_run.sh \
-    || { log_err "apptainer_run.sh no longer maps SIF_MODE=slurm onto the prod artifact — the default probe finds nothing."; sif_errors=1; }
+# slurm submits the PRODUCTION artifact (there is no bake --mode slurm): with
+# no SIF_FILE, the default probe must find <project>-<env>-prod-<arch>.sif.
+slurm_art="$(probe_dir config scripts)"
+mkdir -p "$slurm_art/bin"; : > "$slurm_art/probe-dev-prod-amd64.sif"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/argv"\n' "$slurm_art" > "$slurm_art/bin/sbatch"; chmod +x "$slurm_art/bin/sbatch"
+( PATH="$slurm_art/bin:$probe_min_path" WORKSPACE_PATH="$slurm_art" COMPOSE_PROJECT_NAME=probe TARGETARCH=amd64 \
+  env -u SIF_FILE bash scripts/apptainer_run.sh --mode slurm --env dev 'true' ) >/dev/null 2>&1 || true
+grep -qxF "$slurm_art/probe-dev-prod-amd64.sif" "$slurm_art/argv" 2>/dev/null \
+    || { log_err "SIF_MODE=slurm does not resolve the default artifact to the prod SIF (sbatch got: $(tr '\n' ' ' < "$slurm_art/argv" 2>/dev/null))."; sif_errors=1; }
+rm -rf "$slurm_art"
 # RUN_ARGS must survive make without a second round of shell parsing: the
 # documented RUN_ARGS='python3 -c "print(1)"' produced an unbalanced-quote
 # syntax error when it was passed as an argument instead of via the environment.
@@ -2462,10 +2546,16 @@ grep -Eq "^[^#]*tr -c 'a-z0-9_-'" Makefile \
 tmp_source="$(grep -nE '^[^#]*source +"?/tmp/' scripts/*.sh config/*.sh docker/*.sh 2>/dev/null | grep -v verify_repo.sh || true)"
 [ -z "$tmp_source" ] \
     || { log_err "a script sources a file under /tmp (world-writable, and absent from every image): $(cut -d: -f1,2 <<< "$tmp_source" | tr '\n' ' ')"; sec_errors=1; }
-# mclean rm -rf roots must use ${WS_ROOT:?}: with util_paths sourced '|| true',
-# a plain ${WS_ROOT} expands empty and deletes /build /log /install.
-awk '/^mclean\(\)/,/^}/' config/util_aliases.sh | grep -E '\$\{WS_ROOT\}/' -q \
-    && { log_err "mclean references \${WS_ROOT} without :? — empty WS_ROOT turns cleanup into rm -rf /build /install."; sec_errors=1; }
+# mclean with no WS_ROOT (util_paths sourced '|| true' and failed) must stop
+# before its first find/rm: a plain ${WS_ROOT} once turned it into rm -rf /build.
+mclean_root="$(probe_dir)"
+printf '#!/bin/sh\necho "$0 $*" >> "%s/calls"\n' "$mclean_root" > "$mclean_root/rm"
+cp "$mclean_root/rm" "$mclean_root/find"; chmod +x "$mclean_root/rm" "$mclean_root/find"
+mclean_root_rc=0
+mclean_root_out="$(PATH="$mclean_root:$probe_min_path" bash --norc -c "WORKSPACE_PATH='${ROOT_DIR}' source config/util_aliases.sh >/dev/null 2>&1; unset WS_ROOT; mclean" 2>&1)" || mclean_root_rc=$?
+{ [ "$mclean_root_rc" -ne 0 ] && grep -q 'WS_ROOT' <<< "$mclean_root_out" && [ ! -s "$mclean_root/calls" ]; } \
+    || { log_err "mclean with an empty WS_ROOT ran on (rc ${mclean_root_rc}, calls: $(tr '\n' ';' < "$mclean_root/calls" 2>/dev/null)); it would delete /build and /install."; sec_errors=1; }
+rm -rf "$mclean_root"
 # Empty-array "${arr[@]}" is fatal under set -u on bash < 4.4 — the RHEL 7/8
 # bash SLURM nodes run. Guarded form is ${arr[@]+"${arr[@]}"}.
 grep -nE '"\$\{(GPU_FLAGS|BIND_OPTS|SBATCH_OPTS)\[@\]\}"' scripts/slurm_run.sh scripts/apptainer_run.sh \
