@@ -2335,15 +2335,6 @@ done
 # working X11 host. xdpyinfo comes from x11-utils, which the image does install.
 grep -q 'xset q' Makefile \
     && { log_err "'make term' probes X11 with xset, absent from the image (x11-xserver-utils); use xdpyinfo."; sec_errors=1; }
-grep -qE '(^|[[:space:]])x11-utils([[:space:]\\]|$)' docker/Dockerfile \
-    || { log_err "x11-utils dropped from the image; 'make term' has no way left to probe the display."; sec_errors=1; }
-grep -Eq '^[^#]*for E in.*"local:' Makefile \
-    && { log_err "xhost 'local:' grant reintroduced — it admits EVERY local user, not just root."; sec_errors=1; }
-# make setup writes the username into COMPOSE_PROJECT_NAME: without the tr
-# sanitize, LDAP/AD names (John.Doe, LAB\user) break every compose invocation.
-grep -Eq "^[^#]*tr -c 'a-z0-9_-'" Makefile \
-    || { log_err "make setup lost the username sanitize — non-[a-z0-9_-] usernames would break compose project naming."; sec_errors=1; }
-# mclean rm -rf roots must use ${WS_ROOT:?}: with util_paths sourced '|| true',
 # …and it must open the window as the container user with the flag terminator
 # has. It ran as root with `-u <config>` — -u is --no-dbus, the path became a
 # positional argument and terminator exited before drawing; `docker exec -d`
@@ -2353,6 +2344,15 @@ term_recipe="$(make -n term 2>/dev/null | grep -E 'docker exec -d' || true)"
     || { log_err "'make term' launches a terminal without the EXEC_USER_FLAG the other attach targets use; every pane would be a root shell."; sec_errors=1; }
 grep -qE 'terminator -g ' <<< "$term_recipe" && ! grep -qE 'terminator -u' <<< "$term_recipe" \
     || { log_err "'make term' passes the terminator layout with a flag other than -g (-u is --no-dbus; a positional path aborts the launch)."; sec_errors=1; }
+grep -qE '(^|[[:space:]])x11-utils([[:space:]\\]|$)' docker/Dockerfile \
+    || { log_err "x11-utils dropped from the image; 'make term' has no way left to probe the display."; sec_errors=1; }
+grep -Eq '^[^#]*for E in.*"local:' Makefile \
+    && { log_err "xhost 'local:' grant reintroduced — it admits EVERY local user, not just root."; sec_errors=1; }
+# make setup writes the username into COMPOSE_PROJECT_NAME: without the tr
+# sanitize, LDAP/AD names (John.Doe, LAB\user) break every compose invocation.
+grep -Eq "^[^#]*tr -c 'a-z0-9_-'" Makefile \
+    || { log_err "make setup lost the username sanitize — non-[a-z0-9_-] usernames would break compose project naming."; sec_errors=1; }
+# mclean rm -rf roots must use ${WS_ROOT:?}: with util_paths sourced '|| true',
 # a plain ${WS_ROOT} expands empty and deletes /build /log /install.
 awk '/^mclean\(\)/,/^}/' config/util_aliases.sh | grep -E '\$\{WS_ROOT\}/' -q \
     && { log_err "mclean references \${WS_ROOT} without :? — empty WS_ROOT turns cleanup into rm -rf /build /install."; sec_errors=1; }
@@ -2855,7 +2855,10 @@ query_errors=0
 # with the shell's own stdout.
 query_fd() {   # query_fd <command…>
     local out; out="$(mktemp "${TMPDIR:-/tmp}/devkit.XXXXXX")"
-    ( cd "$ROOT_DIR" && WORKSPACE_PATH="$ROOT_DIR" bash -c '
+    # No display: the question is the file descriptor, and with one set the
+    # three status calls ran glxinfo/eglinfo/vulkaninfo for real — 6.6 s, 44 %
+    # of the whole suite on a WSLg host.
+    ( cd "$ROOT_DIR" && env -u DISPLAY -u WAYLAND_DISPLAY WORKSPACE_PATH="$ROOT_DIR" bash -c '
         exec 9>"'"$out"'"
         source config/util_aliases.sh >/dev/null 2>&1
         before="$(readlink /proc/$$/fd/1)"
