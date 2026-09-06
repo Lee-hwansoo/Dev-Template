@@ -11,6 +11,7 @@ ARG BASE_IMAGE=ubuntu:22.04
 ARG WORKSPACE_PATH=/workspace
 ARG ROS_DISTRO=humble
 ARG APT_SNAPSHOT_DATE=latest
+ARG APT_SNAPSHOT_FALLBACK=true
 ARG ROS_SNAPSHOT_DATE=latest
 ARG STRICT_GPG_CHECK=true
 ARG UV_VERSION=0.10.10
@@ -45,6 +46,7 @@ ARG DEBIAN_FRONTEND
 ARG WORKSPACE_PATH
 ARG ROS_DISTRO
 ARG APT_SNAPSHOT_DATE
+ARG APT_SNAPSHOT_FALLBACK
 ARG ROS_SNAPSHOT_DATE
 ARG CUDA_VERSION
 # Without this re-declaration the pre-FROM default is invisible here and the
@@ -61,7 +63,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
     bash /tmp/util_apt_helper.sh init-apt && \
-    bash /tmp/util_apt_helper.sh configure-snapshot "${APT_SNAPSHOT_DATE}" && \
+    APT_SNAPSHOT_FALLBACK="${APT_SNAPSHOT_FALLBACK}" \
+        bash /tmp/util_apt_helper.sh configure-snapshot "${APT_SNAPSHOT_DATE}" && \
     if [ -n "$CUDA_VERSION" ]; then \
     bash /tmp/util_apt_helper.sh setup-cuda-repo ${CUDA_VERSION}; \
     fi
@@ -297,11 +300,15 @@ FROM build-core AS prod-dev-builder
 ARG WORKSPACE_PATH
 # mksync below runs setup_sync_deps.sh: a release must not float on a branch.
 ARG DEVKIT_REQUIRE_PINNED=0
+# OPENCV_CUDA decides CMake flags inside mksync; without this ARG the builder
+# read its default and the image was compiled for the wrong target.
+ARG OPENCV_CUDA=auto
 ARG ROS_DISTRO
 ARG CUDA_VERSION
 ARG CUDNN_VERSION
 ARG BASE_IMAGE
 ARG APT_SNAPSHOT_DATE
+ARG APT_SNAPSHOT_FALLBACK
 ARG IMAGE_TAG=latest
 ARG GIT_COMMIT=unknown
 ARG COMPOSE_PROJECT_NAME=unknown
@@ -325,7 +332,7 @@ COPY scripts ${WORKSPACE_PATH}/scripts
 # release manifest; without it here the shipped artifact says "unknown".
 COPY VERSION ${WORKSPACE_PATH}/VERSION
 WORKDIR ${WORKSPACE_PATH}
-RUN DEVKIT_BUILD_TYPE=prod DEVKIT_REQUIRE_PINNED=${DEVKIT_REQUIRE_PINNED} bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync" && \
+RUN DEVKIT_BUILD_TYPE=prod DEVKIT_REQUIRE_PINNED=${DEVKIT_REQUIRE_PINNED} OPENCV_CUDA=${OPENCV_CUDA} bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync" && \
     DEVKIT_STRIP_SOURCE=${DEVKIT_STRIP_SOURCE} DEVKIT_FAIL_ON_SOURCE=${DEVKIT_FAIL_ON_SOURCE} \
     bash ${WORKSPACE_PATH}/scripts/check_deps.sh ${WORKSPACE_PATH}/install && \
     DEVKIT_BUILD_TYPE=prod bash ${WORKSPACE_PATH}/scripts/util_release_metadata.sh ${WORKSPACE_PATH}/release/devkit-release.json
@@ -334,11 +341,15 @@ FROM ros-builder-base AS prod-ros-builder
 ARG WORKSPACE_PATH
 # mksync below runs setup_sync_deps.sh: a release must not float on a branch.
 ARG DEVKIT_REQUIRE_PINNED=0
+# OPENCV_CUDA decides CMake flags inside mksync; without this ARG the builder
+# read its default and the image was compiled for the wrong target.
+ARG OPENCV_CUDA=auto
 ARG ROS_DISTRO
 ARG CUDA_VERSION
 ARG CUDNN_VERSION
 ARG BASE_IMAGE
 ARG APT_SNAPSHOT_DATE
+ARG APT_SNAPSHOT_FALLBACK
 ARG IMAGE_TAG=latest
 ARG GIT_COMMIT=unknown
 ARG COMPOSE_PROJECT_NAME=unknown
@@ -357,7 +368,7 @@ COPY scripts ${WORKSPACE_PATH}/scripts
 # release manifest; without it here the shipped artifact says "unknown".
 COPY VERSION ${WORKSPACE_PATH}/VERSION
 WORKDIR ${WORKSPACE_PATH}
-RUN DEVKIT_BUILD_TYPE=prod DEVKIT_REQUIRE_PINNED=${DEVKIT_REQUIRE_PINNED} bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync --share" && \
+RUN DEVKIT_BUILD_TYPE=prod DEVKIT_REQUIRE_PINNED=${DEVKIT_REQUIRE_PINNED} OPENCV_CUDA=${OPENCV_CUDA} bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync --share" && \
     DEVKIT_STRIP_SOURCE=${DEVKIT_STRIP_SOURCE} DEVKIT_FAIL_ON_SOURCE=${DEVKIT_FAIL_ON_SOURCE} \
     bash ${WORKSPACE_PATH}/scripts/check_deps.sh ${WORKSPACE_PATH}/install && \
     DEVKIT_BUILD_TYPE=prod bash ${WORKSPACE_PATH}/scripts/util_release_metadata.sh ${WORKSPACE_PATH}/release/devkit-release.json

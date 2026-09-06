@@ -135,7 +135,7 @@ mksync && git add src/uv.lock && git commit -m "chore: pin python dependencies"
 | **`make gpus`** | **호스트 GPU 모니터링**: 호스트 PC의 NVIDIA GPU / iGPU 실시간 VRAM 및 가속 상태 조회 |
 | **`make status / check`** | **진단 리포트**: 프로젝트 설정, GPU/GUI 모드, 렌더링 디바이스 종합 점검 |
 | **`make test / lint`** | **품질 루프**: 프로젝트 테스트 실행 / 스타일·린트 검사 (`FIX=1`로 자동 수정). 러너는 워크스페이스 형태(ROS·CMake·순수 Python)에서 자동 결정 |
-| **`make verify`** | **무결성 검증**: 문법·Makefile·호스트 감지·APT 태그 필터·셸 환경 동등성·GPG 핀·정리 의미론·SIF 파이프라인·IDE 설정·보안 기본값 등 **57개 계약**을 검증 |
+| **`make verify`** | **무결성 검증**: 문법·Makefile·호스트 감지·APT 태그 필터·셸 환경 동등성·GPG 핀·정리 의미론·SIF 파이프라인·IDE 설정·보안 기본값 등 **58개 계약**을 검증 |
 | **`make bake-prod`** | **Apptainer SIF 추출**: 원격 HPC/SLURM 배포용 단일 바이너리 이미지 생성 |
 | **`make run-sif`** | **HPC / SLURM 실행**: SIF 이미지를 로컬에서 구동하거나 원격 SLURM 클러스터로 배치 투고 |
 | **`make stop / down`** | **컨테이너 중지**: 컨테이너 일시 중지 또는 컨테이너 및 볼륨 완전 삭제 |
@@ -245,7 +245,7 @@ MAJOR 상승은 "파생 프로젝트가 무언가 고쳐야 한다"는 뜻입니
 
 ## ✅ 지원 범위 (Support Matrix)
 
-무엇이 **실행으로 확인**되었고 무엇이 아직 아닌지를 구분합니다. 근거는 세 가지입니다 — `make verify`(57개 계약),
+무엇이 **실행으로 확인**되었고 무엇이 아직 아닌지를 구분합니다. 근거는 세 가지입니다 — `make verify`(58개 계약),
 `.github/workflows/` 의 잡(정의만 되고 아직 실행되지 않은 것은 그렇게 표시), 그리고 아래의 **참조 호스트** 실측입니다.
 
 > **참조 호스트**: WSL2 (커널 6.18, Ubuntu 24.04) · NVIDIA RTX 4060 Ti · Docker + nvidia-container-toolkit · X11 `:0`.

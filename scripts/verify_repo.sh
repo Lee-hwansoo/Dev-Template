@@ -2923,6 +2923,41 @@ esac
     && log_ok "devkit_require propagates a failed load, retries it, and caches only what succeeded."
 
 # =============================================================================
+# [build-boundary] A setting the host advertises has to arrive INSIDE the image
+#      build. OPENCV_CUDA reached the dev runtime but no builder stage, so a
+#      release compiled with the default; APT_SNAPSHOT_FALLBACK had a consumer
+#      and no route to it; and a GPU_MODE build arg was passed to stages that
+#      declare no such ARG. A name existing in both files proves none of this.
+# =============================================================================
+boundary_errors=0
+boundary_probe="$(probe_dir)"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/argv"\nexit 1\n' "$boundary_probe" > "$boundary_probe/docker"
+printf '#!/bin/sh\nexit 0\n' > "$boundary_probe/apptainer"
+chmod +x "$boundary_probe/docker" "$boundary_probe/apptainer"
+# Values that differ from every default, so a hardcoded fallback cannot pass.
+( PATH="$boundary_probe:$probe_min_path" OPENCV_CUDA=off APT_SNAPSHOT_FALLBACK=false \
+  bash scripts/apptainer_bake.sh --mode prod --env ros ) >/dev/null 2>&1 || true
+for boundary_arg in "OPENCV_CUDA=off" "APT_SNAPSHOT_FALLBACK=false"; do
+    grep -qxF -- "$boundary_arg" "$boundary_probe/argv" 2>/dev/null \
+        || { log_err "'${boundary_arg%%=*}' never reaches the image build; the host value is read only outside it."; boundary_errors=1; }
+done
+# …and nothing may be passed that no stage declares: BuildKit drops it silently.
+while IFS= read -r boundary_passed; do
+    [ -n "$boundary_passed" ] || continue
+    grep -qE "^ARG ${boundary_passed}(=|$)" docker/Dockerfile \
+        || { log_err "the bake passes --build-arg ${boundary_passed}, which no Dockerfile stage declares; BuildKit discards it."; boundary_errors=1; }
+done <<< "$(awk '/^--build-arg$/{getline; sub(/=.*/, ""); print}' "$boundary_probe/argv" 2>/dev/null || true)"
+rm -rf "$boundary_probe"
+# The stage that RUNS the consumer must declare the ARG, or the value stops at
+# the stage boundary instead of the build boundary.
+awk '/^FROM /{stage=$NF} /^ARG OPENCV_CUDA/{declared[stage]=1}
+     /mksync/ && $0 !~ /^#/ {uses[stage]=1}
+     END { for (s in uses) if (!declared[s]) { print s; rc=1 } exit rc }' docker/Dockerfile >/dev/null \
+    || { log_err "a stage runs mksync without declaring ARG OPENCV_CUDA; the builder compiles against the default."; boundary_errors=1; }
+[ "$boundary_errors" -eq 0 ] \
+    && log_ok "Advertised build settings arrive inside the image, and nothing is passed that no stage declares."
+
+# =============================================================================
 # Result
 # =============================================================================
 echo ""

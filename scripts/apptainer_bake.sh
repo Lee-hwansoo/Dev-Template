@@ -70,7 +70,6 @@ BUILD_ARGS=(
     --build-arg "USER_UID=${HOST_UID:-1000}"
     --build-arg "USER_GID=${HOST_GID:-1000}"
     --build-arg "ROS_DISTRO=${ROS_DISTRO:-humble}"
-    --build-arg "GPU_MODE=${GPU_MODE:-auto}"
     --build-arg "FULL_CUDA=${FULL_CUDA}"
     --build-arg "IMAGE_TAG=${IMAGE_TAG:-latest}"
     --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-}"
@@ -85,7 +84,8 @@ BUILD_ARGS=(
 # their Dockerfile defaults (--build-arg KEY= would override with empty).
 # Without CUDA_VERSION in particular, a SIF baked on a GPU host silently
 # ships with no CUDA while the equivalent compose build installs it.
-for arg in APT_SNAPSHOT_DATE ROS_SNAPSHOT_DATE STRICT_GPG_CHECK UV_VERSION UV_PYTHON UV_EXTRA TARGETARCH \
+for arg in APT_SNAPSHOT_DATE APT_SNAPSHOT_FALLBACK ROS_SNAPSHOT_DATE STRICT_GPG_CHECK OPENCV_CUDA \
+           UV_VERSION UV_PYTHON UV_EXTRA TARGETARCH \
            SYS_PYTHON_EXE UV_SYNC_FLAGS CMAKE_EXTRA_ARGS COLCON_EXTRA_FLAGS \
            CMAKE_C_STANDARD CMAKE_CXX_STANDARD CUDA_VERSION CUDNN_VERSION LANG TZ; do
     [ -n "${!arg:-}" ] && BUILD_ARGS+=(--build-arg "${arg}=${!arg}")
