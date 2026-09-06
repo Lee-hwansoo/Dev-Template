@@ -2073,8 +2073,40 @@ PYINDEX
 )"
 [ "$uv_index_ok" = "ok" ] \
     || { log_err "src/pyproject.toml: ${uv_index_ok}."; adopt_errors=1; }
+# The description is user text. Spliced straight into a TOML basic string, a
+# quote produced description = "Robot "A"" — and adopt reported success.
+adopt_probe="$(probe_dir scripts config docker dependencies)"
+mkdir -p "$adopt_probe/src"
+cp Makefile "${ROOT_DIR}/.env.example" "$adopt_probe/"
+cp "${ROOT_DIR}/src/pyproject.toml" "$adopt_probe/src/"
+cp "${ROOT_DIR}/.env.example" "$adopt_probe/.env"
+adopt_desc_case() {   # adopt_desc_case <description>
+    cp "${ROOT_DIR}/src/pyproject.toml" "$adopt_probe/src/pyproject.toml"
+    ( cd "$adopt_probe" && make adopt NAME=robot DESC="$1" ) >/dev/null 2>&1 || true
+    python3 - "$adopt_probe/src/pyproject.toml" "$1" <<'PYADOPT' 2>/dev/null
+import sys, tomllib
+want = sys.argv[2]
+got = tomllib.load(open(sys.argv[1], "rb"))["project"]["description"]
+raise SystemExit(0 if got == want else 1)
+PYADOPT
+}
+for adopt_desc in 'Robot "A"' "It's a robot" 'back\slash' '한글 설명'; do
+    adopt_desc_case "$adopt_desc" \
+        || { log_err "'make adopt DESC=${adopt_desc}' does not survive a TOML round-trip; the identity file is corrupt."; adopt_errors=1; }
+done
+# …and nothing unparsable may be published. Fed a pyproject that is already
+# broken, adopt must refuse and leave the file it was given untouched.
+# Broken where adopt does NOT rewrite, so the damage survives into the output.
+printf '[project]\nname = "x"\ndescription = "d"\nthis line is not toml\n' > "$adopt_probe/src/pyproject.toml"
+adopt_before="$(cat "$adopt_probe/src/pyproject.toml")"
+( cd "$adopt_probe" && make adopt NAME=robot DESC=fine ) >/dev/null 2>&1 || true
+[ "$(cat "$adopt_probe/src/pyproject.toml")" = "$adopt_before" ] \
+    || { log_err "adopt published a pyproject.toml that does not parse; a half-written identity file is worse than none."; adopt_errors=1; }
+[ ! -f "$adopt_probe/src/pyproject.toml.tmp" ] \
+    || { log_err "adopt leaves src/pyproject.toml.tmp behind when it refuses."; adopt_errors=1; }
+rm -rf "$adopt_probe"
 [ "$adopt_errors" -eq 0 ] \
-    && log_ok "Adoption is surgical (scoped pyproject edit, explicit NAME, uv indexes intact)."
+    && log_ok "Adoption is surgical (scoped pyproject edit, explicit NAME, uv indexes intact, description survives quoting)."
 
 # =============================================================================
 # [style-config] One declared style. Neither ruff nor clang-format reads

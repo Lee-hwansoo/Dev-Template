@@ -305,12 +305,21 @@ adopt:
 	@# Scoped to the [project] table: a bare `sed s/^name = /` also renamed the
 	@# [[tool.uv.index]] entries, and [tool.uv.sources] then pointed at indexes
 	@# that no longer existed. Atomic via mv, like setup's .env write.
-	@awk -v n='$(ADOPT_NAME)' -v d='$(ADOPT_DESC)' ' \
+	@# The description is USER text: read it from the environment (never spliced
+	@# into the command) and escape it for a TOML basic string. A DESC carrying a
+	@# quote produced description = "Robot "A"" and adopt still reported success.
+	@awk ' \
+		BEGIN { n = ENVIRON["ADOPT_NAME"]; d = ENVIRON["ADOPT_DESC"]; \
+		        gsub(/\\/, "\\\\", d); gsub(/"/, "\\\"", d) } \
 		/^\[/            { inproj = ($$0 == "[project]") } \
 		inproj && /^name = /                  { print "name = \"" n "\""; next } \
 		inproj && d != "" && /^description = / { print "description = \"" d "\""; next } \
-		{ print }' src/pyproject.toml > src/pyproject.toml.tmp \
-		&& mv src/pyproject.toml.tmp src/pyproject.toml
+		{ print }' src/pyproject.toml > src/pyproject.toml.tmp
+	@# Publish only what parses: a half-written identity file is worse than none.
+	@python3 -c 'import sys,tomllib; tomllib.load(open(sys.argv[1],"rb"))' src/pyproject.toml.tmp \
+		|| { rm -f src/pyproject.toml.tmp; \
+		     echo -e "  $(ERROR) The generated src/pyproject.toml is not valid TOML; nothing was changed." >&2; exit 1; }
+	@mv src/pyproject.toml.tmp src/pyproject.toml
 	@if [ -f .env ]; then \
 		sed 's/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=$(ADOPT_NAME)/' .env > .env.tmp && mv .env.tmp .env; \
 	fi
