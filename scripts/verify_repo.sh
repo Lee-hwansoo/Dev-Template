@@ -52,6 +52,18 @@ probe_dir() {
     printf '%s' "$dir"
 }
 
+# bake_argv <mode> <env> [VAR=value…] — the argv apptainer_bake.sh hands docker,
+# captured from a stub. Several groups read a --build-arg out of it.
+bake_argv() {
+    local mode="$1" env_name="$2" dir; shift 2
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/argv"\nexit 1\n' "$dir" > "$dir/docker"
+    printf '#!/bin/sh\nexit 0\n' > "$dir/apptainer"
+    chmod +x "$dir/docker" "$dir/apptainer"
+    ( PATH="$dir:$probe_min_path" env "$@" bash scripts/apptainer_bake.sh --mode "$mode" --env "$env_name" ) >/dev/null 2>&1 || true
+    cat "$dir/argv" 2>/dev/null; rm -rf "$dir"
+}
+
 log_info "Verifying DevKit repository structure, shell syntax, and contracts..."
 
 # =============================================================================
@@ -1910,15 +1922,13 @@ case "$(sync_flags '')" in
     *--no-default-groups*) log_err "dev uvs excludes the dev dependency-group, so mtest/mlint have no runner."; repro_errors=1 ;;
 esac
 # The flag only helps if the Dockerfile actually sets it on the builder stages.
-for stage_line in 'prod-dev-builder' 'prod-ros-builder'; do
-    awk -v stage="$stage_line" '
-        $0 ~ "AS " stage {inside=1}
-        inside && /^FROM /  && $0 !~ "AS " stage {inside=0}
-        inside && /mksync/  {found=1}
-        inside && /mksync/ && /DEVKIT_BUILD_TYPE=prod/ {ok=1}
-        END {exit (found && !ok) ? 1 : 0}' docker/Dockerfile \
-        || { log_err "docker/Dockerfile: ${stage_line} runs mksync without DEVKIT_BUILD_TYPE=prod."; repro_errors=1; }
-done
+awk '
+    /AS prod-builder$/  {inside=1}
+    inside && /^FROM / && !/AS prod-builder$/ {inside=0}
+    inside && /mksync/  {found=1}
+    inside && /mksync/ && /DEVKIT_BUILD_TYPE=prod/ {ok=1}
+    END {exit (found && !ok) ? 1 : 0}' docker/Dockerfile \
+    || { log_err "docker/Dockerfile: prod-builder runs mksync without DEVKIT_BUILD_TYPE=prod."; repro_errors=1; }
 # A production build resolves nothing: `uvs` passes --locked, so a missing or
 # stale lock must stop the build rather than silently resolve a fresh set.
 [ ! -f src/pyproject.toml ] || [ -f src/uv.lock ] \
@@ -2080,14 +2090,12 @@ fi
 rm -rf "$version_probe"
 # …and the builder stages must put VERSION where that script looks, or every
 # shipped manifest says "unknown".
-for version_stage in 'prod-dev-builder' 'prod-ros-builder'; do
-    awk -v stage="$version_stage" '
-        $0 ~ "AS " stage        {inside=1}
-        inside && /^FROM / && $0 !~ "AS " stage {inside=0}
-        inside && /^COPY VERSION/ {found=1}
-        END {exit found ? 0 : 1}' docker/Dockerfile \
-        || { log_err "docker/Dockerfile: ${version_stage} does not COPY VERSION; its release manifest would say devkit_version=unknown."; version_errors=1; }
-done
+awk '
+    /AS prod-builder$/        {inside=1}
+    inside && /^FROM / && !/AS prod-builder$/ {inside=0}
+    inside && /^COPY VERSION/ {found=1}
+    END {exit found ? 0 : 1}' docker/Dockerfile \
+    || { log_err "docker/Dockerfile: prod-builder does not COPY VERSION; the release manifest would say devkit_version=unknown."; version_errors=1; }
 [ "$version_errors" -eq 0 ] \
     && log_ok "Template revision ${devkit_version} is recorded in VERSION and in the release manifest."
 
@@ -2223,7 +2231,11 @@ fi
 # Pins real failures: bake dropping CUDA_VERSION, bake swallowing a typo'd flag,
 # the CUDA repo helper degrading to a stub.
 sif_errors=0
-grep -Eq '^[^#]*CUDA_VERSION' scripts/apptainer_bake.sh \
+# What a prod bake hands docker, captured from a stub: CUDA_VERSION must ride
+# along (a SIF baked on a GPU host once shipped without CUDA), and the flavour
+# must select the single parameterised chain (prod-runtime + PROD_ENV).
+sif_argv="$(bake_argv prod ros CUDA_VERSION=12.4)"
+grep -qxF 'CUDA_VERSION=12.4' <<< "$sif_argv" \
     || { log_err "apptainer_bake.sh no longer forwards CUDA_VERSION — baked SIFs would silently ship without CUDA."; sif_errors=1; }
 grep -Eq '^[^#]*sources\.list\.d/cuda\.list' scripts/util_apt_helper.sh \
     || { log_err "util_apt_helper.sh setup-cuda-repo no longer configures the NVIDIA repository."; sif_errors=1; }
@@ -2259,22 +2271,21 @@ uv_stage_copies() {   # uv_stage_copies <stage> — 0 when the stage COPYs the m
         inside && /^COPY / && index($0, dir) {found=1}
         END {exit found ? 0 : 1}' docker/Dockerfile
 }
-uv_stage_copies prod-dev-runtime \
-    || { log_err "docker/Dockerfile: prod-dev-runtime does not copy ${uv_python_dir:-the managed interpreter}; the shipped venv would symlink to a missing interpreter."; sif_errors=1; }
-uv_stage_copies prod-ros-runtime \
-    && { log_err "docker/Dockerfile: prod-ros-runtime copies ${uv_python_dir}; the ROS venv uses the system interpreter, so this is 90 MB of dead weight."; sif_errors=1; }
-# Both runtime stages must END as a non-root uid: a root artifact is rejected by
+uv_stage_copies prod-runtime \
+    || { log_err "docker/Dockerfile: prod-runtime does not copy ${uv_python_dir:-the managed interpreter}; the pure venv would symlink to a missing interpreter."; sif_errors=1; }
+# …while the ROS flavour empties it in the builder before that COPY: a ROS venv
+# shares the system interpreter (verified in the image), so shipping the tree
+# was 90 MB nothing referenced.
+awk '/AS prod-builder$/{inside=1} inside && /^FROM / && !/AS prod-builder$/{inside=0}
+     inside && /PROD_ENV" = ros/ && /\/opt\/uv\/python/ && /-delete/ {found=1} END {exit found ? 0 : 1}' docker/Dockerfile \
+    || { log_err "docker/Dockerfile: prod-builder does not empty ${uv_python_dir} for PROD_ENV=ros; the ROS artifact would carry an interpreter its venv never uses."; sif_errors=1; }
+# The runtime stage must END as a non-root uid: a root artifact is rejected by
 # k8s runAsNonRoot, and the stage's last USER wins.
-for uid_stage in 'prod-dev-runtime' 'prod-ros-runtime'; do
-    last_user="$(awk -v stage="$uid_stage" '
-        $0 ~ "AS " stage        {inside=1}
-        inside && /^FROM / && $0 !~ "AS " stage {inside=0}
-        inside && /^USER /      {u=$2}
-        END {print u}' docker/Dockerfile)"
-    case "$last_user" in
-        ""|root|0) log_err "docker/Dockerfile: ${uid_stage} runs as ${last_user:-root} (no USER); k8s runAsNonRoot rejects it."; sif_errors=1 ;;
-    esac
-done
+last_user="$(awk '/AS prod-runtime$/{inside=1} inside && /^FROM / && !/AS prod-runtime$/{inside=0}
+                  inside && /^USER /{u=$2} END {print u}' docker/Dockerfile)"
+case "$last_user" in
+    ""|root|0) log_err "docker/Dockerfile: prod-runtime runs as ${last_user:-root} (no USER); k8s runAsNonRoot rejects it."; sif_errors=1 ;;
+esac
 rc=0; bash scripts/apptainer_bake.sh --bogus-flag >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || { log_err "apptainer_bake.sh must reject unknown flags with exit 2, not silently ignore them."; sif_errors=1; }
 grep -Eq '^[^#]*\$\{SYNC_TARGET_DIR' scripts/setup_sync_deps.sh \
@@ -2298,6 +2309,19 @@ awk '/^FROM .* AS base$/,/^FROM [^ ]* AS build-core$/' docker/Dockerfile | grep 
 # Host/container path confusion: the Makefile exports WORKSPACE_PATH=/workspace
 # to EVERY recipe, host-side ones included, so a script that trusts it resolves
 # /workspace/scripts/... and dies — invisibly to every flag assertion above.
+grep -qxF 'PROD_ENV=ros' <<< "$sif_argv" && grep -qxF 'prod-runtime' <<< "$sif_argv" \
+    || { log_err "a prod bake for ENV=ros does not build '--target prod-runtime --build-arg PROD_ENV=ros'."; sif_errors=1; }
+grep -qxF 'PROD_ENV=dev' <<< "$(bake_argv prod dev)" \
+    || { log_err "a prod bake for ENV=dev does not pass PROD_ENV=dev; the ROS builder base would be used."; sif_errors=1; }
+# …and every ENV the bake accepts needs its builder base, or `FROM
+# builder-base-${PROD_ENV}` fails to resolve inside docker build.
+for sif_env in $(sed -n 's/^sif_require_choice --env "\$ENV_NAME" \(.*\) || exit 2$/\1/p' scripts/apptainer_bake.sh); do
+    grep -qE "^FROM .* AS builder-base-${sif_env}$" docker/Dockerfile \
+        || { log_err "docker/Dockerfile has no 'builder-base-${sif_env}' stage; 'make bake-prod ENV=${sif_env}' cannot resolve its FROM."; sif_errors=1; }
+done
+grep -qE '^FROM builder-base-\$\{PROD_ENV\} AS prod-builder$' docker/Dockerfile \
+    || { log_err "docker/Dockerfile: prod-builder no longer derives its base from PROD_ENV; the flavours would drift into two copies again."; sif_errors=1; }
+# setup-cuda-repo needs the network and root; images.yml apt-key-paths runs it.
 [ "$(WORKSPACE_PATH=/nonexistent-devkit bash -c 'source config/util_paths.sh; printf %s "$WS_ROOT"')" = "$ROOT_DIR" ] \
     || { log_err "config/util_paths.sh trusts WORKSPACE_PATH even when it is not a DevKit tree here — host scripts resolve /workspace/..."; sif_errors=1; }
 grep -qE '^WS_ROOT="\$\{WORKSPACE_PATH' scripts/apptainer_bake.sh scripts/apptainer_run.sh \
@@ -2387,14 +2411,9 @@ grep -q '^    restore-docker-clean)' scripts/util_apt_helper.sh \
 # package still depends on. A bare `purge -y curl … lsb-release` took
 # ros-*-libcurl-vendor and python3-rospkg with it; the ROS runtime once purged
 # 'gnupg2', a name never installed, and the dev runtime purged nothing.
-for purge_stage in prod-dev-runtime prod-ros-runtime; do
-    awk -v stage="$purge_stage" '
-        $0 ~ "AS " stage "$"     {inside=1}
-        inside && /^FROM / && $0 !~ "AS " stage "$" {inside=0}
-        inside && /purge-bootstrap/ {found=1}
-        END {exit found ? 0 : 1}' docker/Dockerfile \
-        || { log_err "docker/Dockerfile: ${purge_stage} does not call 'util_apt_helper.sh purge-bootstrap'; curl and gnupg would ship."; sec_errors=1; }
-done
+awk '/AS prod-runtime$/{inside=1} inside && /^FROM / && !/AS prod-runtime$/{inside=0}
+     inside && /purge-bootstrap/{found=1} END {exit found ? 0 : 1}' docker/Dockerfile \
+    || { log_err "docker/Dockerfile: prod-runtime does not call 'util_apt_helper.sh purge-bootstrap'; curl and gnupg would ship."; sec_errors=1; }
 grep -qE '^[^#]*apt-get purge[^#]*(curl|gnupg|lsb-release)' docker/Dockerfile \
     && { log_err "docker/Dockerfile purges the bootstrap tools by name; purge-bootstrap must decide, or a dependent package goes with them."; sec_errors=1; }
 # The decision itself, against stubs: curl has an installed dependent, the

@@ -93,12 +93,12 @@ dev = [ "ruff>=0.6", "pytest>=8" ]   # 정확한 버전은 파생 프로젝트�
 | 모드 | 사용처 (Dockerfile 스테이지) | 선택 대상 |
 | :--- | :--- | :--- |
 | `all` | `dev`, `ros` (개발 이미지) | `# dev`/`# gui` 포함 전체 (반대 ROS 세대만 제외) |
-| `builder` | `prod-*-builder` | `# dev`, `# gui` 제외 |
-| `runtime` | `prod-*-runtime` | `# runtime` 태그가 붙은 항목만 |
+| `builder` | `builder-base-*` → `prod-builder` | `# dev`, `# gui` 제외 |
+| `runtime` | `prod-runtime` | `# runtime` 태그가 붙은 항목만 |
 
 > [!IMPORTANT]
 > **`ros_distro` 인자를 생략하면 `apt_ros.txt`는 아예 읽지 않습니다.** ROS apt 저장소를 설정하지 않는 비-ROS 스테이지
-> (`dev`, `prod-dev-builder`, `prod-dev-runtime`)가 `ros-*` 패키지를 요구해 빌드가 실패하는 것을 막는 계약이며,
+> (`dev`, 그리고 `PROD_ENV=dev` 의 `prod-builder`·`prod-runtime`)가 `ros-*` 패키지를 요구해 빌드가 실패하는 것을 막는 계약이며,
 > `make verify` [apt-tag-filter]이 이를 자동 검증합니다.
 >
 > 선택 결과는 설치 없이 미리 확인할 수 있습니다:

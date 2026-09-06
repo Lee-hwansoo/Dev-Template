@@ -114,13 +114,12 @@ RUN DEVKIT_BUILD_TYPE=${DEVKIT_BUILD_TYPE:-dev} bash -lc "source ${WORKSPACE_PAT
 WORKDIR ${WORKSPACE_PATH:-/workspace}
 EOF
 else
-    PROD_TARGET="prod-${ENV_NAME}-runtime"
     DOCKER_IMG="${COMPOSE_PROJECT}_${ENV_NAME}_prod:latest"
 
-    log_info "Building production runtime image (target=${PROD_TARGET})..."
+    log_info "Building production runtime image (PROD_ENV=${ENV_NAME})..."
     docker build --platform "linux/${TARGETARCH}" \
         -f "${WS_ROOT}/docker/Dockerfile" \
-        --target "$PROD_TARGET" \
+        --target prod-runtime --build-arg "PROD_ENV=${ENV_NAME}" \
         "${BUILD_ARGS[@]}" \
         -t "$DOCKER_IMG" "${WS_ROOT}"
 fi

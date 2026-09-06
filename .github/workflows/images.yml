@@ -318,7 +318,7 @@ jobs:
         run: make verify
       - name: build the production runtime
         run: |
-          docker build --target prod-dev-runtime -f docker/Dockerfile \
+          docker build --target prod-runtime --build-arg PROD_ENV=dev -f docker/Dockerfile \
             --build-arg BASE_IMAGE=ubuntu:22.04 \
             --build-arg WORKSPACE_PATH=/workspace \
             -t devkit-ci:prod .

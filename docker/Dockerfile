@@ -1,6 +1,6 @@
 # =============================================================================
-# docker/Dockerfile — one multi-stage file for both images (dev and ROS) and
-# both production chains (builder → runtime).
+# docker/Dockerfile — one multi-stage file for both dev images (dev and ROS)
+# and one production chain (builder → runtime) parameterised by PROD_ENV.
 # =============================================================================
 
 # ── Global Build Arguments ───────────────────────────────────────────────────
@@ -34,6 +34,8 @@ ARG IMAGE_TAG=latest
 ARG GIT_COMMIT=unknown
 ARG COMPOSE_PROJECT_NAME=unknown
 ARG SOURCE_DATE_EPOCH=""
+# Which production flavour `prod-builder`/`prod-runtime` build (dev|ros).
+ARG PROD_ENV=dev
 
 # ── Stage: uv-binaries (Dependency Management Engine) ────────────────────────
 FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-binaries
@@ -273,8 +275,21 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     rm -rf /tmp/staging && \
     bash ${WORKSPACE_PATH}/scripts/util_apt_helper.sh restore-docker-clean
 
-# ── Stage: production ROS build base (No desktop/GUI tooling) ────────────────
-FROM build-core AS ros-builder-base
+# ── Stage: production build bases, one per ENV ───────────────────────────────
+# `prod-builder` and `prod-runtime` below are parameterised by PROD_ENV
+# (dev|ros): they used to be two near-identical copies per flavour, and a knob
+# added to one was missed on the other (OPENCV_CUDA reached a single builder).
+# These two stages hold the only lines that differ.
+FROM build-core AS builder-base-dev
+ARG WORKSPACE_PATH
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
+    --mount=type=bind,source=dependencies/,target=${WORKSPACE_PATH}/dependencies/ \
+    bash /tmp/util_apt_helper.sh install-packages builder
+WORKDIR ${WORKSPACE_PATH}
+
+FROM build-core AS builder-base-ros
 ARG WORKSPACE_PATH
 ARG ROS_DISTRO
 ARG STRICT_GPG_CHECK
@@ -292,61 +307,21 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     bash /tmp/util_apt_helper.sh update-rosdep ${ROS_DISTRO}
 WORKDIR ${WORKSPACE_PATH}
 
-# ── Stage: production builders (Build and validate install artifacts) ───────
-FROM build-core AS prod-dev-builder
+# ── Stage: production builder (Build and validate install artifacts) ─────────
+FROM builder-base-${PROD_ENV} AS prod-builder
+ARG PROD_ENV
 ARG WORKSPACE_PATH
 # mksync below runs setup_sync_deps.sh: a release must not float on a branch.
 ARG DEVKIT_REQUIRE_PINNED=0
 # OPENCV_CUDA decides CMake flags inside mksync; without this ARG the builder
 # read its default and the image was compiled for the wrong target.
 ARG OPENCV_CUDA=auto
-ARG ROS_DISTRO
+# What the release manifest records.
 ARG CUDA_VERSION
 ARG CUDNN_VERSION
 ARG BASE_IMAGE
 ARG APT_SNAPSHOT_DATE
-ARG APT_SNAPSHOT_FALLBACK
-ARG IMAGE_TAG=latest
-ARG GIT_COMMIT=unknown
-ARG COMPOSE_PROJECT_NAME=unknown
-ARG DEVKIT_STRIP_SOURCE=""
-ARG DEVKIT_FAIL_ON_SOURCE=""
-ARG SOURCE_DATE_EPOCH=""
-ENV IMAGE_TAG=${IMAGE_TAG} \
-    GIT_COMMIT=${GIT_COMMIT} \
-    COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME} \
-    SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
-    --mount=type=bind,source=dependencies/,target=${WORKSPACE_PATH}/dependencies/ \
-    bash /tmp/util_apt_helper.sh install-packages builder
-COPY src ${WORKSPACE_PATH}/src
-COPY dependencies ${WORKSPACE_PATH}/dependencies
-COPY config ${WORKSPACE_PATH}/config
-COPY scripts ${WORKSPACE_PATH}/scripts
-# VERSION is the template revision util_release_metadata.sh stamps into the
-# release manifest; without it here the shipped artifact says "unknown".
-COPY VERSION ${WORKSPACE_PATH}/VERSION
-WORKDIR ${WORKSPACE_PATH}
-RUN DEVKIT_BUILD_TYPE=prod DEVKIT_REQUIRE_PINNED=${DEVKIT_REQUIRE_PINNED} OPENCV_CUDA=${OPENCV_CUDA} bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync" && \
-    DEVKIT_STRIP_SOURCE=${DEVKIT_STRIP_SOURCE} DEVKIT_FAIL_ON_SOURCE=${DEVKIT_FAIL_ON_SOURCE} \
-    bash ${WORKSPACE_PATH}/scripts/check_deps.sh ${WORKSPACE_PATH}/install && \
-    DEVKIT_BUILD_TYPE=prod bash ${WORKSPACE_PATH}/scripts/util_release_metadata.sh ${WORKSPACE_PATH}/release/devkit-release.json
-
-FROM ros-builder-base AS prod-ros-builder
-ARG WORKSPACE_PATH
-# mksync below runs setup_sync_deps.sh: a release must not float on a branch.
-ARG DEVKIT_REQUIRE_PINNED=0
-# OPENCV_CUDA decides CMake flags inside mksync; without this ARG the builder
-# read its default and the image was compiled for the wrong target.
-ARG OPENCV_CUDA=auto
-ARG ROS_DISTRO
-ARG CUDA_VERSION
-ARG CUDNN_VERSION
-ARG BASE_IMAGE
-ARG APT_SNAPSHOT_DATE
-ARG APT_SNAPSHOT_FALLBACK
+ARG ROS_SNAPSHOT_DATE
 ARG IMAGE_TAG=latest
 ARG GIT_COMMIT=unknown
 ARG COMPOSE_PROJECT_NAME=unknown
@@ -365,10 +340,14 @@ COPY scripts ${WORKSPACE_PATH}/scripts
 # release manifest; without it here the shipped artifact says "unknown".
 COPY VERSION ${WORKSPACE_PATH}/VERSION
 WORKDIR ${WORKSPACE_PATH}
+# A ROS venv shares the SYSTEM interpreter (mkenv forces --share under
+# /opt/ros), so the managed one is emptied — the runtime COPYs the directory
+# either way, and shipping it to a ROS artifact was 90 MB nothing referenced.
 RUN DEVKIT_BUILD_TYPE=prod DEVKIT_REQUIRE_PINNED=${DEVKIT_REQUIRE_PINNED} OPENCV_CUDA=${OPENCV_CUDA} bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync" && \
     DEVKIT_STRIP_SOURCE=${DEVKIT_STRIP_SOURCE} DEVKIT_FAIL_ON_SOURCE=${DEVKIT_FAIL_ON_SOURCE} \
     bash ${WORKSPACE_PATH}/scripts/check_deps.sh ${WORKSPACE_PATH}/install && \
-    DEVKIT_BUILD_TYPE=prod bash ${WORKSPACE_PATH}/scripts/util_release_metadata.sh ${WORKSPACE_PATH}/release/devkit-release.json
+    DEVKIT_BUILD_TYPE=prod bash ${WORKSPACE_PATH}/scripts/util_release_metadata.sh ${WORKSPACE_PATH}/release/devkit-release.json && \
+    if [ "$PROD_ENV" = ros ]; then find /opt/uv/python -mindepth 1 -delete; fi
 
 # ── Stage: production runtime (Minimal user-facing artifacts) ────────────────
 FROM base AS prod-base
@@ -379,7 +358,7 @@ ARG FULL_CUDA
 ARG CONTAINER_USER=user
 ARG USER_UID=1000
 ARG USER_GID=$USER_UID
-# The runtime uid: created here, switched to at the END of each runtime stage
+# The runtime uid: created here, switched to at the END of the runtime stage
 # (the apt layers between need root). The artifact only reads install/ and
 # /etc/devkit, and k8s runAsNonRoot rejects a root image. Apptainer ignores
 # USER — it runs as the invoking user.
@@ -398,36 +377,11 @@ RUN --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_hel
 WORKDIR ${WORKSPACE_PATH}
 ENTRYPOINT ["/entrypoint.sh"]
 
-# Both runtimes drop the tools `base` needed to bootstrap apt (init-apt installs
-# curl, gnupg, lsb-release): a shipped artifact has no key to fetch. The ROS
-# runtime does it after its own repository setup, which still needs them, and
-# purge-bootstrap keeps whatever an installed package still depends on.
-FROM prod-base AS prod-dev-runtime
-ARG WORKSPACE_PATH
-ARG CONTAINER_USER=user
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
-    --mount=type=bind,source=dependencies/,target=${WORKSPACE_PATH}/dependencies/ \
-    bash /tmp/util_apt_helper.sh install-packages runtime && \
-    bash /tmp/util_apt_helper.sh purge-bootstrap && \
-    if command -v sudo >/dev/null 2>&1; then chmod a-s "$(command -v sudo)"; fi
-COPY --from=prod-dev-builder ${WORKSPACE_PATH}/install ${WORKSPACE_PATH}/install
-# The pure venv symlinks into the managed interpreter; the ROS runtime below
-# does not copy it, because a ROS venv shares the SYSTEM interpreter (mkenv
-# forces --share whenever /opt/ros exists) and never resolves under /opt/uv.
-COPY --from=prod-dev-builder /opt/uv/python /opt/uv/python
-COPY --from=prod-dev-builder ${WORKSPACE_PATH}/release/ /etc/devkit/build/
-ENV PATH="${WORKSPACE_PATH}/install/.venv/bin:${WORKSPACE_PATH}/install/bin:$PATH" \
-    VIRTUAL_ENV="${WORKSPACE_PATH}/install/.venv"
-RUN --mount=type=bind,source=scripts,target=${WORKSPACE_PATH}/scripts \
-    --mount=type=bind,source=config,target=${WORKSPACE_PATH}/config \
-    --mount=type=bind,from=uv-binaries,source=/uv,target=/usr/local/bin/uv \
-    /entrypoint.sh bash ${WORKSPACE_PATH}/scripts/check_deps.sh --runtime
-USER ${CONTAINER_USER}
-CMD []
-
-FROM prod-base AS prod-ros-runtime
+# The tools `base` needed to bootstrap apt (init-apt: curl, gnupg, lsb-release)
+# go once the last repository is set up: a shipped artifact has no key to
+# fetch. purge-bootstrap keeps whatever an installed package still depends on.
+FROM prod-base AS prod-runtime
+ARG PROD_ENV
 ARG WORKSPACE_PATH
 ARG CONTAINER_USER=user
 ARG ROS_DISTRO
@@ -436,12 +390,17 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
     --mount=type=bind,source=dependencies/,target=${WORKSPACE_PATH}/dependencies/ \
-    bash /tmp/util_apt_helper.sh setup-ros-repo ${ROS_DISTRO} && \
-    bash /tmp/util_apt_helper.sh install-packages runtime ${ROS_DISTRO} && \
+    if [ "$PROD_ENV" = ros ]; then \
+        bash /tmp/util_apt_helper.sh setup-ros-repo ${ROS_DISTRO} && \
+        bash /tmp/util_apt_helper.sh install-packages runtime ${ROS_DISTRO}; \
+    else \
+        bash /tmp/util_apt_helper.sh install-packages runtime; \
+    fi && \
     bash /tmp/util_apt_helper.sh purge-bootstrap && \
     if command -v sudo >/dev/null 2>&1; then chmod a-s "$(command -v sudo)"; fi
-COPY --from=prod-ros-builder ${WORKSPACE_PATH}/install ${WORKSPACE_PATH}/install
-COPY --from=prod-ros-builder ${WORKSPACE_PATH}/release/ /etc/devkit/build/
+COPY --from=prod-builder ${WORKSPACE_PATH}/install ${WORKSPACE_PATH}/install
+COPY --from=prod-builder /opt/uv/python /opt/uv/python
+COPY --from=prod-builder ${WORKSPACE_PATH}/release/ /etc/devkit/build/
 ENV PATH="${WORKSPACE_PATH}/install/.venv/bin:${WORKSPACE_PATH}/install/bin:$PATH" \
     VIRTUAL_ENV="${WORKSPACE_PATH}/install/.venv"
 RUN --mount=type=bind,source=scripts,target=${WORKSPACE_PATH}/scripts \
