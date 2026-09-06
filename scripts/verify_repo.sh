@@ -845,8 +845,11 @@ submit_launcher_for() {   # submit_launcher_for [job-id]
     || { log_err "outside an allocation slurm_run.sh still calls srun, which fails on a plain login shell."; submit_errors=1; }
 
 # The boundary the README draws must stay drawn: no --mpi/PMI is wired anywhere.
-grep -qiE '(다중 노드|multi-node).*(미지원|unsupported)' README.md \
-    || { log_err "README does not state that multi-node MPI is unsupported; srun spawns the tasks but no MPI transport is wired."; submit_errors=1; }
+# The property, not a phrasing: the README must say MPI is unsupported. srun
+# spreads the tasks across nodes — that part is verified — but nothing wires a
+# transport between them.
+grep -qiE 'MPI.*(미지원|unsupported)' README.md \
+    || { log_err "README does not state that MPI is unsupported; srun spawns the tasks but no transport is wired between them."; submit_errors=1; }
 rm -rf "$submit_probe"
 [ "$submit_errors" -eq 0 ] \
     && log_ok "Every SLURM knob reaches sbatch as one argv, and a missing sbatch stops the job instead of running it locally."

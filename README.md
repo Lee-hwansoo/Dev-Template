@@ -253,9 +253,11 @@ MAJOR 상승은 "파생 프로젝트가 무언가 고쳐야 한다"는 뜻입니
 > 컨테이너 안 `nvidia-smi` 의 GPU 인식, `glxinfo` 가 보고한 `D3D12 (NVIDIA GeForce RTX 4060 Ti)`(llvmpipe 폴백 아님),
 > `xdpyinfo` X11 연결, README 퀵스타트의 Python·C++ 예제와 pytest, 그리고 prod SIF 굽기·실행·작업 기록까지 실제로 통과했습니다.
 >
-> SLURM 은 컨테이너에 **단일 노드 클러스터**(slurmctld + slurmd + munge)를 세워 확인했습니다 — `make run-sif SIF_MODE=slurm`
+> SLURM 은 컨테이너에 **클러스터**(slurmctld + slurmd + munge)를 세워 확인했습니다 — `make run-sif SIF_MODE=slurm`
 > 의 `sbatch` 플래그 수용, `%x_%j` 로그 경로, 할당 안에서의 `srun` 사용, 실제 부여된 자원(`partition`/`cpus_per_task`/`mem`)
-> 기록, 그리고 작업 종료 코드 **0 과 7 의 전파**까지 통과했습니다. 이 노드에서는 중첩 user namespace 를 쓸 수 없어
+> 기록, 그리고 작업 종료 코드 **0 과 7 의 전파**까지 통과했습니다. 노드를 둘로 늘린 클러스터에서는
+> `--nodes=2 --ntasks=2` 작업이 각 노드에서 한 태스크씩 실행되고 기록에 `nodelist=c[1-2]` 가 남았습니다.
+> 이 노드에서는 중첩 user namespace 를 쓸 수 없어
 > **컨테이너 런타임만 스텁**이며, 따라서 "SIF 가 계산 노드에서 실행된다"는 별개로 남습니다.
 >
 > arm64 는 QEMU(binfmt) 로 `base` 스테이지를 빌드해 실제로 실행했습니다 — `uname -m` = `aarch64`,
@@ -278,13 +280,13 @@ MAJOR 상승은 "파생 프로젝트가 무언가 고쳐야 한다"는 뜻입니
 | GUI · GL 가속 (X11, WSLg/D3D12) | ✅ 실행 검증 — **WSL2 경로만** | 참조 호스트 |
 | 프로덕션 런타임 이미지 (non-root, venv) | ✅ 실행 검증 | CI(실행됨) `images.yml` prod-artifact · 참조 호스트 |
 | SIF 변환 · 실행 · 작업 기록 | ✅ 실행 검증 | CI(실행됨) `images.yml` sif-artifact · 참조 호스트 |
-| SLURM 제출 · 실행 · 종료 상태 기록 | ✅ 실행 검증 — 단일 노드 컨테이너 클러스터. **컨테이너 런타임은 스텁** | 참조 호스트 |
+| SLURM 제출 · 실행 · 종료 상태 기록 | ✅ 실행 검증 — 컨테이너 클러스터. **컨테이너 런타임만 스텁** | 참조 호스트 |
+| **다중 노드 SLURM** (`--nodes=2`, 노드별 태스크 배치) | ✅ 실행 검증 — 2노드 컨테이너 클러스터 | 참조 호스트 |
 | arm64 이미지: 빌드 · 실행 · 계정 생성 | ✅ 실행 검증 — **QEMU 에뮬레이션** | CI(실행됨) `images.yml` arm64-image · 참조 호스트 |
-| 네이티브 Linux 호스트 감지 (`/dev/dri`, `/dev/nvidia*`) | ⚠️ 계약만 — WSL2 에서는 `/proc/version` 을 바꿔 흉내낼 수 없음 | `verify.yml` contracts |
+| 네이티브 Linux 호스트 감지 (`IS_WSL=false`, GPU 플래그, DXG 마운트 중립화) | ✅ 실행 검증 | CI(실행됨) `verify.yml` contracts |
 | macOS 호스트 (bash 3.2 · BSD sed/awk) | ✅ 실행 검증 | CI(실행됨) `verify.yml` macos-host |
-| 다중 노드 SLURM (실제 클러스터) | ❌ 미검증 — 테스트 노드가 하나 | — |
 | macOS GPU (Metal/MPS) | ❌ **미지원** — CPU 폴백으로만 동작 | — |
-| 다중 노드 / MPI | ❌ **미지원** — `--mpi`/PMI 배선 없음 | — |
+| MPI 통신 | ❌ **미지원** — `srun` 이 노드에 태스크를 띄우는 것까지는 동작하나 `--mpi`/PMI 배선이 없어 태스크 간 통신은 애플리케이션 몫 | — |
 
 > ROS 배포판은 Ubuntu 릴리스와 Python 인터프리터를 함께 결정합니다
 > (20.04/noetic·foxy → 3.8, 22.04/humble·iron → 3.10, 24.04/jazzy·kilted·rolling → 3.12).
