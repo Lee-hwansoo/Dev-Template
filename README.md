@@ -5,7 +5,7 @@
 <h1 align="center">🚀 DevKit: 고성능 로보틱스 & C++/Python 통합 개발 환경</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"/>
+  <img src="https://img.shields.io/badge/License-MIT--0-blue.svg" alt="License"/>
   <img src="https://img.shields.io/badge/Platform-Native%20Linux%20%7C%20Windows%20WSL2%20%7C%20macOS-orange.svg" alt="Platform"/>
   <img src="https://img.shields.io/badge/ROS-ROS%202%20Humble%20%7C%20ROS%201%20Noetic%20(legacy)-brightgreen.svg" alt="ROS Support"/>
   <img src="https://img.shields.io/badge/HPC-Apptainer%20%7C%20SLURM-purple.svg" alt="HPC Ready"/>
