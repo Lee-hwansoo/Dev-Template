@@ -2184,6 +2184,15 @@ case "${uv_python_dir:-}" in
 esac
 grep -qE '^[^#]*/root/\.local/share/uv' docker/Dockerfile \
     && { log_err "a Dockerfile stage still references /root/.local/share/uv — that path is unreachable for a non-root uid."; sif_errors=1; }
+# Ownership is taken in the layer that INSTALLS the interpreter. A chown -R in
+# a later stage rewrites the whole tree into a second ~90 MB layer (measured
+# with docker history). Continuations joined, so one RUN is one line.
+# Comment LINES dropped rather than '^[^#]*': the dev-core RUN carries a '#'
+# inside a printf, which hid exactly the chown this looks for.
+uv_chown_stray="$(sed -e :a -e '/\\$/N; s/\\\n//; ta' docker/Dockerfile | grep -v '^[[:space:]]*#' \
+    | grep -nE 'chown[^&]*/opt/uv' | grep -v 'uv python install' || true)"
+[ -z "$uv_chown_stray" ] \
+    || { log_err "docker/Dockerfile chowns /opt/uv outside the layer that installs it, duplicating the interpreter layer: $(cut -d: -f1 <<< "$uv_chown_stray" | tr '\n' ' ')"; sif_errors=1; }
 # …and the runtime stages must actually copy it from there, or the venv symlink
 # in the shipped image points at nothing.
 for uv_stage in 'prod-dev-runtime' 'prod-ros-runtime'; do

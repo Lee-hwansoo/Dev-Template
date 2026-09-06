@@ -130,12 +130,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # UV_PYTHON_INSTALL_DIR, not uv's default: the default is the calling user's XDG
 # dir, so a root build hid the interpreter in /root (0700) — the container user
 # re-resolved one on every mksync, and a prod venv symlinked where Apptainer
-# (running as the invoking user) could not follow. The dev stages take
-# ownership below so a runtime `uv python install` still works.
+# (running as the invoking user) could not follow. Ownership goes to the
+# container user IN THIS LAYER: a later chown -R rewrote the whole 90 MB tree
+# into a second layer. The account exists since `base`.
+ARG CONTAINER_USER=user
 COPY --from=uv-binaries /uv /uvx /usr/local/bin/
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     uv python install ${UV_PYTHON} && \
+    chown -R "${CONTAINER_USER}:$(id -g "${CONTAINER_USER}")" /opt/uv && \
     chmod -R a+rX /opt/uv
 
 ENV PATH="/usr/lib/ccache:${WORKSPACE_PATH}/install/.venv/bin:$PATH" \
@@ -218,12 +221,12 @@ ENV BASH_ENV=/etc/devkit/shell-env.sh
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY config/  ${WORKSPACE_PATH}/config/
 COPY scripts/ ${WORKSPACE_PATH}/scripts/
+# The terminator layout is not copied into a HOME: `make term` passes it with
+# -g from the bind-mounted config/, so an edit there needs no rebuild.
 RUN chmod +x /entrypoint.sh ${WORKSPACE_PATH}/scripts/*.sh ${WORKSPACE_PATH}/config/*.sh && \
     printf '\n# DevKit: single environment definition (see config/init_bash.sh)\n[ -r /etc/devkit/shell-env.sh ] && . /etc/devkit/shell-env.sh\n' \
         | tee -a /root/.bashrc >> /home/${CONTAINER_USER}/.bashrc && \
-# The terminator layout is not copied into a HOME: `make term` passes it with
-# -g from the bind-mounted config/, so an edit there needs no rebuild.
-    chown -R ${CONTAINER_USER}:$(id -g ${CONTAINER_USER}) /home/${CONTAINER_USER}  /opt/uv
+    chown -R ${CONTAINER_USER}:$(id -g ${CONTAINER_USER}) /home/${CONTAINER_USER}
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["bash"]
 
