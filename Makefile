@@ -148,16 +148,6 @@ define GUARD_HOST_ONLY
 	fi
 endef
 
-# CHECK_GPU_RUNTIME: an NVIDIA GPU with no docker runtime fails deep inside
-# docker with "could not select device driver" — say so up front.
-define CHECK_GPU_RUNTIME
-	@if [ "$(HAS_NVIDIA)" = "true" ] && [ "$(HAS_TOOLKIT)" != "true" ]; then \
-		echo -e "  $(WARN) NVIDIA GPU detected, but Docker has no NVIDIA runtime configured."; \
-		echo -e "  $(INFO) Fix: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"; \
-		echo -e "  $(INFO) Until then DevKit falls back to the iGPU/CPU profile."; \
-	fi
-endef
-
 # RESOLVE_SVC_MODE: shell snippet resolving GPU_MODE=auto against detected hardware.
 # NVIDIA is only chosen when the container toolkit is actually usable.
 define RESOLVE_SVC_MODE
@@ -363,11 +353,12 @@ check:
 	@MISSING=$$(awk -F= 'FNR==NR { if ($$0 ~ /^[^#][^=]*=/) want[$$1]=1; next } $$0 ~ /^[^#][^=]*=/ { delete want[$$1] } END { for (k in want) print "    - " k }' .env.example .env); \
 	if [ -n "$$MISSING" ]; then \
 		echo -e "  $(WARN) .env is missing keys present in .env.example:"; echo "$$MISSING"; \
+	@# HAS_NVIDIA reaches preflight through make's export: the "GPU but no
+	@# NVIDIA runtime" notice lives there, next to the GPU_MODE=nvidia refusal.
 		echo -e "  $(INFO) They fall back to built-in defaults; copy them over if you need to override."; \
 	fi
 	@bash scripts/check_preflight.sh
 	@if [ "$(IS_WSL)" = "true" ]; then bash scripts/check_wsl.sh; fi
-	$(call CHECK_GPU_RUNTIME)
 
 ## @target xauth : Refresh X11 GUI authentication
 xauth:

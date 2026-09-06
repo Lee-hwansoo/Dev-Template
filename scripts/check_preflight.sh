@@ -54,8 +54,9 @@ if ! command -v docker >/dev/null 2>&1; then
     log_info  "Install Docker Engine (native Linux) or Docker Desktop with WSL2 integration."
     errors=$((errors + 1))
 else
-    # 2. Docker daemon reachability
-    if ! docker info >/dev/null 2>&1; then
+    # 2. Docker daemon reachability. The output is kept: the NVIDIA runtime
+    # check below reads it too, and `docker info` costs ~300 ms a call.
+    if ! docker_info="$(docker info 2>/dev/null)"; then
         log_error "Docker daemon is not reachable."
         log_info  "Native Linux: 'sudo systemctl start docker' and add your user to the 'docker' group ('sudo usermod -aG docker \$USER', then re-login)."
         log_info  "WSL2: start Docker Desktop and enable integration for this distro."
@@ -85,13 +86,20 @@ else
     fi
 fi
 
-# An explicit NVIDIA request needs the container runtime, not just the driver:
-# without it docker fails deep in the build with "could not select device driver".
-if [ "${GPU_MODE:-auto}" = nvidia ] && command -v docker >/dev/null 2>&1; then
-    if ! docker info 2>/dev/null | grep -qi nvidia; then
+# The NVIDIA runtime, in ONE place. An explicit GPU_MODE=nvidia without it fails
+# deep in docker with "could not select device driver", so refuse here; a GPU
+# the detector saw (HAS_NVIDIA, exported by make) with auto merely warns, since
+# auto falls back to the iGPU/CPU profile.
+if command -v docker >/dev/null 2>&1 && ! grep -qi nvidia <<< "${docker_info:-}"; then
+    if [ "${GPU_MODE:-auto}" = nvidia ]; then
         log_error "GPU_MODE=nvidia, but Docker has no NVIDIA runtime (nvidia-container-toolkit)."
         log_info  "Fix: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
         errors=$((errors + 1))
+    elif [ "${HAS_NVIDIA:-false}" = true ]; then
+        log_warn "NVIDIA GPU detected, but Docker has no NVIDIA runtime configured."
+        log_info "Fix: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
+        log_info "Until then DevKit falls back to the iGPU/CPU profile."
+        warnings=$((warnings + 1))
     fi
 fi
 

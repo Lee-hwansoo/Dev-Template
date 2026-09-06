@@ -995,6 +995,29 @@ grep -qE '^[^#]*vcstool' scripts/check_preflight.sh \
     && log_ok "Every blocking host prerequisite is both enforced by preflight and documented ($(wc -w <<< "$hostdep_tools") tools)."
 
 # =============================================================================
+# The NVIDIA runtime notice, ONE place: an explicit GPU_MODE=nvidia without the
+# runtime must block, a detected GPU under auto must only warn (auto falls back
+# to iGPU/CPU). A stub docker with no nvidia runtime answers every probe.
+hostdep_gpu="$(probe_dir)"
+printf '#!/bin/sh\ncase "$1 $2" in "info ") echo "Runtimes: io.containerd.runc.v2 runc" ;; "compose version") echo 2.30.0 ;; "buildx version") echo v0.20.0 ;; esac\nexit 0\n' \
+    > "$hostdep_gpu/docker"; chmod +x "$hostdep_gpu/docker"
+hostdep_gpu_run() {   # hostdep_gpu_run <env…> → "<rc> <output>"
+    local rc=0 out
+    out="$( PATH="$hostdep_gpu:$probe_min_path" env "$@" bash scripts/check_preflight.sh 2>&1 )" || rc=$?
+    printf '%s %s' "$rc" "$out"
+}
+hostdep_gpu_out="$(hostdep_gpu_run GPU_MODE=nvidia HAS_NVIDIA=true)"
+{ [ "${hostdep_gpu_out%% *}" -ne 0 ] && grep -q 'nvidia-ctk' <<< "$hostdep_gpu_out"; } \
+    || { log_err "check_preflight.sh lets GPU_MODE=nvidia through without an NVIDIA runtime (rc ${hostdep_gpu_out%% *}); docker fails later with 'could not select device driver'."; hostdep_errors=1; }
+hostdep_gpu_out="$(hostdep_gpu_run GPU_MODE=auto HAS_NVIDIA=true)"
+{ [ "${hostdep_gpu_out%% *}" -eq 0 ] && grep -q 'nvidia-ctk' <<< "$hostdep_gpu_out"; } \
+    || { log_err "check_preflight.sh does not warn (rc ${hostdep_gpu_out%% *}) when the detector saw a GPU but docker has no NVIDIA runtime; the CPU fallback would be silent."; hostdep_errors=1; }
+hostdep_gpu_out="$(hostdep_gpu_run GPU_MODE=auto HAS_NVIDIA=false)"
+{ [ "${hostdep_gpu_out%% *}" -eq 0 ] && ! grep -q 'nvidia-ctk' <<< "$hostdep_gpu_out"; } \
+    || { log_err "check_preflight.sh mentions the NVIDIA runtime on a host with no NVIDIA GPU."; hostdep_errors=1; }
+rm -rf "$hostdep_gpu"
+grep -q 'CHECK_GPU_RUNTIME' Makefile \
+    && { log_err "the Makefile carries its own NVIDIA-runtime notice again; check_preflight.sh owns it."; hostdep_errors=1; }
 # [macos-fallback] macOS has no CUDA and no DRI passthrough — Docker Desktop
 #      runs a Linux VM. Every macOS host must resolve to cpu even when the
 #      machine has a GPU and nvidia-smi happens to be on PATH, or compose picks
