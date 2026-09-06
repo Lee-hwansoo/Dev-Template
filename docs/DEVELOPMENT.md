@@ -295,6 +295,12 @@ make verify && make build && make test
 `workflow_dispatch` 도 막히므로 무거운 잡을 손으로 돌리려면 먼저 켭니다. `make verify` 의 [host-prereqs] 가 이 스위치를
 스텁 `gh` 위에서 실행으로 검증합니다.
 
+세 워크플로가 공유하는 것: 토큰은 `permissions: contents: read` 로 체크아웃만 읽고, 이미지 잡은 먼저
+`.github/actions/gate`(계약 스위트, 필요하면 러너 디스크 정리)를 거칩니다. Dockerfile 을 **직접** 빌드하는 잡
+(`image-stages` · `arm64-image` · `prod-artifact`)은 BuildKit 레이어를 Actions 캐시(`type=gha`, 타겟별 scope)에
+남겨 다음 push 에서 바뀌지 않은 레이어를 다시 빌드하지 않습니다. `make build`·`make bake-prod` 를 거치는 잡
+(`runtime-smoke` · `sif-artifact` · `project.yml`)은 개발자가 실제로 밟는 경로 자체가 검증 대상이라 캐시를 두지 않습니다.
+
 ### `verify.yml` — 빠른 티어 (모든 push · PR, 이미지 빌드 없음)
 
 | 잡 | 러너 | 무엇을 증명하나 |

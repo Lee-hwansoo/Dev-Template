@@ -162,8 +162,8 @@ done < <(find . \( -name "*.sh" -o -name "*.bash" \) -not -path "*/.*" -print0)
 # =============================================================================
 # The GitHub expression syntax ${{ … }} is not shell, so it is substituted out.
 wf_probe="$(probe_dir)"
-for wf in .github/workflows/*.yml; do
-    awk -v out="$wf_probe" -v base="$(basename "$wf" .yml)" '
+for wf in .github/workflows/*.yml .github/actions/*/action.yml; do
+    awk -v out="$wf_probe" -v base="$(basename "$(dirname "$wf")")-$(basename "$wf" .yml)" '
         function esc(s) { gsub(/\$\{\{[^}]*\}\}/, "X", s); return s }
         /^[[:space:]]*(- )?run: \|/ { match($0,/[^ ]/); ind=RSTART; n++
             f=sprintf("%s/%s.%02d.sh", out, base, n); inblk=1; next }
@@ -184,6 +184,20 @@ for wf_block in "$wf_probe"/*.sh; do
 done
 rm -rf "$wf_probe"
 [ "$wf_errors" -eq 0 ] && log_ok "Every workflow 'run:' block is valid shell (${wf_blocks} blocks)."
+# Every workflow grants the token nothing beyond reading the checkout, and every
+# job that builds an image passes the contracts gate first (the reclaim step
+# rides inside it, so no job may spell either out by hand).
+wf_bad=()
+for wf in .github/workflows/*.yml; do
+    grep -qE '^permissions:' "$wf" && grep -qE '^  contents: read$' "$wf" || wf_bad+=("${wf##*/}: no top-level 'permissions: contents: read'")
+    grep -qE 'actions/checkout@v[0-4]([^0-9]|$)' "$wf" && wf_bad+=("${wf##*/}: actions/checkout older than v5")
+    grep -qE '^[[:space:]]+run: (sudo )?rm -rf /usr/share/dotnet|^[[:space:]]+run: make verify$' "$wf" && [ "${wf##*/}" != verify.yml ] \
+        && wf_bad+=("${wf##*/}: hand-written gate step; use ./.github/actions/gate")
+done
+[ "$(grep -c 'uses: ./.github/actions/gate' .github/workflows/images.yml .github/workflows/project.yml | awk -F: '{s+=$2} END{print s}')" -ge 6 ] \
+    || wf_bad+=("fewer image jobs use the gate action than exist (images.yml 5 + project.yml 1)")
+[ ${#wf_bad[@]} -eq 0 ] && log_ok "Workflows: read-only token, checkout@v5+, image jobs gated by ./.github/actions/gate." \
+    || { for b in "${wf_bad[@]}"; do log_err "$b"; done; }
 
 # =============================================================================
 # [phony-targets] Makefile dry-run: every .PHONY target must be resolvable

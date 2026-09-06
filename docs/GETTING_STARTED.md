@@ -13,7 +13,7 @@ DevKit 을 복제해 **내 프로젝트**로 만드는 순서입니다. 키트�
 | `src/` — 코드, `pyproject.toml`, `uv.lock` | `Makefile`, `docker/`, `docker-compose*.yml` |
 | `dependencies/` — `apt*.txt`, `dependencies.repos`, `overlay/` | `config/`, `scripts/` |
 | `.env`(로컬) · `.env.example`(팀 공유 기본값) | `scripts/verify_repo.sh` 의 계약 |
-| `.github/workflows/project.yml` | `.github/workflows/verify.yml`, `images.yml` |
+| `.github/workflows/project.yml` | `.github/workflows/verify.yml`, `images.yml`, `.github/actions/` |
 | `README.md`, `LICENSE` | `docs/` (지우거나 두거나 — 키트 사용법) |
 | | `VERSION` — 이 프로젝트가 출발한 템플릿 리비전 |
 

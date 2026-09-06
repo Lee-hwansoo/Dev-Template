@@ -6,6 +6,10 @@
 # =============================================================================
 name: verify
 
+# The token can read the checkout and nothing else.
+permissions:
+  contents: read
+
 on:
   push:
     branches: ['**']
@@ -23,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # The contract suite. Needs neither docker nor .env.
       - run: make verify
       # The docker-build shell has no terminal and no BASH_ENV, and the prod
@@ -75,7 +79,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: make verify
       # Detection must survive a host with no /sys, no /proc and no docker.
       - name: host detection resolves on macOS

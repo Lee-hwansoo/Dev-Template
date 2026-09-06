@@ -6,6 +6,10 @@
 # =============================================================================
 name: images
 
+# The token can read the checkout and nothing else.
+permissions:
+  contents: read
+
 # The apt manifests are inputs too: an entry added there is installed into the
 # ROS image and the prod chain, which project.yml (dev image only) never builds.
 on:
@@ -58,7 +62,7 @@ jobs:
             package: ros-humble-ros-base
             snapshot: '2025-05-16'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: setup-ros-repo
         run: |
           docker run --rm -v "$PWD:/w" -w /w -e DEBIAN_FRONTEND=noninteractive \
@@ -95,7 +99,7 @@ jobs:
       matrix:
         image: ['ubuntu:20.04', 'ubuntu:22.04', 'ubuntu:24.04']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: every Dockerfile apt package has a candidate on this base
         run: |
           # Package words of the multi-line `apt-get install` in the stages that
@@ -120,20 +124,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      # Run inexpensive repository checks before building images.
-      - name: repository contracts
-        run: make verify
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/gate
+      # BuildKit layers are cached in the Actions cache (type=gha), one scope
+      # per target: an unchanged layer is not rebuilt on the next push.
+      - uses: docker/setup-buildx-action@v3
       - name: build the cheap stages
-        run: |
-          for target in base build-core; do
-            docker build --target "$target" -f docker/Dockerfile \
-              --build-arg BASE_IMAGE=ubuntu:22.04 \
-              --build-arg ROS_DISTRO=humble \
-              --build-arg APT_SNAPSHOT_DATE=latest \
-              --build-arg STRICT_GPG_CHECK=true \
-              -t "devkit-ci:${target}" .
-          done
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: build-core
+          build-args: |
+            BASE_IMAGE=ubuntu:22.04
+            ROS_DISTRO=humble
+            APT_SNAPSHOT_DATE=latest
+            STRICT_GPG_CHECK=true
+          tags: devkit-ci:build-core
+          load: true
+          cache-from: type=gha,scope=build-core
+          cache-to: type=gha,mode=max,scope=build-core
       - name: the built image must not carry dead plumbing
         run: |
           docker run --rm --entrypoint bash devkit-ci:build-core -c '
@@ -178,15 +188,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - name: reclaim runner disk
-        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc 2>/dev/null || true
-      # Gate: the contract suite is ~15 s and needs no docker. A tree that fails
-      # it cannot teach us anything about an image, and the steps below cost
-      # minutes — the push before this gate existed burned six of them on a tree
-      # whose own suite was red in nine seconds.
-      - name: repository contracts
-        run: make verify
+      - uses: actions/checkout@v5
+      # No layer cache here on purpose: this job exercises `make build`, the
+      # path a developer runs, and teaching compose about the Actions cache
+      # would test something else.
+      - uses: ./.github/actions/gate
+        with:
+          reclaim-disk: 'true'
       - name: setup (.env + completion + xauth)
         run: make setup
       - name: build and start (GPU_MODE=auto resolves to cpu here)
@@ -221,18 +229,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - name: repository contracts
-        run: make verify
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/gate
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
+      - name: build the arm64 base stage
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: base
+          platforms: linux/arm64
+          build-args: |
+            BASE_IMAGE=ubuntu:22.04
+            ROS_DISTRO=humble
+          tags: devkit-ci:arm64
+          load: true
+          cache-from: type=gha,scope=arm64-base
+          cache-to: type=gha,mode=max,scope=arm64-base
       # A Mac developer bakes for an x86 cluster and vice versa. The arch that
       # names the artifact must be the arch the image actually is.
       - name: the arm64 image must be arm64, and sif_arch must agree
         run: |
-          docker buildx build --platform linux/arm64 --target base \
-            -f docker/Dockerfile --build-arg BASE_IMAGE=ubuntu:22.04 \
-            --build-arg ROS_DISTRO=humble --load -t devkit-ci:arm64 .
           got=$(docker image inspect --format '{{.Architecture}}' devkit-ci:arm64)
           [ "$got" = arm64 ] || { echo "built image reports '$got', not arm64"; exit 1; }
           named=$(TARGETARCH=arm64 bash -c '
@@ -249,11 +267,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - name: reclaim runner disk
-        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc 2>/dev/null || true
-      - name: repository contracts
-        run: make verify
+      - uses: actions/checkout@v5
+      # No layer cache: `make bake-prod` is the path under test.
+      - uses: ./.github/actions/gate
+        with:
+          reclaim-disk: 'true'
       - name: install apptainer
         run: |
           version=1.5.3
@@ -317,21 +335,26 @@ jobs:
       matrix:
         flavour: [dev, ros]
     steps:
-      - uses: actions/checkout@v4
-      - name: reclaim runner disk
-        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc 2>/dev/null || true
-      # Gate: the contract suite is ~15 s and needs no docker. A tree that fails
-      # it cannot teach us anything about an image, and the steps below cost
-      # minutes — the push before this gate existed burned six of them on a tree
-      # whose own suite was red in nine seconds.
-      - name: repository contracts
-        run: make verify
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/gate
+        with:
+          reclaim-disk: 'true'
+      - uses: docker/setup-buildx-action@v3
       - name: build the production runtime
-        run: |
-          docker build --target prod-runtime --build-arg PROD_ENV=${{ matrix.flavour }} -f docker/Dockerfile \
-            --build-arg BASE_IMAGE=ubuntu:22.04 --build-arg ROS_DISTRO=humble \
-            --build-arg WORKSPACE_PATH=/workspace \
-            -t devkit-ci:prod .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: prod-runtime
+          build-args: |
+            PROD_ENV=${{ matrix.flavour }}
+            BASE_IMAGE=ubuntu:22.04
+            ROS_DISTRO=humble
+            WORKSPACE_PATH=/workspace
+          tags: devkit-ci:prod
+          load: true
+          cache-from: type=gha,scope=prod-${{ matrix.flavour }}
+          cache-to: type=gha,mode=max,scope=prod-${{ matrix.flavour }}
       # The failure was silent: with the interpreter under /root, PATH fell
       # through to /usr/bin/python3 and the venv vanished from sys.path. An
       # arbitrary uid (Apptainer, OpenShift) is what exposes it.

@@ -6,6 +6,10 @@
 # =============================================================================
 name: project
 
+# The token can read the checkout and nothing else.
+permissions:
+  contents: read
+
 on:
   push:
     paths:
@@ -31,15 +35,10 @@ jobs:
     env:
       ENV: dev
     steps:
-      - uses: actions/checkout@v4
-      - name: reclaim runner disk
-        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc 2>/dev/null || true
-      # Gate: the contract suite is ~15 s and needs no docker. A tree that fails
-      # it cannot teach us anything about an image, and the steps below cost
-      # minutes — the push before this gate existed burned six of them on a tree
-      # whose own suite was red in nine seconds.
-      - name: contracts first (a red tree teaches an image build nothing)
-        run: make verify
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/gate
+        with:
+          reclaim-disk: 'true'
       # `make setup` writes .env from .env.example; every target below reads it.
       - run: make setup
       - name: build and start
