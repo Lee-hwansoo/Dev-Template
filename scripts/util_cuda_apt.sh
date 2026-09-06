@@ -1,13 +1,13 @@
 #!/bin/bash
 # =============================================================================
 # scripts/util_cuda_apt.sh — the CUDA/cuDNN apt profiles for the development and
-# production images. A no-op unless HAS_NVIDIA=true and CUDA_VERSION is set.
+# production images. CUDA_VERSION alone decides: it describes the TARGET, so a
+# GPU-less builder still produces a CUDA image. A no-op when it is unset.
 # =============================================================================
 
 set -euo pipefail
 
 PROFILE="${1:-}"
-HAS_NVIDIA="${HAS_NVIDIA:-false}"
 CUDA_VERSION="${CUDA_VERSION:-}"
 CUDNN_VERSION="${CUDNN_VERSION:-}"
 FULL_CUDA="${FULL_CUDA:-false}"
@@ -30,7 +30,7 @@ usage() {
     cat <<'EOF'
 Usage: util_cuda_apt.sh dev|runtime
 
-Installs CUDA/cuDNN apt packages when HAS_NVIDIA=true and CUDA_VERSION is set.
+Installs CUDA/cuDNN apt packages when CUDA_VERSION is set.
 CUDNN_VERSION accepts a major version only, such as 8 or 9.
 FULL_CUDA accepts 1, true, yes, or on.
 Set DEVKIT_DRY_RUN=1 to print the selected package list without installing.
@@ -43,17 +43,12 @@ case "$PROFILE" in
     *) usage >&2; exit 2 ;;
 esac
 
-if ! is_bool_value "$HAS_NVIDIA"; then
-    echo "[ERROR] HAS_NVIDIA must be a boolean value (1/0, true/false, yes/no, on/off): $HAS_NVIDIA" >&2
-    exit 2
-fi
-
 if ! is_bool_value "$FULL_CUDA"; then
     echo "[ERROR] FULL_CUDA must be a boolean value (1/0, true/false, yes/no, on/off): $FULL_CUDA" >&2
     exit 2
 fi
 
-is_truthy "$HAS_NVIDIA" || exit 0
+# CUDA_VERSION describes the target; a GPU is not required on the build host.
 [ -n "$CUDA_VERSION" ] || exit 0
 
 IFS=. read -r CUDA_MAJOR CUDA_MINOR _ <<< "$CUDA_VERSION"

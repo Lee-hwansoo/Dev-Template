@@ -11,9 +11,11 @@ ARG BASE_IMAGE=ubuntu:22.04
 ARG WORKSPACE_PATH=/workspace
 ARG ROS_DISTRO=humble
 ARG APT_SNAPSHOT_DATE=latest
+ARG ROS_SNAPSHOT_DATE=latest
 ARG STRICT_GPG_CHECK=true
 ARG UV_VERSION=0.10.10
 ARG UV_PYTHON=3.10
+ARG UV_EXTRA=""
 ARG CMAKE_C_STANDARD=11
 ARG CMAKE_CXX_STANDARD=17
 ARG LANG=C.UTF-8
@@ -24,7 +26,6 @@ ARG SYS_PYTHON_EXE=/usr/bin/python3
 ARG UV_SYNC_FLAGS=""
 ARG CMAKE_EXTRA_ARGS=""
 ARG COLCON_EXTRA_FLAGS=""
-ARG HAS_NVIDIA=false
 ARG FULL_CUDA=false
 ARG CUDA_VERSION=""
 ARG CUDNN_VERSION=""
@@ -44,7 +45,7 @@ ARG DEBIAN_FRONTEND
 ARG WORKSPACE_PATH
 ARG ROS_DISTRO
 ARG APT_SNAPSHOT_DATE
-ARG HAS_NVIDIA
+ARG ROS_SNAPSHOT_DATE
 ARG CUDA_VERSION
 # Without this re-declaration the pre-FROM default is invisible here and the
 # CUDA GPG pin's documented STRICT_GPG_CHECK=false escape hatch does nothing.
@@ -61,7 +62,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_helper.sh \
     bash /tmp/util_apt_helper.sh init-apt && \
     bash /tmp/util_apt_helper.sh configure-snapshot "${APT_SNAPSHOT_DATE}" && \
-    if [ "$HAS_NVIDIA" = "true" ] && [ -n "$CUDA_VERSION" ]; then \
+    if [ -n "$CUDA_VERSION" ]; then \
     bash /tmp/util_apt_helper.sh setup-cuda-repo ${CUDA_VERSION}; \
     fi
 

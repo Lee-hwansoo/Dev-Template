@@ -878,11 +878,65 @@ if [ -n "$tty_bound" ]; then
     log_err "a 'gpg --dearmor' call lacks --yes and will abort under 'docker build' (no /dev/tty):"
     sed 's/^/    /' <<< "$tty_bound" >&2
 fi
+# Both archives, not just the live one: snapshots.ros.org signs with its OWN
+# key, so a ROS_SNAPSHOT_DATE build verified against the live pin fails with
+# NO_PUBKEY — and every pin needs the one updater that maintains it.
+gpg_pin_errors=0
+for gpg_pin in ROS_GPG_FINGERPRINT ROS_SNAPSHOT_GPG_FINGERPRINT; do
+    gpg_fp="$(awk -F'"' -v k="^${gpg_pin}=" '$0 ~ k {print $2; exit}' scripts/util_apt_helper.sh)"
+    [[ "$gpg_fp" =~ ^[0-9A-F]{40}$ ]] \
+        || { log_err "${gpg_pin} is '${gpg_fp:-<missing>}', not a 40-character fingerprint."; gpg_pin_errors=1; continue; }
+    grep -v '^[[:space:]]*#' scripts/util_apt_helper.sh | grep -qF "\$${gpg_pin}" \
+        || { log_err "${gpg_pin} is declared but never used; the repository it guards is verified against another key."; gpg_pin_errors=1; }
+    grep -q "\^${gpg_pin}=" scripts/setup_ros_gpg.sh \
+        || { log_err "'make update-gpg' does not maintain ${gpg_pin}; a rotation would have no path in."; gpg_pin_errors=1; }
+done
+# The two must DIFFER: copying the live key into the snapshot pin reintroduces
+# exactly the NO_PUBKEY failure this separation exists to fix.
+[ "$(awk -F'"' '/^ROS_GPG_FINGERPRINT=/{print $2; exit}' scripts/util_apt_helper.sh)" \
+  != "$(awk -F'"' '/^ROS_SNAPSHOT_GPG_FINGERPRINT=/{print $2; exit}' scripts/util_apt_helper.sh)" ] \
+    || { log_err "the snapshot pin equals the live pin; snapshots.ros.org is signed by a different key and would fail with NO_PUBKEY."; gpg_pin_errors=1; }
+# End to end on a throwaway key (0.05 s): sign, verify, then tamper. Reading a
+# key id out of gpg's chatter reported a tampered document as a match, so the
+# property under test is that gpg's VERDICT is what decides.
+gpg_probe="$(probe_dir)"
+gpg_home="$gpg_probe/home"; mkdir -p "$gpg_home" "$gpg_probe/keys"; chmod 700 "$gpg_home"
+gpg_verify_fn="$(sed -n '/^verify_signed_by() {$/,/^}$/p' scripts/setup_ros_gpg.sh)"
+gpg_made=0
+gpg --homedir "$gpg_home" --batch --pinentry-mode loopback --passphrase '' \
+    --quick-generate-key 'DevKit Probe <probe@invalid>' default default never >/dev/null 2>&1 && gpg_made=1
+gpg_fp="$(gpg --homedir "$gpg_home" --batch --with-colons --fingerprint 2>/dev/null | awk -F: '/^fpr:/{print $10; exit}' || true)"
+if [ -z "$gpg_verify_fn" ]; then
+    log_err "setup_ros_gpg.sh no longer defines verify_signed_by; the snapshot pin is unchecked."; gpg_pin_errors=1
+elif [ "$gpg_made" != 1 ] || [ -z "$gpg_fp" ]; then
+    log_info "gpg could not create a probe key here; the snapshot signature check was not exercised."
+else
+    printf 'Origin: devkit-probe\n' > "$gpg_probe/doc"
+    gpg --homedir "$gpg_home" --batch --pinentry-mode loopback --passphrase '' \
+        --clearsign -o "$gpg_probe/signed" "$gpg_probe/doc" >/dev/null 2>&1
+    gpg --homedir "$gpg_home" --batch --export -o "$gpg_probe/keys/$gpg_fp" "$gpg_fp" >/dev/null 2>&1
+    sed 's/^Origin: devkit-probe/Origin: tampered-in-flight/' "$gpg_probe/signed" > "$gpg_probe/tampered"
+    # A document that merely NAMES the pin, which the old parser accepted.
+    printf 'gpg: using RSA key %s\n[GNUPG:] VALIDSIG %s 0 0 0 4 0 1 8 01 %s\n' \
+        "$gpg_fp" "$gpg_fp" "$gpg_fp" > "$gpg_probe/forged"
+    gpg_check() {   # gpg_check <document>
+        local rc=0
+        ( eval "$gpg_verify_fn"
+          SNAPSHOT_KEY_URL="file://$gpg_probe/keys/"
+          verify_signed_by "file://$gpg_probe/$1" "$gpg_fp" ) >/dev/null 2>&1 || rc=$?
+        printf '%s' "$rc"
+    }
+    [ "$(gpg_check signed)" = "0" ] \
+        || { log_err "verify_signed_by rejects a genuinely signed document; every snapshot build would report a stale pin."; gpg_pin_errors=1; }
+    [ "$(gpg_check tampered)" != "0" ] \
+        || { log_err "verify_signed_by accepts a TAMPERED document; gpg's exit status is being discarded."; gpg_pin_errors=1; }
+    [ "$(gpg_check forged)" != "0" ] \
+        || { log_err "verify_signed_by accepts a document that only claims the pinned key."; gpg_pin_errors=1; }
+fi
+rm -rf "$gpg_probe"
 pinned_fp="$(awk -F'"' '/^ROS_GPG_FINGERPRINT=/{print $2; exit}' scripts/util_apt_helper.sh)"
-if [ -n "$pinned_fp" ] \
-   && grep -q "STRICT_GPG_CHECK" scripts/util_apt_helper.sh \
-   && grep -q '\^ROS_GPG_FINGERPRINT=' scripts/setup_ros_gpg.sh; then
-    log_ok "ROS key is fingerprint-pinned (${pinned_fp:0:16}…) and 'make update-gpg' targets it."
+if [ "$gpg_pin_errors" -eq 0 ] && grep -q "STRICT_GPG_CHECK" scripts/util_apt_helper.sh; then
+    log_ok "Both ROS pins are wired to their archive and to 'make update-gpg', and the snapshot check refuses a document that only CLAIMS the key."
 else
     log_err "ROS GPG pin missing or setup_ros_gpg.sh no longer matches util_apt_helper.sh."
 fi

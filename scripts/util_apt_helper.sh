@@ -19,6 +19,8 @@ export APT_KEY_DONT_WARN_ON_DANGEROUS_USAGE=1
 # `make update-gpg` rewrites the line below — keep the exact spelling.
 # =============================================================================
 ROS_GPG_FINGERPRINT="C1CF6E31E6BADE8868B172B4F42ED6FBAB17C654"
+# snapshots.ros.org uses a separate archive signing key.
+ROS_SNAPSHOT_GPG_FINGERPRINT="4B63CF8FDE49746E98FA01DDAD19BAB3CBF125EA"
 # NVIDIA CUDA repository signing key (id 3bf863cc), same trust policy as above.
 NVIDIA_GPG_FINGERPRINT="EB693B3035CD5710E231E123A4B469963BF863CC"
 
@@ -179,31 +181,43 @@ case "$COMMAND" in
         # Guard first: a typo'd distro would otherwise configure the wrong
         # repository family and only fail much later, at package install.
         case "$distro" in
-            humble|iron|jazzy|kilted|rolling|noetic|melodic|kinetic) ;;
-            *)  log_error "Unknown ROS distro: '${distro}' (supported: humble iron jazzy kilted rolling noetic melodic kinetic)"
+            humble|iron|jazzy|kilted|rolling|foxy|noetic|melodic|kinetic) ;;
+            *)  log_error "Unknown ROS distro: '${distro}' (supported: humble iron jazzy kilted rolling foxy noetic melodic kinetic)"
                 exit 2 ;;
         esac
+        case "$distro" in noetic|melodic|kinetic) family=ros ;; *) family=ros2 ;; esac
+        # HTTP on purpose: packages.ros.org answers TLS with a *.osuosl.org
+        # certificate, so https:// fails the hostname check and apt-get update
+        # dies. Integrity comes from signed-by, which is apt's actual trust
+        # model and what ROS's own install instructions use. Do not "fix" this
+        # back to https until the certificate covers the name.
+        repo="http://packages.ros.org/${family}/ubuntu"
+        key_url=https://raw.githubusercontent.com/ros/rosdistro/master/ros.key
+        fingerprint="$ROS_GPG_FINGERPRINT"
+        if [ "${ROS_SNAPSHOT_DATE:-latest}" != latest ]; then
+            [[ "$ROS_SNAPSHOT_DATE" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}|final)$ ]] || {
+                log_error 'ROS_SNAPSHOT_DATE must be latest, YYYY-MM-DD, or final.'; exit 2;
+            }
+            repo="http://snapshots.ros.org/${distro}/${ROS_SNAPSHOT_DATE}/ubuntu"
+            fingerprint="$ROS_SNAPSHOT_GPG_FINGERPRINT"
+            key_url="https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${fingerprint}"
+        fi
         log_info "Setting up ROS repository for ${distro}..."
         mkdir -p /usr/share/keyrings
         tmp_key="$(mktemp)"
-        # ros.key (binary, same fingerprint) for both families: it is what
-        # `signed-by=` expects, and fetching it directly drops a `gpg --dearmor`
-        # step that asked "Overwrite?" on a /dev/tty `docker build` has not.
-        curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o "$tmp_key"
+        curl -fsSL "$key_url" -o "$tmp_key"
 
-        verify_key_fingerprint "$tmp_key" "$ROS_GPG_FINGERPRINT" "ROS" \
-            "If upstream rotated the key, run 'make update-gpg' on the host." \
+        verify_key_fingerprint "$tmp_key" "$fingerprint" "ROS" \
+            "Check the upstream archive signing key; make update-gpg updates the live archive pin." \
             || { rm -f "$tmp_key"; exit 1; }
+        if [ "${ROS_SNAPSHOT_DATE:-latest}" != latest ]; then
+            gpg --batch --yes --dearmor --output "${tmp_key}.gpg" "$tmp_key"
+            mv "${tmp_key}.gpg" "$tmp_key"
+        fi
         install -m 0644 "$tmp_key" /usr/share/keyrings/ros-archive-keyring.gpg
         rm -f "$tmp_key"
 
-        case "$distro" in noetic|melodic|kinetic)
-            echo "deb [signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros/ubuntu $(lsb_release -cs) main" > /etc/apt/sources.list.d/ros1.list
-            ;;
-        *)
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" > /etc/apt/sources.list.d/ros2.list
-            ;;
-        esac
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] $repo $(lsb_release -cs) main" > "/etc/apt/sources.list.d/${family}.list"
         apt-get update -y
         log_ok "ROS repository configured."
         ;;
