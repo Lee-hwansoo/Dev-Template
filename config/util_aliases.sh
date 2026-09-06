@@ -292,19 +292,25 @@ uvs() {
 
 # Project type: ROS | CPP | PYTHON.
 # `-print -quit`: bare -quit suppresses find's implicit -print and yields "".
+# __cmake_entry — the directory whose CMakeLists.txt a build would configure,
+# or nothing. ONE answer for the detector and for mbuild: they used to search
+# different places, so a repository-root project was reported PYTHON (and never
+# built) while a thirdparty-only tree was reported CPP (and then failed).
+__cmake_entry() {
+    local src="${WS_SRC:-${WS_ROOT}/src}"
+    if   [ -f "${WS_ROOT}/CMakeLists.txt" ]; then printf '%s' "${WS_ROOT}"
+    elif [ -f "${src}/CMakeLists.txt" ];     then printf '%s' "${src}"
+    else return 1; fi
+}
+
 __detect_project_type() {
     local src="${WS_SRC:-${WS_ROOT}/src}"
-    [ -d "$src" ] || { echo "PYTHON"; return; }
-    if [ -n "${ROS_DISTRO:-}" ]; then
+    if [ -n "${ROS_DISTRO:-}" ] && [ -d "$src" ]; then
         if [ -n "$(find "$src" -name thirdparty -prune -o -name package.xml -print -quit 2>/dev/null)" ]; then
             echo "ROS"; return
         fi
     fi
-    if [ -n "$(find "$src" -maxdepth 3 -name "CMakeLists.txt" -print -quit 2>/dev/null)" ]; then
-        echo "CPP"
-    else
-        echo "PYTHON"
-    fi
+    if __cmake_entry >/dev/null 2>&1; then echo "CPP"; else echo "PYTHON"; fi
 }
 
 # mkenv [--share] [<uv venv args>…]
@@ -572,14 +578,9 @@ alias pyt='torch_check'
 #   CMakeLists.txt): configure, build with all cores, and install for a prod
 #   build. Default RelWithDebInfo; --pkg is refused (ROS builds only).
 mbuild() {
-    # Source root: repository root if it carries the top-level CMakeLists.txt,
-    # otherwise src/ (the layout __detect_project_type reports as CPP).
-    local src_dir="${WS_ROOT}"
-    if [ ! -f "${WS_ROOT}/CMakeLists.txt" ]; then
-        src_dir="${WS_SRC:-${WS_ROOT}/src}"
-    fi
-    if [ ! -f "${src_dir}/CMakeLists.txt" ]; then
-        log_error "No CMakeLists.txt found in ${WS_ROOT} or ${src_dir}."
+    local src_dir
+    if ! src_dir="$(__cmake_entry)"; then
+        log_error "No CMakeLists.txt in ${WS_ROOT} or ${WS_SRC:-${WS_ROOT}/src}."
         return 1
     fi
     __require_cmd cmake || return 1

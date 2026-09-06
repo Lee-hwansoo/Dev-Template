@@ -2588,6 +2588,50 @@ rm -rf "$flag_probe"
 [ "$flag_errors" -eq 0 ] && log_ok "Advertised build flags work (default RelWithDebInfo, --debug/--release/--pkg/--meta)."
 
 # =============================================================================
+# [project-layout] What the workspace is reported to BE and what a build can
+#      actually configure must be the same answer. The detector searched under
+#      src/ (thirdparty included) while mbuild looked at the repository root, so
+#      a root-level CMake project reported PYTHON and a thirdparty-only tree
+#      reported CPP and then failed with "No CMakeLists.txt".
+# =============================================================================
+layout_errors=0
+# layout_case <label> <relative CMakeLists path or ''> <expected type> <expected entry|->
+layout_case() {
+    local label="$1" place="$2" want_type="$3" want_entry="$4"
+    local probe; probe="$(probe_dir config scripts)"
+    mkdir -p "$probe/src"
+    [ -z "$place" ] || { mkdir -p "$(dirname "$probe/$place")"; : > "$probe/$place"; }
+    local got
+    got="$( WORKSPACE_PATH="$probe" bash -c 'source config/util_aliases.sh >/dev/null 2>&1
+        entry="$(__cmake_entry 2>/dev/null)"
+        case "$entry" in "") entry=- ;; "$WS_ROOT") entry=root ;; *) entry="${entry##*/}" ;; esac
+        printf "%s %s" "$(__detect_project_type)" "$entry"' 2>/dev/null || true )"
+    rm -rf "$probe"
+    [ "$got" = "$want_type $want_entry" ] \
+        || { log_err "layout '${label}': reported '${got}', expected '${want_type} ${want_entry}' — the detector and mbuild disagree."; layout_errors=1; }
+}
+layout_case "CMakeLists at the repository root" CMakeLists.txt          CPP    root
+layout_case "CMakeLists in src/"                src/CMakeLists.txt      CPP    src
+layout_case "only a nested package"             src/pkg/CMakeLists.txt  PYTHON -
+layout_case "only thirdparty"                   src/thirdparty/lib/CMakeLists.txt PYTHON -
+layout_case "no CMake at all"                   ""                      PYTHON -
+# …and mbuild must CONFIGURE that entry, not resolve one of its own. Probed
+# with a stub cmake, because a second resolution is exactly what drifted.
+layout_probe="$(probe_dir config scripts)"
+mkdir -p "$layout_probe/src" "$layout_probe/bin"
+: > "$layout_probe/CMakeLists.txt"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" >> "%s/cmake.log"\nexit 1\n' "$layout_probe" > "$layout_probe/bin/cmake"
+chmod +x "$layout_probe/bin/cmake"
+( PATH="$layout_probe/bin:$PATH" WORKSPACE_PATH="$layout_probe" bash -c \
+    'source config/util_aliases.sh >/dev/null 2>&1; mbuild' ) >/dev/null 2>&1 || true
+layout_src="$(awk '/^-S$/{getline; print; exit}' "$layout_probe/cmake.log" 2>/dev/null || true)"
+[ "$layout_src" = "$layout_probe" ] \
+    || { log_err "mbuild configures '${layout_src:-nothing}' for a root-level CMake project, not the entry point the detector reports."; layout_errors=1; }
+rm -rf "$layout_probe"
+[ "$layout_errors" -eq 0 ] \
+    && log_ok "The project type and the CMake entry point are one answer, and mbuild configures it (5 layouts)."
+
+# =============================================================================
 # Result
 # =============================================================================
 echo ""
