@@ -90,7 +90,10 @@ _log_base() {
 
     local stamp="" prefix="" prefix_plain=""
     if [[ "${LOG_SHOW_TIME}" == "true" ]]; then
-        local now; printf -v now '%(%H:%M:%S)T' -1
+        # Same bash-3.2 guard as the file stamp below: printf %()T is 4.2+.
+        local now
+        if [ "${__DEVKIT_PRINTF_TIME:-}" = 1 ]; then printf -v now '%(%H:%M:%S)T' -1
+        else now="$(date '+%H:%M:%S')"; fi
         stamp="${cyan}[${now}]${nc} "
     fi
     if [[ -n "${LOG_PREFIX:-}" ]]; then

@@ -1479,6 +1479,13 @@ for want in finding explanation step; do
     grep -qF "$want" "$file_probe/run.log" 2>/dev/null \
         || { log_err "LOG_FILE lost the '${want}' line; a captured log must hold hints and steps too."; api_errors=1; }
 done
+# The CONSOLE stamp too, on both printf-%T and date paths: it skipped the
+# bash-3.2 guard the file stamp has, and macOS printed a bare '[]'.
+for stamp_mode in 1 0; do
+    bash -c "source scripts/util_logging.sh; __DEVKIT_PRINTF_TIME=$stamp_mode LOG_SHOW_TIME=true log_ok probe" 2>/dev/null \
+        | grep -qE '\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]' \
+        || { log_err "LOG_SHOW_TIME=true prints no HH:MM:SS console stamp when __DEVKIT_PRINTF_TIME=${stamp_mode} (the bash-3.2 path is broken)."; api_errors=1; }
+done
 # Every file line carries a date and time whatever LOG_SHOW_TIME says: the file
 # accumulates across container restarts, so an undated entry places nothing.
 [ "$(grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} ' "$file_probe/run.log" 2>/dev/null)" -eq 3 ] \
