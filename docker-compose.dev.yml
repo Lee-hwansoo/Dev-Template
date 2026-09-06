@@ -48,13 +48,16 @@ x-ssh-agent-env: &ssh-agent-env
   SSH_AUTH_SOCK: ${HOST_SSH_AUTH_SOCK:+/tmp/ssh-auth.sock}
 
 # ── Developer Service Shared Configuration (Target: dev) ─────────────────────
+# `command: bash`, fixed: the dev container is the workspace, and APP_COMMAND /
+# ROS_LAUNCH_COMMAND belong to the production entrypoint. Reading them here
+# turned `make start` into a restart loop once .env carried one for bake-prod.
 x-dev-shared: &dev-shared
   build:
     target: dev
   environment:
     <<: *ssh-agent-env
   volumes: *dev-volumes
-  command: ${APP_COMMAND:-bash}
+  command: bash
   healthcheck: *dev-healthcheck
 
 x-ros-dev-shared: &ros-dev-shared
@@ -63,7 +66,7 @@ x-ros-dev-shared: &ros-dev-shared
   environment:
     <<: *ssh-agent-env
   volumes: *ros-volumes
-  command: ${ROS_LAUNCH_COMMAND:-bash}
+  command: bash
   healthcheck: *ros-healthcheck
 
 services:

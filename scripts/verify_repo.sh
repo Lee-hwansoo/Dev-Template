@@ -245,6 +245,13 @@ for host_mount in HOST_WORKSPACE_PATH HOST_X11_DIR HOST_XAUTHORITY HOST_XDG_RUNT
     grep -qE "^ *- \\\$\\{[^}]*${host_mount}" docker-compose.dev.yml \
         && { log_err "docker-compose.dev.yml re-declares the ${host_mount} mount; base-common already carries it."; compose_errors=1; }
 done
+# The dev container's command is bash, unconditionally. APP_COMMAND and
+# ROS_LAUNCH_COMMAND are documented as production knobs; read here, a .env
+# written for bake-prod made `make start` run the app and restart-loop.
+[ "$(grep -cE '^  command: bash$' docker-compose.dev.yml)" -eq 2 ] \
+    || { log_err "docker-compose.dev.yml must give both ENV anchors 'command: bash'."; compose_errors=1; }
+grep -qE '^[^#]*(APP_COMMAND|ROS_LAUNCH_COMMAND)' docker-compose.common.yml docker-compose.dev.yml \
+    && { log_err "compose reads the production run command (APP_COMMAND/ROS_LAUNCH_COMMAND); the dev container would run the app instead of a shell."; compose_errors=1; }
 [ "$compose_errors" -eq 0 ] \
     && log_ok "Compose ENV split: ${compose_profiles} services inherit an ENV anchor with a healthcheck."
 
