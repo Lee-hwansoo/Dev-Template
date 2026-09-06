@@ -465,6 +465,318 @@ rm -rf "$distro_probe"
 [ "$distro_errors" -eq 0 ] \
     && log_ok "Every supported ROS distro has a base image, and an unknown one is refused ($(wc -w <<< "$apt_distros") distros)."
 # =============================================================================
+# [run-record] A batch job nobody watched must still be answerable later: which
+#      image, on what the scheduler granted, against which data, and how it
+#      ended. An unterminated record cannot tell "still running" from "died".
+# =============================================================================
+record_errors=0
+record_probe="$(probe_dir)"
+mkdir -p "$record_probe/data"; echo "dataset-v7" > "$record_probe/data/VERSION"
+: > "$record_probe/fake.sif"
+(
+    source config/util_paths.sh && devkit_require util_logging.sh && devkit_require util_sif_common.sh
+    export SLURM_RUN_ROOT="$record_probe/runs" SLURM_DATA_ROOT="$record_probe/data"
+    export SLURM_JOB_ID=4242 SLURM_JOB_PARTITION=gpu SLURM_JOB_NODELIST='node[01-02]' \
+           SLURM_NTASKS=4 SLURM_CPUS_PER_TASK=8 SLURM_GPUS=4
+    sif_record_run "$record_probe/fake.sif" && sif_record_exit 3
+) >/dev/null 2>&1 || true
+record_file="$(find "$record_probe/runs" -name 'devkit-4242-*.txt' -print -quit 2>/dev/null || true)"
+if [ -z "$record_file" ]; then
+    log_err "sif_record_run wrote no record under SLURM_RUN_ROOT."; record_errors=1
+else
+    # The image identity, what was granted, the data, and how it ended — the four
+    # questions a finished job cannot answer from its stdout alone.
+    for record_key in image= job= started= partition= nodelist= ntasks= cpus_per_task= \
+                      gpus= data_root= data_version=dataset-v7 finished= exit_status=3; do
+        grep -q "^${record_key}" "$record_file" \
+            || { log_err "the run record omits '${record_key%%=*}'; a finished job cannot be traced back to it."; record_errors=1; }
+    done
+    # The image PATH is not an identity, and the hash must say where it came
+    # from: a sidecar copied blind describes the artifact that USED to be there.
+    grep -qE '^sha256_(verified|at_bake)=[0-9a-f]{64}$' "$record_file" \
+        || { log_err "the run record carries no labelled image hash; the path alone does not identify the artifact."; record_errors=1; }
+    # With no sidecar the run had to hash what was actually on disk.
+    grep -q '^sha256_verified=' "$record_file" \
+        || { log_err "the run record reports a bake-time hash for an artifact that has no sidecar."; record_errors=1; }
+fi
+
+# A sidecar is trusted only while the artifact still matches the size recorded
+# at bake; a replaced SIF must be hashed rather than described by the old value.
+record_stale="$(probe_dir)"
+printf 'original' > "$record_stale/a.sif"
+printf 'deadbeef  a.sif\n' > "$record_stale/a.sif.sha256"
+printf 'artifact_bytes=%s\n' "$(wc -c < "$record_stale/a.sif" | tr -d ' ')" > "$record_stale/a.sif.provenance"
+record_hash_line() {
+    ( source config/util_paths.sh && devkit_require util_logging.sh && devkit_require util_sif_common.sh
+      SLURM_RUN_ROOT="$record_stale/runs" sif_record_run "$record_stale/a.sif" ) >/dev/null 2>&1 || true
+    sed -n 's/^\(sha256_[a-z_]*\)=.*/\1/p' "$record_stale/runs"/*.txt 2>/dev/null | head -1
+    rm -rf "$record_stale/runs"
+}
+[ "$(record_hash_line)" = "sha256_at_bake" ] \
+    || { log_err "an untouched artifact does not reuse its bake-time hash; every launch would re-read the whole SIF."; record_errors=1; }
+printf 'REPLACED-and-longer' > "$record_stale/a.sif"
+[ "$(record_hash_line)" = "sha256_verified" ] \
+    || { log_err "a REPLACED artifact still reports the bake-time hash; the record would name a SIF that is no longer there."; record_errors=1; }
+rm -rf "$record_stale"
+if [ -n "$record_file" ]; then
+    [ "$(stat -c '%a' "$record_file" 2>/dev/null || stat -f '%Lp' "$record_file")" = "600" ] \
+        || { log_err "the run record is not written 0600; run roots are shared on HPC."; record_errors=1; }
+fi
+# Every path that OPENS a record must close it: a record with no exit status
+# cannot be told apart from a job that is still running.
+# Run the LOCAL SIF path for real, against a stub runtime: it opened a record
+# above and used to exec the job away, so the record never gained an ending.
+record_local="$(probe_dir config scripts)"
+mkdir -p "$record_local/bin"
+: > "$record_local/a.sif"
+printf '#!/bin/sh\ncase "$*" in *"test -x /entrypoint.sh"*) exit 0 ;; *grep*) exit 1 ;; *WORKSPACE_PATH*) printf /workspace; exit 0 ;; esac\nexit 5\n' \
+    > "$record_local/bin/apptainer"
+chmod +x "$record_local/bin/apptainer"
+record_local_rc=0
+( PATH="$record_local/bin:/usr/bin:/bin" WORKSPACE_PATH="$record_local" \
+  SLURM_RUN_ROOT="$record_local/runs" SIF_FILE="$record_local/a.sif" \
+  bash scripts/apptainer_run.sh --mode prod --env dev 'true' ) >/dev/null 2>&1 || record_local_rc=$?
+record_local_file="$(find "$record_local/runs" -name 'devkit-local-*.txt' -print -quit 2>/dev/null || true)"
+if [ -z "$record_local_file" ]; then
+    log_err "a local SIF run writes no record under SLURM_RUN_ROOT."; record_errors=1
+else
+    grep -q '^exit_status=5' "$record_local_file" \
+        || { log_err "a local SIF run leaves its record open (no exit status); it cannot be told apart from a job still running."; record_errors=1; }
+fi
+[ "$record_local_rc" = "5" ] \
+    || { log_err "apptainer_run.sh returns ${record_local_rc}, not the job's 5; a wrapper that swallows the status breaks every caller's error handling."; record_errors=1; }
+rm -rf "$record_local"
+
+# …and it must close on the JOB's status, not on the signal that interrupted
+# `wait`. A single wait returned 143 and this shell exited while the job ran on.
+record_sig="$(probe_dir)"
+# Long enough to still be running when the signal lands, no longer.
+printf 'trap "" TERM\nsleep 0.5\nexit 9\n' > "$record_sig/child.sh"
+{
+    printf 'source config/util_paths.sh && devkit_require util_logging.sh && devkit_require util_sif_common.sh\n'
+    printf 'DEVKIT_RUN_RECORD=%s/rec; : > "$DEVKIT_RUN_RECORD"\n' "$record_sig"
+    printf 'sif_run_and_record bash %s/child.sh || true\n' "$record_sig"
+} > "$record_sig/parent.sh"
+( bash "$record_sig/parent.sh" ) >/dev/null 2>&1 &
+record_sig_pid=$!
+sleep 0.15; kill -TERM "$record_sig_pid" 2>/dev/null || true
+wait "$record_sig_pid" 2>/dev/null || true
+record_sig_rc="$(sed -n 's/^exit_status=//p' "$record_sig/rec" 2>/dev/null || true)"
+rm -rf "$record_sig"
+[ "$record_sig_rc" = "9" ] \
+    || { log_err "a signalled run records exit_status='${record_sig_rc:-<none>}' instead of the job's 9; the record closes while the job is still running."; record_errors=1; }
+rm -rf "$record_probe"
+[ "$record_errors" -eq 0 ] \
+    && log_ok "Run records carry image hash, granted resources, data version and exit status (0600)."
+# =============================================================================
+# [gpu-dispatch] Which run gets --nv. A GPU cannot be probed here, but the
+#      DECISION can: inside an allocation the submitting node's hardware says
+#      nothing about the compute node's, so only an explicit request counts.
+# =============================================================================
+gpu_errors=0
+gpu_probe="$(probe_dir)"
+mkdir -p "$gpu_probe/with" "$gpu_probe/without"
+printf '#!/bin/sh\nexit 0\n' > "$gpu_probe/with/nvidia-smi"; chmod +x "$gpu_probe/with/nvidia-smi"
+# gpu_flags_for <bin-dir> <env assignments> — the flags sif_gpu_flags builds.
+gpu_flags_for() {
+    ( export PATH="$1:/usr/bin:/bin"; shift; eval "export $*" 2>/dev/null
+      source config/util_paths.sh && devkit_require util_logging.sh && devkit_require util_sif_common.sh
+      sif_gpu_flags; printf '%s' "${GPU_FLAGS[*]-}" ) 2>/dev/null || true
+}
+# <label>|<bin-dir>|<env>|<expected>
+while IFS='|' read -r gpu_label gpu_bin gpu_env gpu_want; do
+    [ -n "$gpu_label" ] || continue
+    gpu_got="$(gpu_flags_for "$gpu_probe/$gpu_bin" "$gpu_env")"
+    [ "$gpu_got" = "$gpu_want" ] \
+        || { log_err "sif_gpu_flags: ${gpu_label} builds '${gpu_got}', expected '${gpu_want}'."; gpu_errors=1; }
+done <<'CASES'
+GPU_MODE=cpu never asks for a GPU|with|GPU_MODE=cpu|
+an explicit GPU_MODE=nvidia asks|without|GPU_MODE=nvidia|--nv
+CUDA_VISIBLE_DEVICES is an explicit request|without|GPU_MODE=auto CUDA_VISIBLE_DEVICES=0|--nv
+a GPU on THIS host counts outside an allocation|with|GPU_MODE=auto|--nv
+no GPU on this host, no request|without|GPU_MODE=auto|
+inside an allocation the local GPU means nothing|with|GPU_MODE=auto SLURM_JOB_ID=4242|
+CASES
+# …and WHICH devices reach the container. SLURM assigns them per task, so a
+# value forwarded before srun hands every task the job-wide list and two tasks
+# then fight over device 0.
+gpu_task="$(probe_dir config scripts)"
+mkdir -p "$gpu_task/bin"
+: > "$gpu_task/a.sif"
+# This task was given device 1; the job as a whole holds 0,1.
+printf '#!/bin/sh\nshift\nCUDA_VISIBLE_DEVICES=1 exec "$@"\n' > "$gpu_task/bin/srun"
+printf '#!/bin/sh\ncase "$*" in *"test -x /entrypoint.sh"*) exit 0 ;; *grep*) exit 1 ;; esac\nprintf "%%s" "${APPTAINERENV_CUDA_VISIBLE_DEVICES-<unset>}" > "%s/seen"\nexit 0\n' \
+    "$gpu_task" > "$gpu_task/bin/apptainer"
+chmod +x "$gpu_task/bin/srun" "$gpu_task/bin/apptainer"
+( PATH="$gpu_task/bin:/usr/bin:/bin" WORKSPACE_PATH="$gpu_task" \
+  SLURM_JOB_ID=99 CUDA_VISIBLE_DEVICES=0,1 \
+  bash scripts/slurm_run.sh "$gpu_task/a.sif" 'true' ) >/dev/null 2>&1 || true
+gpu_seen="$(cat "$gpu_task/seen" 2>/dev/null || echo '<nothing>')"
+[ "$gpu_seen" = "1" ] \
+    || { log_err "a srun task whose devices are '1' gives its container '${gpu_seen}'; every task would target the job-wide list."; gpu_errors=1; }
+# An EMPTY task list means this task was granted nothing, and must CLEAR the
+# job-wide value — leaving it hands a CPU task GPUs another task is using.
+printf '#!/bin/sh\nshift\nCUDA_VISIBLE_DEVICES= exec "$@"\n' > "$gpu_task/bin/srun"
+rm -f "$gpu_task/seen"
+( PATH="$gpu_task/bin:/usr/bin:/bin" WORKSPACE_PATH="$gpu_task" \
+  SLURM_JOB_ID=99 CUDA_VISIBLE_DEVICES=0,1 \
+  bash scripts/slurm_run.sh "$gpu_task/a.sif" 'true' ) >/dev/null 2>&1 || true
+gpu_empty="$(cat "$gpu_task/seen" 2>/dev/null || echo '<nothing>')"
+# EMPTY, not absent: under --cleanenv an unset list lets CUDA enumerate every
+# device the container can see, which is the opposite of "granted none".
+[ "$gpu_empty" = "" ] \
+    || { log_err "a srun task granted NO devices gives its container '${gpu_empty}' (want an empty list); it would reach GPUs another task holds."; gpu_errors=1; }
+# Thread counts must follow the ALLOCATION. OpenMP and MKL size themselves from
+# the cores visible on the NODE, so an 8-cpu grant on a 128-core node became 128
+# threads over 8 cores — a silent collapse that also hurts the neighbours.
+gpu_threads() {   # gpu_threads <env assignments>
+    ( eval "export $1" 2>/dev/null
+      source config/util_paths.sh && devkit_require util_logging.sh && devkit_require util_sif_common.sh
+      sif_forward_env
+      printf '%s' "${APPTAINERENV_OMP_NUM_THREADS-<unset>}" ) 2>/dev/null || true
+}
+[ "$(gpu_threads 'SLURM_CPUS_PER_TASK=8')" = "8" ] \
+    || { log_err "an 8-cpu allocation does not set OMP_NUM_THREADS; the container would size its thread pools from the whole node."; gpu_errors=1; }
+[ "$(gpu_threads 'SLURM_CPUS_PER_TASK=8 OMP_NUM_THREADS=2')" = "2" ] \
+    || { log_err "an explicit OMP_NUM_THREADS is overwritten by the allocation size; the knob would be unusable."; gpu_errors=1; }
+rm -rf "$gpu_probe" "$gpu_task"
+[ "$gpu_errors" -eq 0 ] \
+    && log_ok "--nv follows an explicit request, never a login node; each srun task forwards only its own devices and its own core count."
+# =============================================================================
+# [slurm-submit] What reaches sbatch. No cluster here, but a stub sbatch shows
+#      the argv exactly: the knobs must arrive, and a MISSING sbatch must stop
+#      the job rather than run it — a "fallback to local execution" on a login
+#      node is what gets an HPC account suspended.
+# =============================================================================
+submit_errors=0
+submit_probe="$(probe_dir config scripts)"
+mkdir -p "$submit_probe/bin"
+: > "$submit_probe/artifact.sif"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/argv"\n' "$submit_probe" > "$submit_probe/bin/sbatch"
+chmod +x "$submit_probe/bin/sbatch"
+
+submit_run() {   # submit_run <extra PATH dir or empty>
+    ( export PATH="${1:+$1:}/usr/bin:/bin" WORKSPACE_PATH="$submit_probe" \
+             SIF_FILE="$submit_probe/artifact.sif" \
+             DEVKIT_SLURM_PARTITION=gpu DEVKIT_SLURM_GRES=gpu:2 \
+             DEVKIT_SLURM_ARRAY=1-4 DEVKIT_SLURM_ACCOUNT=lab \
+             DEVKIT_SLURM_NODES=2 DEVKIT_SLURM_NTASKS=8
+      bash scripts/apptainer_run.sh --mode slurm --env dev 'python3 -c "pass"' ) 2>&1 || true
+}
+
+submit_out="$(submit_run "$submit_probe/bin")"
+if [ ! -f "$submit_probe/argv" ]; then
+    log_err "SIF_MODE=slurm never reached sbatch (output: ${submit_out})."; submit_errors=1
+else
+    # --chdir pins the cwd so the relative #SBATCH log paths land in the
+    # workspace; --export=ALL survives sites that default to NONE and would
+    # otherwise strip the forwarded ROS/DDS environment.
+    for submit_flag in "--chdir=" "--export=ALL" "--partition=gpu" "--gres=gpu:2" \
+                       "--array=1-4" "--account=lab" "--nodes=2" "--ntasks=8" "artifact.sif"; do
+        grep -qF -- "$submit_flag" "$submit_probe/argv" \
+            || { log_err "sbatch never receives '${submit_flag}'; the knob is advertised but does not reach the scheduler."; submit_errors=1; }
+    done
+    # The command must arrive as ONE argument, or quoting is lost to word-splitting.
+    grep -qxF 'python3 -c "pass"' "$submit_probe/argv" \
+        || { log_err "the job command reaches sbatch split across arguments; inner quoting is lost."; submit_errors=1; }
+fi
+
+# The dangerous one: no sbatch must NOT mean "run it here".
+rm -f "$submit_probe/argv"
+submit_norc=0
+( export PATH="/usr/bin:/bin" WORKSPACE_PATH="$submit_probe" \
+         SIF_FILE="$submit_probe/artifact.sif"
+  bash scripts/apptainer_run.sh --mode slurm --env dev 'python3 -c "pass"' ) >/dev/null 2>&1 || submit_norc=$?
+[ "$submit_norc" -ne 0 ] \
+    || { log_err "SIF_MODE=slurm without sbatch exits 0; a job you believed was queued ran on the login node."; submit_errors=1; }
+grep -qE '^[^#]*Falling back to local execution' scripts/apptainer_run.sh \
+    && { log_err "apptainer_run.sh still falls back to local execution when sbatch is missing."; submit_errors=1; }
+
+# Inside an allocation the job must go through srun, or a --nodes=2 --ntasks=8
+# allocation silently runs ONE process on ONE node and the other 7 shares idle.
+# (srun spawns the processes; MPI transport is the application's business —
+# DevKit wires no --mpi/PMI, which is why the README calls MPI unsupported.)
+printf '#!/bin/sh\necho srun > "%s/launcher"\nshift\nexec "$@"\n' "$submit_probe" > "$submit_probe/bin/srun"
+printf '#!/bin/sh\ncase "$*" in *"test -x /entrypoint.sh"*) exit 0 ;; *grep*) exit 1 ;; esac\nexit 0\n' \
+    > "$submit_probe/bin/apptainer"
+chmod +x "$submit_probe/bin/srun" "$submit_probe/bin/apptainer"
+submit_launcher_for() {   # submit_launcher_for [job-id]
+    rm -f "$submit_probe/launcher"
+    ( export PATH="$submit_probe/bin:/usr/bin:/bin" WORKSPACE_PATH="$submit_probe"
+      [ -z "${1:-}" ] || export SLURM_JOB_ID="$1"
+      bash scripts/slurm_run.sh "$submit_probe/artifact.sif" 'true' ) >/dev/null 2>&1 || true
+    cat "$submit_probe/launcher" 2>/dev/null || echo none
+}
+[ "$(submit_launcher_for 4242)" = srun ] \
+    || { log_err "inside a SLURM allocation slurm_run.sh does not launch through srun; a --nodes=2 --ntasks=8 job would run one process on one node."; submit_errors=1; }
+[ "$(submit_launcher_for)" = none ] \
+    || { log_err "outside an allocation slurm_run.sh still calls srun, which fails on a plain login shell."; submit_errors=1; }
+
+# The boundary the README draws must stay drawn: no --mpi/PMI is wired anywhere.
+grep -qiE '(다중 노드|multi-node).*(미지원|unsupported)' README.md \
+    || { log_err "README does not state that multi-node MPI is unsupported; srun spawns the tasks but no MPI transport is wired."; submit_errors=1; }
+rm -rf "$submit_probe"
+[ "$submit_errors" -eq 0 ] \
+    && log_ok "Every SLURM knob reaches sbatch as one argv, and a missing sbatch stops the job instead of running it locally."
+# =============================================================================
+# [slurm-defaults] The job defaults are spelled twice and cannot share code:
+#      SLURM parses #SBATCH before any shell can expand a variable, so a bare
+#      `sbatch` sees only the header, while `make run-sif` sends DEVKIT_SLURM_*
+#      as flags that override it. They must still agree, or the same job asks
+#      for different resources depending on how it was launched.
+# =============================================================================
+slurmdef_errors=0
+# <sbatch flag>:<DEVKIT_SLURM_ suffix>
+for slurmdef_pair in job-name:JOB_NAME nodes:NODES ntasks:NTASKS \
+                     cpus-per-task:CPUS_PER_TASK mem:MEM time:TIME \
+                     output:OUTPUT error:ERROR signal:SIGNAL; do
+    slurmdef_flag="${slurmdef_pair%%:*}"; slurmdef_knob="${slurmdef_pair##*:}"
+    slurmdef_hdr="$(sed -n "s/^#SBATCH --${slurmdef_flag}=//p" scripts/slurm_run.sh | head -1)"
+    slurmdef_env="$(sed -n "s/^# DEVKIT_SLURM_${slurmdef_knob}=//p" .env.example | head -1)"
+    [ -n "$slurmdef_hdr" ] \
+        || { log_err "scripts/slurm_run.sh has no '#SBATCH --${slurmdef_flag}'; a bare sbatch would fall back to the site default."; slurmdef_errors=1; continue; }
+    [ -n "$slurmdef_env" ] \
+        || { log_err ".env.example does not advertise DEVKIT_SLURM_${slurmdef_knob}; the header default cannot be overridden without editing a tracked script."; slurmdef_errors=1; continue; }
+    [ "$slurmdef_hdr" = "$slurmdef_env" ] \
+        || { log_err "SLURM default '${slurmdef_flag}' drifted: #SBATCH says '${slurmdef_hdr}', .env.example says '${slurmdef_env}'."; slurmdef_errors=1; }
+    # …and each knob must actually become that flag, or .env is decoration.
+    grep -qE "^[^#]*--${slurmdef_flag}=\\\$\\{DEVKIT_SLURM_${slurmdef_knob}\\}" scripts/apptainer_run.sh \
+        || { log_err "DEVKIT_SLURM_${slurmdef_knob} never becomes --${slurmdef_flag}; setting it in .env would do nothing."; slurmdef_errors=1; }
+done
+# The batch shell only gets ADVANCE warning with the B: prefix; without it the
+# trap in slurm_run.sh has KillWait (30 s by default) before SIGKILL.
+case "$(sed -n 's/^#SBATCH --signal=//p' scripts/slurm_run.sh | head -1)" in
+    B:*) ;;
+    *)   log_err "#SBATCH --signal has no 'B:' prefix; the signal goes to the job steps and the batch shell's trap never runs early."; slurmdef_errors=1 ;;
+esac
+# SLURM opens --output BEFORE the batch script runs and does not create the
+# directory, so the SUBMITTER has to. A mkdir inside slurm_run.sh is too late.
+slurmdef_out="$(sed -n 's/^#SBATCH --output=//p' scripts/slurm_run.sh | head -1)"
+awk -v dir="${slurmdef_out%%/*}" '
+    /MODE" = "slurm"/         { inside = 1 }
+    inside && /^fi$/          { inside = 0 }
+    inside && /mkdir -p/ && index($0, dir) { found = 1 }
+    inside && /exec sbatch/ && !found { exit 1 }
+    END { exit found ? 0 : 1 }' scripts/apptainer_run.sh \
+    || { log_err "the slurm branch submits without creating '${slurmdef_out%%/*}/'; SLURM cannot open ${slurmdef_out} and the job fails before the script runs."; slurmdef_errors=1; }
+# The compute node reads the helpers from the SUBMIT-side path, so a workspace
+# it cannot see must say exactly that — the failure used to be a bare
+# "No such file or directory" naming neither the cause nor the fix.
+slurmdef_far_rc=0
+slurmdef_far="$( DEVKIT_REPO_ROOT=/devkit-nonexistent-node-local \
+    bash scripts/slurm_run.sh /dev/null 'true' 2>&1 )" || slurmdef_far_rc=$?
+grep -qi 'compute node' <<< "$slurmdef_far" \
+    || { log_err "a workspace the compute node cannot read fails without naming the cause; the raw message points at neither the filesystem nor DEVKIT_REPO_ROOT."; slurmdef_errors=1; }
+grep -q 'DEVKIT_REPO_ROOT' <<< "$slurmdef_far" \
+    || { log_err "the unreadable-workspace error does not mention DEVKIT_REPO_ROOT, which is the way out when the compute nodes see another path."; slurmdef_errors=1; }
+[ "$slurmdef_far_rc" -ne 0 ] \
+    || { log_err "a job whose workspace is unreachable exits 0; SLURM would record it as successful."; slurmdef_errors=1; }
+# …and the prerequisite must be written down, not only discovered at 3am.
+grep -qE '(컴퓨트 노드|compute node).*(마운트|mount)' docs/SLURM.md \
+    || { log_err "docs/SLURM.md does not state that the workspace must sit on a filesystem the compute nodes mount."; slurmdef_errors=1; }
+[ "$slurmdef_errors" -eq 0 ] \
+    && log_ok "SLURM job defaults agree between #SBATCH and .env.example, every knob becomes its flag, and the submitter creates the log directory."
+# =============================================================================
 # [gpg-anchor] The pinned fingerprint must exist and stay in sync with the
 #      updater that maintains it (`make update-gpg`).
 # =============================================================================
@@ -1243,7 +1555,7 @@ grep -qE '^WS_ROOT="\$\{WORKSPACE_PATH' scripts/apptainer_bake.sh scripts/apptai
 # through it or the job starts with no ROS/venv (`import rclpy` failed).
 # By EXECUTION against a stub runtime: the prefix differs per image, and a
 # grep cannot tell whether that distinction survived.
-sif_probe="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+sif_probe="$(probe_dir)"
 cat > "${sif_probe}/rt" <<'STUB'
 #!/bin/sh
 # Stands in for `apptainer exec <sif> …`: the image has an entrypoint, and it
@@ -1273,6 +1585,18 @@ done
 for sif_caller in scripts/apptainer_bake.sh scripts/apptainer_run.sh scripts/slurm_run.sh; do
     grep -qE '^[^#]*sif_runtime' "$sif_caller" \
         || { log_err "${sif_caller} resolves the apptainer/singularity binary itself instead of via sif_runtime."; sif_errors=1; }
+done
+# Same rule for the architecture tag: bake writes it into the filename and run
+# probes for it, so a second uname translation would make run miss the artifact
+# bake just produced. Asserted by EXECUTION against both spellings.
+for sif_arch_probe in x86_64:amd64 aarch64:arm64 arm64:arm64; do
+    [ "$(TARGETARCH="${sif_arch_probe%%:*}" bash -c 'source scripts/util_sif_common.sh; sif_arch')" \
+      = "${sif_arch_probe##*:}" ] \
+        || { log_err "sif_arch does not normalise ${sif_arch_probe%%:*} to ${sif_arch_probe##*:}."; sif_errors=1; }
+done
+for sif_arch_caller in scripts/apptainer_bake.sh scripts/apptainer_run.sh; do
+    grep -qE '^[^#]*sif_arch' "$sif_arch_caller" \
+        || { log_err "${sif_arch_caller} spells the architecture tag itself instead of using sif_arch; bake and run would disagree."; sif_errors=1; }
 done
 # slurm submits the PRODUCTION artifact; probing for a *-slurm.sif never hits.
 grep -qE '^[^#]*ARTIFACT_MODE="prod"' scripts/apptainer_run.sh \

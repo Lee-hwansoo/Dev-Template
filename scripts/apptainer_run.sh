@@ -27,9 +27,9 @@ while [ $# -gt 0 ]; do
             exit 0 ;;
         # `--` is the escape hatch for a command that itself starts with a dash;
         # without it a typo'd flag would silently become the container command.
-        --) shift; APP_CMD="$*"; break ;;
+        --) shift; [ $# -eq 0 ] || printf -v APP_CMD '%q ' "$@"; break ;;
         -*) log_error "Unknown option: $1 (use '--' before a command starting with '-')"; exit 2 ;;
-        *) APP_CMD="$*"; break ;;
+        *) if [ $# -eq 1 ]; then APP_CMD="$1"; else printf -v APP_CMD '%q ' "$@"; fi; break ;;
     esac
 done
 
@@ -37,9 +37,7 @@ sif_require_choice --mode "$MODE" dev prod slurm || exit 2
 sif_require_choice --env "$ENV_NAME" ros dev || exit 2
 
 # APP_COMMAND is the env-var spelling of the trailing command (docs/SLURM.md).
-APP_CMD="${APP_CMD:-${APP_COMMAND:-}}"
-
-sif_import_host_env || exit 1
+APP_CMD="${APP_CMD:-${ROS_LAUNCH_COMMAND:-${APP_COMMAND:-}}}"
 
 # An explicit SIF_FILE is used as-is and MUST exist: substituting a stale local
 # artifact for a mistyped /scratch path runs the wrong image silently. The
@@ -50,27 +48,29 @@ COMPOSE_PROJECT="$(sif_project_name)"
 # the same mapping or the default slurm run can never find an artifact.
 ARTIFACT_MODE="$MODE"; [ "$MODE" = "slurm" ] && ARTIFACT_MODE="prod"
 if [ -z "${SIF_FILE:-}" ]; then
-    for candidate in "${ARTIFACT_MODE}" "${ARTIFACT_MODE}-share"; do
+    arch="$(sif_arch)"
+    for candidate in "${ARTIFACT_MODE}-${arch}" "${ARTIFACT_MODE}-share-${arch}" "${ARTIFACT_MODE}" "${ARTIFACT_MODE}-share"; do
         SIF_FILE="${WS_ROOT}/${COMPOSE_PROJECT}-${ENV_NAME}-${candidate}.sif"
         [ -f "$SIF_FILE" ] && break
     done
 fi
 if [ ! -f "$SIF_FILE" ]; then
-    log_error "SIF artifact not found: ${WS_ROOT}/${COMPOSE_PROJECT}-${ENV_NAME}-${ARTIFACT_MODE}.sif"
+    log_error "SIF artifact not found: ${SIF_FILE}"
     log_detail "Run 'make bake-${ARTIFACT_MODE} ENV=${ENV_NAME}' first, or point SIF_FILE at an existing artifact." >&2
     exit 1
 fi
+SIF_FILE="$(cd "$(dirname "$SIF_FILE")" && pwd)/$(basename "$SIF_FILE")"
 
 # Forward environment variables to Apptainer
-export APPTAINERENV_ROS_DISTRO="${ROS_DISTRO:-humble}"
-export APPTAINERENV_ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
-export APPTAINERENV_RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
-[ -n "${ROS_MASTER_URI:-}" ] && export APPTAINERENV_ROS_MASTER_URI="$ROS_MASTER_URI"
-[ -n "${GPU_MODE:-}" ] && export APPTAINERENV_GPU_MODE="$GPU_MODE"
+sif_forward_env
 
 # Dispatch to SLURM scheduler if requested
 if [ "$MODE" = "slurm" ]; then
     SLURM_SCRIPT="${WS_ROOT}/scripts/slurm_run.sh"
+    [ -n "$APP_CMD" ] || { log_error 'No job command. Pass RUN_ARGS or APP_COMMAND.'; exit 2; }
+    command -v sbatch >/dev/null || { log_error "sbatch not found. Use SIF_MODE=prod for local execution."; exit 1; }
+    export DEVKIT_REPO_ROOT="$WS_ROOT"
+    mkdir -p "$WS_ROOT/logs"
 
     # DEVKIT_SLURM_* → sbatch flags, which override slurm_run.sh's #SBATCH
     # defaults, so an unset knob keeps the script default. --chdir pins the cwd
@@ -88,31 +88,35 @@ if [ "$MODE" = "slurm" ]; then
     [ -n "${DEVKIT_SLURM_OUTPUT:-}"        ] && SBATCH_OPTS+=( "--output=${DEVKIT_SLURM_OUTPUT}" )
     [ -n "${DEVKIT_SLURM_ERROR:-}"         ] && SBATCH_OPTS+=( "--error=${DEVKIT_SLURM_ERROR}" )
     [ -n "${DEVKIT_SLURM_COMMENT:-}"       ] && SBATCH_OPTS+=( "--comment=${DEVKIT_SLURM_COMMENT}" )
+    [ -n "${DEVKIT_SLURM_SIGNAL:-}"        ] && SBATCH_OPTS+=( "--signal=${DEVKIT_SLURM_SIGNAL}" )
+    [ -n "${DEVKIT_SLURM_ARRAY:-}"         ] && SBATCH_OPTS+=( "--array=${DEVKIT_SLURM_ARRAY}" )
+    [ -n "${DEVKIT_SLURM_ACCOUNT:-}"       ] && SBATCH_OPTS+=( "--account=${DEVKIT_SLURM_ACCOUNT}" )
     # Escape hatch for unmanaged sbatch flags. Word-split on purpose; values
     # containing spaces are not supported (use #SBATCH in slurm_run.sh instead).
     # shellcheck disable=SC2206
     [ -n "${DEVKIT_SLURM_EXTRA_ARGS:-}" ] && SBATCH_OPTS+=( ${DEVKIT_SLURM_EXTRA_ARGS} )
 
-    # APP_CMD reaches slurm_run.sh as ONE argument and runs via `bash -c`, so
-    # quoting survives for APP_COMMAND and RUN_ARGS; a raw multi-arg call here
-    # is space-joined by "$*" first and loses inner quoting.
-    if command -v sbatch >/dev/null 2>&1; then
-        # ${arr[@]+...}: empty-array "${arr[@]}" is fatal under set -u in
-        # bash < 4.4 (RHEL 7/8 SLURM nodes).
-        log_info "Submitting job (${SBATCH_OPTS[*]})..."
-        exec sbatch ${SBATCH_OPTS[@]+"${SBATCH_OPTS[@]}"} "$SLURM_SCRIPT" "$SIF_FILE" ${APP_CMD:+"$APP_CMD"}
-    else
-        log_warn "sbatch not found. Falling back to local execution:"
-        exec bash "$SLURM_SCRIPT" "$SIF_FILE" ${APP_CMD:+"$APP_CMD"}
-    fi
+    # Submit the shell command as one argument to preserve its quoting.
+    # ${arr[@]+...}: empty-array "${arr[@]}" is fatal under set -u in
+    # bash < 4.4 (RHEL 7/8 SLURM nodes).
+    log_info "Submitting job (${SBATCH_OPTS[*]})..."
+    exec sbatch ${SBATCH_OPTS[@]+"${SBATCH_OPTS[@]}"} "$SLURM_SCRIPT" "$SIF_FILE" ${APP_CMD:+"$APP_CMD"}
 fi
 
 # Build Apptainer bind mounts & options
-BIND_OPTS=()
+RUNTIME="$(sif_runtime)" || exit 1
+sif_data_binds
+RUN_OPTS=(--cleanenv)
 
 # Dev mode: bind-mount host workspace into container
 if [ "$MODE" = "dev" ]; then
-    BIND_OPTS+=( "--bind" "${WS_ROOT}:/workspace" )
+    container_ws="$("$RUNTIME" exec "$SIF_FILE" sh -c 'printf %s "${WORKSPACE_PATH:-/workspace}"')"
+    for dir in src config scripts dependencies; do
+        [ ! -d "$WS_ROOT/$dir" ] || BIND_OPTS+=(--bind "$WS_ROOT/$dir:$container_ws/$dir")
+    done
+    RUN_OPTS+=(--writable-tmpfs)
+else
+    RUN_OPTS+=(--containall)
 fi
 
 # GPU / Display / Acceleration Binds
@@ -131,20 +135,25 @@ if [ -n "${WAYLAND_DISPLAY:-}" ]; then
     [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ] && BIND_OPTS+=( "--bind" "${XDG_RUNTIME_DIR}:/tmp/.container_xdg" ) && export APPTAINERENV_XDG_RUNTIME_DIR="/tmp/.container_xdg"
 fi
 
-GPU_FLAGS=()
-if command -v nvidia-smi >/dev/null 2>&1 || [ "${HAS_NVIDIA:-false}" = "true" ]; then
-    GPU_FLAGS+=( "--nv" )
-fi
-
-RUNTIME="$(sif_runtime)" || exit 1
+sif_gpu_flags
+sif_record_run "$SIF_FILE"
 
 log_info "Executing ${SIF_FILE} (mode=${MODE})..."
 if [ -n "${APP_CMD:-}" ]; then
-    # Route the command through the image entrypoint (see sif_entry_args), the
-    # same way `make exec` does for docker.
+    # The entrypoint loads ROS/venv; the wrapper records the command's status.
     read -r -a ENTRY <<< "$(sif_entry_args "$RUNTIME" "$SIF_FILE")"
-    exec "$RUNTIME" exec ${GPU_FLAGS[@]+"${GPU_FLAGS[@]}"} ${BIND_OPTS[@]+"${BIND_OPTS[@]}"} \
-        "$SIF_FILE" ${ENTRY[@]+"${ENTRY[@]}"} bash -c "${APP_CMD}"
+    if [ "${#ENTRY[@]}" -eq 0 ]; then
+        log_error 'Image has no DevKit entrypoint.'
+        sif_record_exit 1
+        exit 1
+    fi
+    RUN_RC=0
+    sif_run_and_record "$RUNTIME" exec "${RUN_OPTS[@]}" ${GPU_FLAGS[@]+"${GPU_FLAGS[@]}"} ${BIND_OPTS[@]+"${BIND_OPTS[@]}"} \
+        "$SIF_FILE" ${ENTRY[@]+"${ENTRY[@]}"} bash -c "${APP_CMD}" || RUN_RC=$?
+    exit "$RUN_RC"
 else
-    exec "$RUNTIME" run ${GPU_FLAGS[@]+"${GPU_FLAGS[@]}"} ${BIND_OPTS[@]+"${BIND_OPTS[@]}"} "$SIF_FILE"
+    # An interactive shell: exec, so the terminal talks to the container
+    # directly. Nothing to close — say so rather than leaving the record open.
+    sif_record_exit interactive
+    exec "$RUNTIME" run "${RUN_OPTS[@]}" ${GPU_FLAGS[@]+"${GPU_FLAGS[@]}"} ${BIND_OPTS[@]+"${BIND_OPTS[@]}"} "$SIF_FILE"
 fi
