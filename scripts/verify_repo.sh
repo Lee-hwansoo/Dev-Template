@@ -525,6 +525,58 @@ rm -rf "$identity_probe"
 [ "$identity_errors" -eq 0 ] \
     && log_ok "The container account survives a taken gid, group name or user name (4 host shapes)."
 # =============================================================================
+# [ide-service] `make start` and the devcontainer must open the SAME service.
+#      They agree only because both resolve through RESOLVE_SVC_MODE and
+#      `make ide-config` writes the answer into devcontainer.json.
+# =============================================================================
+ide_errors=0
+# Both entry points must keep resolving through the one macro; a hand-rolled
+# copy in either is how the editor and the CLI drift onto different services.
+for ide_target in start ide-config; do
+    awk -v t="^${ide_target}:" '$0 ~ t {inside=1; next} /^[a-z]/ && inside {exit} inside && /RESOLVE_SVC_MODE/ {found=1} END {exit found ? 0 : 1}' Makefile \
+        || { log_err "Makefile: '${ide_target}' no longer resolves the service through RESOLVE_SVC_MODE; the editor and the CLI can now open different containers."; ide_errors=1; }
+done
+
+# The REAL rewrite from the recipe, run against the REAL devcontainer.json: a
+# drifted key format or sed expression leaves the editor on a stale service and
+# says nothing, because mv still succeeds.
+# '|| true': an empty result is the finding here, and a bare substitution under
+# 'set -e' would abort the suite instead of reporting it.
+ide_sed="$(sed -n '/sed -E .*"service"/,/> "\$\$DC.tmp"/p' Makefile \
+    | sed -e :a -e '/\\$/N; s/\\\n//; ta' \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]\{2,\}/ /g' -e 's/ && \\*$//' -e 's/\$\$/$/g' || true)"
+[ -n "$ide_sed" ] \
+    || { log_err "Makefile: the ide-config recipe no longer rewrites a \"service\" key; VS Code would keep attaching to the committed default."; ide_errors=1; }
+ide_probe="$(probe_dir)"
+cp .devcontainer/devcontainer.json "$ide_probe/dc.json"
+ide_sed="${ide_sed//\$(CONTAINER_USER)/devkit-probe-user}"
+( DC="$ide_probe/dc.json" TARGET_SVC="basic-nvidia"; eval "$ide_sed" ) >/dev/null 2>&1 || true
+grep -q '"service"[[:space:]]*:[[:space:]]*"basic-nvidia"' "$ide_probe/dc.json.tmp" 2>/dev/null \
+    || { log_err "make ide-config no longer rewrites \"service\" in .devcontainer/devcontainer.json; VS Code would keep attaching to the committed default."; ide_errors=1; }
+# …and the account too. compose creates CONTAINER_USER from .env, but
+# remoteUser reads the EDITOR's environment — rename the user and VS Code
+# attaches as someone the container does not have.
+grep -q '"remoteUser"[[:space:]]*:[[:space:]]*"devkit-probe-user"' "$ide_probe/dc.json.tmp" 2>/dev/null \
+    || { log_err "make ide-config does not rewrite \"remoteUser\"; a CONTAINER_USER set in .env never reaches the editor."; ide_errors=1; }
+rm -rf "$ide_probe"
+
+# Every service the resolver can name must exist, and the committed default
+# must be one of them — devcontainer.json is read before make ever runs.
+ide_modes="$(grep -oE 'SVC_MODE=[a-z]+' Makefile | cut -d= -f2 | sort -u | tr '\n' ' ')"
+[ "$(wc -w <<< "$ide_modes")" -ge 3 ] \
+    || { log_err "the GPU profiles could not be parsed out of RESOLVE_SVC_MODE (got '${ide_modes}')."; ide_errors=1; }
+for ide_prefix in basic ros; do
+    for ide_mode in $ide_modes; do
+        grep -qE "^  ${ide_prefix}-${ide_mode}:" docker-compose.dev.yml \
+            || { log_err "RESOLVE_SVC_MODE can select '${ide_prefix}-${ide_mode}', which docker-compose.dev.yml does not define."; ide_errors=1; }
+    done
+done
+ide_committed="$(sed -n 's/.*"service"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' .devcontainer/devcontainer.json)"
+grep -qE "^  ${ide_committed}:" docker-compose.dev.yml 2>/dev/null \
+    || { log_err ".devcontainer/devcontainer.json points at '${ide_committed}', which is not a service in docker-compose.dev.yml."; ide_errors=1; }
+[ "$ide_errors" -eq 0 ] \
+    && log_ok "The editor and 'make start' resolve one service; ide-config rewrites it and every profile exists ($(wc -w <<< "$ide_modes") profiles)."
+# =============================================================================
 # [run-record] A batch job nobody watched must still be answerable later: which
 #      image, on what the scheduler granted, against which data, and how it
 #      ended. An unterminated record cannot tell "still running" from "died".

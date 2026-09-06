@@ -243,6 +243,7 @@ help:
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "build / start / stop" "Build image, launch containers, stop"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "restart / down" "Restart containers / stop & remove containers"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "shell / term" "Interactive container shell / new window"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "ide-config" "Prepare VS Code for the selected ENV and GPU profile"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "exec CMD='...'" "Run command"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "test / lint" "Run project tests / check style (FIX=1 applies)"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "logs / stats / top" "Stream logs, real-time stats, process monitor"
@@ -279,6 +280,7 @@ setup:
 	fi
 	@bash config/devkit_make_completion.bash --install
 	@$(MAKE) xauth
+	@$(MAKE) ide-config
 
 ## @target adopt : Make this checkout YOUR project (NAME=my-robot [DESC='...'])
 # The identity a fork owns, in one step: the Python package name, the compose
@@ -411,6 +413,25 @@ start: check
 	@$(RESOLVE_SVC_MODE); \
 	echo -e "  $(INFO) Starting $$TARGET_SVC environment..."; \
 	$(COMPOSE) --profile $$TARGET_SVC up -d $$TARGET_SVC
+
+## @target ide-config : Point VS Code at the compose service this host resolves to
+# Rewrites one key — which service — because no devcontainer variable can
+# express a profile chosen from detected hardware. A line edit, not a JSON
+# round-trip: this file is JSONC like every other IDE config here.
+# Run by `make setup`; re-run after changing ENV or GPU_MODE.
+ide-config:
+	$(call GUARD_HOST_ONLY)
+	@$(RESOLVE_SVC_MODE); \
+	DC=.devcontainer/devcontainer.json; \
+	mkdir -p .docker_cache && \
+	TMP=$$(mktemp .docker_cache/ide.XXXXXX) && \
+	trap 'rm -f "$$TMP" "$$DC.tmp"' EXIT && \
+	$(COMPOSE) --profile "$$TARGET_SVC" config --format json > "$$TMP" && \
+	mv "$$TMP" .docker_cache/ide.compose.json && \
+	sed -E -e 's|("service"[[:space:]]*:[[:space:]]*)"[^"]*"|\1"'"$$TARGET_SVC"'"|' \
+	       -e 's|("remoteUser"[[:space:]]*:[[:space:]]*)"[^"]*"|\1"'"$(CONTAINER_USER)"'"|' "$$DC" > "$$DC.tmp" && \
+	mv "$$DC.tmp" "$$DC" && \
+	echo -e "  $(OK) VS Code attaches to $$TARGET_SVC (Reopen in Container)"
 
 ## @target stop : Stop environment containers
 stop:
