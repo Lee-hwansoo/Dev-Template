@@ -197,7 +197,7 @@ tail -f logs/*_12345.out
 | **`SIF_FILE`** | *(자동 감지)* | **원격 서버 내 SIF 이미지 파일 절대/상대 경로** (예: `/scratch/user/images/myproject.sif`) |
 | **`SIF_MODE`** | `dev` | SIF 실행 대상 선택 (`dev`: 개발 셸, `prod`: 단독 실행, `slurm`: SLURM 배치 제출) |
 | **`RUN_ARGS`** | *(없음)* | 컨테이너 내부 실행 명령 축약 인자 (예: `RUN_ARGS='ros2 run myproject train'`) |
-| **`APP_COMMAND`** | *(없음)* | SIF 컨테이너 내부에서 실행할 수행 명령 (`RUN_ARGS` 지정 시 `RUN_ARGS` 우선). 둘 다 없으면 SIF의 기본 runscript 실행 |
+| **`APP_COMMAND`** | *(없음)* | SIF 컨테이너 내부에서 실행할 수행 명령. 우선순위는 `RUN_ARGS` > `ROS_LAUNCH_COMMAND` > `APP_COMMAND`이며, 셋 다 없으면 prod SIF 는 명령이 없다고 종료(2)합니다 |
 | **`DEVKIT_SLURM_PARTITION`** | *(사이트 기본값)* | 작업을 제출할 SLURM 파티션(큐) 이름 (`--partition`). 파티션 이름은 클러스터마다 다르므로 DevKit 은 기본값을 두지 않습니다 — 지정하지 않으면 사이트 기본 파티션으로 갑니다 |
 | **`DEVKIT_SLURM_GRES`** | *(없음)* | 요청할 GPU 제네릭 리소스 (`--gres`, 예: `gpu:a100:1` 또는 `gpu:2`). **지정하지 않으면 GPU 가 할당되지 않습니다** |
 | **`DEVKIT_SLURM_CPUS_PER_TASK`** | `8` | 태스크당 CPU 코어 수 (`--cpus-per-task`) |

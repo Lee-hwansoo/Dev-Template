@@ -36,8 +36,10 @@ done
 sif_require_choice --mode "$MODE" dev prod slurm || exit 2
 sif_require_choice --env "$ENV_NAME" ros dev || exit 2
 
-# APP_COMMAND is the env-var spelling of the trailing command (docs/SLURM.md).
-APP_CMD="${APP_CMD:-${ROS_LAUNCH_COMMAND:-${APP_COMMAND:-}}}"
+# The ONE place the command precedence lives: argv, then RUN_ARGS (the make
+# spelling, exported as-is), then the .env pair. It used to be split with the
+# Makefile, and a ROS_LAUNCH_COMMAND in .env silently beat every RUN_ARGS.
+APP_CMD="${APP_CMD:-${RUN_ARGS:-${ROS_LAUNCH_COMMAND:-${APP_COMMAND:-}}}}"
 
 # An explicit SIF_FILE is used as-is and MUST exist: substituting a stale local
 # artifact for a mistyped /scratch path runs the wrong image silently. The

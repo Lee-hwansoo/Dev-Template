@@ -36,7 +36,7 @@ SIF_IMAGE="$1"; shift
 
 if [ $# -eq 1 ]; then CMD=( bash -c "$1" )
 elif [ $# -gt 1 ]; then CMD=( "$@" )
-elif [ -n "${ROS_LAUNCH_COMMAND:-${APP_COMMAND:-}}" ]; then CMD=( bash -c "${ROS_LAUNCH_COMMAND:-$APP_COMMAND}" )
+elif [ -n "${RUN_ARGS:-${ROS_LAUNCH_COMMAND:-${APP_COMMAND:-}}}" ]; then CMD=( bash -c "${RUN_ARGS:-${ROS_LAUNCH_COMMAND:-$APP_COMMAND}}" )
 else log_error 'No job command. Pass RUN_ARGS or APP_COMMAND.'; exit 2; fi
 
 RUNTIME="$(sif_runtime)"

@@ -537,12 +537,11 @@ bake-prod:
 ## @target run-sif : Run or submit SIF artifact
 run-sif:
 	$(call GUARD_HOST_ONLY)
-	@# RUN_ARGS travels through the ENVIRONMENT, like `make exec` does with CMD:
-	@# passing it as a quoted argument put its inner quotes through a second round
-	@# of shell parsing, so the documented RUN_ARGS='python3 -c "print(1)"' died
-	@# with a syntax error. Precedence (RUN_ARGS over APP_COMMAND) is preserved.
+	@# RUN_ARGS travels through the ENVIRONMENT (make exports it), like `make exec`
+	@# does with CMD: as a quoted argument its inner quotes went through a second
+	@# round of shell parsing. apptainer_run.sh owns the precedence.
 	@# A '$' still belongs to make first — double it: RUN_ARGS='echo $$HOME'.
-	@APP_COMMAND="$${RUN_ARGS:-$$APP_COMMAND}" bash scripts/apptainer_run.sh --mode $(SIF_MODE) --env $(ENV)
+	@bash scripts/apptainer_run.sh --mode $(SIF_MODE) --env $(ENV)
 
 ## @target slurm-status : Query active SLURM jobs
 slurm-status:

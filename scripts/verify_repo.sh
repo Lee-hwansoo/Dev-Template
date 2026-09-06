@@ -812,6 +812,16 @@ else
     grep -qxF 'python3 -c "pass"' "$submit_probe/argv" \
         || { log_err "the job command reaches sbatch split across arguments; inner quoting is lost."; submit_errors=1; }
 fi
+# RUN_ARGS (what `make run-sif RUN_ARGS=…` exports) must beat the .env pair.
+# The precedence was split across two files once, and a ROS_LAUNCH_COMMAND kept
+# in .env silently replaced every RUN_ARGS a user typed.
+rm -f "$submit_probe/argv"
+( export PATH="$submit_probe/bin:$probe_min_path" WORKSPACE_PATH="$submit_probe" \
+         SIF_FILE="$submit_probe/artifact.sif" \
+         RUN_ARGS='from-run-args' ROS_LAUNCH_COMMAND='from-dotenv' APP_COMMAND='from-dotenv-too'
+  bash scripts/apptainer_run.sh --mode slurm --env dev ) >/dev/null 2>&1 || true
+grep -qxF 'from-run-args' "$submit_probe/argv" 2>/dev/null \
+    || { log_err "RUN_ARGS loses to the .env launch command (sbatch got: $(grep -E 'from-' "$submit_probe/argv" 2>/dev/null | tr '\n' ' '))."; submit_errors=1; }
 
 # The dangerous one: no sbatch must NOT mean "run it here".
 rm -f "$submit_probe/argv"
