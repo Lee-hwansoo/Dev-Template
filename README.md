@@ -263,7 +263,8 @@ MAJOR 상승은 "파생 프로젝트가 무언가 고쳐야 한다"는 뜻입니
 >
 > **근거의 세 등급**을 구분합니다 — `CI(실행됨)` 은 GitHub Actions 에서 실제로 통과한 잡,
 > `참조 호스트` 는 위 머신에서의 실측, `정의만, 미실행` 은 워크플로우에 잡은 있으나 아직
-> 한 번도 트리거되지 않은 것입니다(무거운 잡은 cron·수동 전용). 한 대의 호스트와 한 종류의
+> 한 번도 트리거되지 않은 것입니다 — 무거운 잡(runtime-smoke, prod-artifact, sif-artifact, arm64)은
+> cron·수동 전용이며, 위 표의 상태는 `workflow_dispatch` 로 실제 실행해 확인한 결과입니다. 한 대의 호스트와 한 종류의
 > CI 러너 결과이므로 네이티브 Linux 호스트 감지·macOS 로 일반화하지 않습니다.
 
 | 조합 | 상태 | 근거 |
@@ -271,13 +272,14 @@ MAJOR 상승은 "파생 프로젝트가 무언가 고쳐야 한다"는 뜻입니
 | 이미지 스테이지 빌드 (`base`, `build-core`) | ✅ 실행 검증 | CI(실행됨) `images.yml` image-stages |
 | ROS 저장소·GPG (noetic·humble, 라이브 및 스냅샷 키) | ✅ 실행 검증 | CI(실행됨) `images.yml` apt-key-paths |
 | 계약 스위트 48개 · Dockerfile 린트 | ✅ 실행 검증 | CI(실행됨) `verify.yml` contracts |
+| 개발 컨테이너 스모크 (빌드 · 기동 · ROS 2 파이썬) | ✅ 실행 검증 | CI(실행됨) `images.yml` runtime-smoke · 참조 호스트 |
 | WSL2 호스트: 감지 · 빌드 · 실행 (ROS 2) | ✅ 실행 검증 | 참조 호스트 |
 | NVIDIA GPU 패스스루 (`nvidia-smi`, `libcuda`) | ✅ 실행 검증 — **WSL2 경로만**. 네이티브 Linux 는 장치 노드가 달라(`/dev/nvidia*`) 별개 | 참조 호스트 |
 | GUI · GL 가속 (X11, WSLg/D3D12) | ✅ 실행 검증 — **WSL2 경로만** | 참조 호스트 |
-| 프로덕션 런타임 이미지 (non-root, venv) | ✅ 실행 검증 | 참조 호스트 (CI 잡은 정의만, 미실행) |
-| SIF 변환 · 실행 · 작업 기록 | ✅ 실행 검증 | 참조 호스트 (CI 잡은 정의만, 미실행) |
+| 프로덕션 런타임 이미지 (non-root, venv) | ✅ 실행 검증 | CI(실행됨) `images.yml` prod-artifact · 참조 호스트 |
+| SIF 변환 · 실행 · 작업 기록 | ✅ 실행 검증 | CI(실행됨) `images.yml` sif-artifact · 참조 호스트 |
 | SLURM 제출 · 실행 · 종료 상태 기록 | ✅ 실행 검증 — 단일 노드 컨테이너 클러스터. **컨테이너 런타임은 스텁** | 참조 호스트 |
-| arm64 이미지: 빌드 · 실행 · 계정 생성 | ✅ 실행 검증 — **QEMU 에뮬레이션** | 참조 호스트 (CI 잡은 정의만, 미실행) |
+| arm64 이미지: 빌드 · 실행 · 계정 생성 | ✅ 실행 검증 — **QEMU 에뮬레이션** | CI(실행됨) `images.yml` arm64-image · 참조 호스트 |
 | 네이티브 Linux 호스트 감지 (`/dev/dri`, `/dev/nvidia*`) | ⚠️ 계약만 — WSL2 에서는 `/proc/version` 을 바꿔 흉내낼 수 없음 | `verify.yml` contracts |
 | macOS 호스트 (bash 3.2 · BSD sed/awk) | ✅ 실행 검증 | CI(실행됨) `verify.yml` macos-host |
 | 다중 노드 SLURM (실제 클러스터) | ❌ 미검증 — 테스트 노드가 하나 | — |
