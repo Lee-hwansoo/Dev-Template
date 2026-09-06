@@ -1,11 +1,13 @@
 #!/bin/bash
 # =============================================================================
-# scripts/util_setup_links.sh
-# Centralized management for workspace symlinks (colcon.meta, dependencies, etc.)
+# scripts/util_setup_links.sh — the workspace convenience symlinks
+# (colcon.meta, .venv, compile_commands.json). `make clean` drops them; an
+# interactive shell recreates them.
 # =============================================================================
 
-source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || source "/tmp/util_paths.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || { echo "  [ERROR] Cannot load config/util_paths.sh (broken checkout?)" >&2; exit 1; }
 devkit_require "util_logging.sh"
+LOG_PREFIX="[Links]"
 
 usage() {
     cat <<'EOF'
@@ -62,9 +64,15 @@ safe_link() {
     # Remove existing entry (symlink or regular file) and re-create
     # Use -f instead of -rf: the target is always a symlink or file, never a directory we own
     rm -f "$dest"
-    ln -sf "$src" "$dest"
+    # Link RELATIVE to the workspace when both ends live in it. The workspace is
+    # bind-mounted, so an absolute container path ("/workspace/config/…") is
+    # written into the host tree too, where it dangles — one `make start` then
+    # broke `make verify` on the host.
+    local target="$src"
+    case "$src" in "${WS_ROOT}/"*) case "$dest" in "${WS_ROOT}/"*) target="${src#"${WS_ROOT}/"}" ;; esac ;; esac
+    ln -sf "$target" "$dest"
 
-    if [[ "$VERBOSE" == true && -n "$LOG_PREFIX" ]]; then
+    if [ "$VERBOSE" = true ]; then
         log_ok "$desc synchronized."
     fi
 }
@@ -72,14 +80,13 @@ safe_link() {
 # 1. colcon.meta (Build Optimization Configuration)
 safe_link "$COLCON_META_SRC" "${WS_ROOT}/colcon.meta" "Colcon configuration"
 
-
 # 2. .venv (IDE Integration)
 safe_link "$VENV_DIR_SRC" "${WS_ROOT}/.venv" "Virtual environment"
 
 # 3. compile_commands.json (C++ IntelliSense)
 # If we have multiple package-specific build directories (e.g. ROS colcon), merge them into a single compile_commands.json
 if [ "$SYNC_COMPILE_COMMANDS" = true ] && [ -d "${WS_ROOT}/build" ]; then
-    if [ "$VERBOSE" == true ]; then
+    if [ "$VERBOSE" = true ]; then
         log_info "Aggregating compile_commands.json from all sub-packages..."
     fi
     if ! BUILD_DIR="${WS_ROOT}/build" python3 -c "

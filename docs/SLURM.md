@@ -25,6 +25,13 @@ graph LR
 1. **원격 서버 레포 위치**: `~/projects/DevKit` (소스 코드, 메이크파일 및 환경 설정 유지)
 2. **원격 서버 SIF 이미지 위치**: `~/images/` 또는 `/scratch/user/images/` (레포 외부 대용량 이미지 스토리지)
 
+> **전제: 레포는 모든 컴퓨트 노드가 마운트하는 파일시스템에 있어야 합니다.**
+> `sbatch` 는 `slurm_run.sh` 를 자신의 스풀로 복사하지만, 그 스크립트가 `$DEVKIT_REPO_ROOT/config/util_paths.sh`
+> 를 **소스**합니다. `$HOME` 이나 공유 `/scratch` 는 되지만 노드-로컬 디스크(`/tmp`, 노드 전용 NVMe)는 안 됩니다 —
+> 절대경로인지 여부와는 무관하며, 컴퓨트 노드에서 **보이는지**가 조건입니다. 같은 경로가 노드마다 다른 내용을
+> 가리키는 경우가 가장 위험하므로, 컴퓨트 노드가 다른 경로로 본다면 `DEVKIT_REPO_ROOT` 로 그 경로를 지정하십시오.
+> `SLURM_RUN_ROOT` 를 지정하지 않으면 실행 기록이 `<레포>/logs` 로 가므로 **쓰기 권한**도 필요합니다.
+
 ---
 
 ## 1. 사전 준비 및 개념 이해
@@ -50,13 +57,13 @@ graph TD
         DataLink["data/ → Symlink / APPTAINER_BIND<br/>(실시간 입출력)"]
     end
 
-    Repo -->|1. Apptainer Bind Mount| Root
+    Repo -.->|개발 모드의 소스 바인드| Root
     Storage <-->|2. Symlink / Direct IO| DataLink
     SIF_Img -->|3. Load Execution Environment| Root
 ```
 
 1. **소프트웨어 런타임 공급**: 외부 경로의 `.sif` 파일이 격리된 실행 환경을 공급합니다.
-2. **레포지토리 마운트**: 원격 서버의 레포지토리(`~/projects/DevKit`)가 SIF 내부 `/workspace`로 바인드 마운트되어 동적 코드를 실행합니다.
+2. **프로덕션 실행**: SIF에 설치된 프로그램을 실행합니다. 호스트 레포는 작업 스크립트와 공통 함수를 읽는 데 사용하며, 컨테이너 소스 마운트는 `SIF_MODE=dev`에서만 적용됩니다.
 3. **대용량 데이터 입출력 (Symlink & Bind)**: 대용량 데이터셋 및 체크포인트, 런타임 결과 파일은 레포 내부의 심볼릭 링크(예: `data -> /scratch/user/data`) 또는 `APPTAINER_BIND` 환경변수를 통해 서버 스토리지로 직접 입출력(Stream)됩니다.
 
 ---
@@ -68,22 +75,12 @@ graph TD
 로컬 개발 PC에서 개발 및 테스트가 완료되면, 운영 서버로 전송할 SIF 단일 이미지 파일을 생성합니다.
 
 ```bash
-# ROS 프로덕션 SIF 이미지 생성 (권장)
-make bake-prod ENV=ros
-
-# Pure C++/Python 프로덕션 SIF 이미지 생성
-make bake-prod ENV=dev
-
-# Full CUDA 스택 포함 프로덕션 SIF 생성 (NVIDIA CUDA 라이브러리 풀패키지)
-PROD_FULL_CUDA=1 make bake-prod ENV=ros
+make bake-prod ENV=ros        # 또는 ENV=dev — 결과: <프로젝트>-<환경>-prod-<아키텍처>.sif (예: myproject-ros-prod-amd64.sif)
 ```
-> 생성된 SIF 파일예시: `myproject_ros_prod_latest.sif`
 
-> **의존성 동기화 실패 정책 (fail-open 스위치)**: 워크스페이스 의존성 동기화(`sync_deps` / `setup_sync_deps.sh`)는
-> **기본적으로 실패 시 즉시 중단**됩니다 — 의존성이 누락된 이미지가 원격 클러스터에 배포되는 것을 막기 위함입니다.
-> 오프라인·사설 레포 등으로 의도적으로 일부만 받고 진행해야 한다면 `DEVKIT_VCS_ALLOW_FAILURE=1`(서드파티 vcs) 또는
-> `DEVKIT_ROSDEP_ALLOW_FAILURE=1`(rosdep)로 **fail-open**을 명시적으로 켜세요. 단, 이 경우 의존성이 빠진 SIF가
-> 생성될 수 있으니 주의하세요. (상세: [`docs/DEVELOPMENT.md`](DEVELOPMENT.md))
+굽기 옵션(`PROD_FULL_CUDA`, `SOURCE_DATE_EPOCH`, 소스 비유출 스위치)과 Apple Silicon 에서 x86 아카이브를 만드는
+`BAKE_FORMAT=oci` 경로는 [DEPLOY.md](DEPLOY.md) 가, 의존성 동기화가 실패할 때의 정책은
+[DEPENDENCIES.md](DEPENDENCIES.md#동기화-실패-정책) 가 설명합니다.
 
 ---
 
@@ -93,7 +90,7 @@ PROD_FULL_CUDA=1 make bake-prod ENV=ros
 
 ```bash
 # SIF 이미지를 원격 서버의 외부 이미지 스토리지 경로로 전송
-scp myproject_ros_prod_latest.sif user@hpc.your-domain.com:/scratch/user/images/
+scp myproject-ros-prod-amd64.sif user@hpc.your-domain.com:/scratch/user/images/
 ```
 
 ---
@@ -102,19 +99,25 @@ scp myproject_ros_prod_latest.sif user@hpc.your-domain.com:/scratch/user/images/
 
 원격 서버의 **레포지토리 디렉토리(`~/projects/DevKit`)로 이동**한 후, `SIF_FILE` 경로 변수를 지정하여 실행합니다.
 
+> **프로덕션 SIF 에는 `install/` 만 들어갑니다.** `src/` 는 복사되지 않으므로 `python3 train.py`
+> 같은 소스 파일 경로는 열리지 않습니다. `colcon build` 가 `install/bin` 에 넣은 실행 파일
+> (`ros2 run <패키지> <노드>`) 이나 venv 에 설치된 콘솔 스크립트를 지정하세요. 소스를 그대로
+> 실행하려면 `SIF_MODE=dev` 를 쓰십시오 — 이 모드만 워크스페이스를 바인드합니다.
+
+
 ```bash
 # 원격 서버 접속 및 레포 이동
 ssh user@hpc.your-domain.com
 cd ~/projects/DevKit
 
 # 1) 간단한 일회성 명령 실행 (RUN_ARGS 활용)
-SIF_FILE=/scratch/user/images/myproject_ros_prod_latest.sif make run-sif SIF_MODE=prod ENV=ros RUN_ARGS='python3 train.py'
+SIF_FILE=/scratch/user/images/myproject-ros-prod-amd64.sif make run-sif SIF_MODE=prod ENV=ros RUN_ARGS='ros2 run myproject train'
 
 # 2) 환경변수 기반 명령 지정 (APP_COMMAND 활용)
-SIF_FILE=/scratch/user/images/myproject_ros_prod_latest.sif APP_COMMAND="python3 train.py" make run-sif SIF_MODE=prod ENV=ros
+SIF_FILE=/scratch/user/images/myproject-ros-prod-amd64.sif APP_COMMAND="ros2 run myproject train" make run-sif SIF_MODE=prod ENV=ros
 
 # 3) Direct apptainer 명령으로 실행 시
-apptainer run --nv /scratch/user/images/myproject_ros_prod_latest.sif python3 train.py
+apptainer run --nv /scratch/user/images/myproject-ros-prod-amd64.sif ros2 run myproject train
 ```
 
 ---
@@ -127,18 +130,18 @@ apptainer run --nv /scratch/user/images/myproject_ros_prod_latest.sif python3 tr
 cd ~/projects/DevKit
 
 # 1) RUN_ARGS 축약형 구문으로 SLURM 작업 제출 (추천)
-SIF_FILE=/scratch/user/images/myproject_ros_prod_latest.sif \
+SIF_FILE=/scratch/user/images/myproject-ros-prod-amd64.sif \
 DEVKIT_SLURM_PARTITION=gpu \
 DEVKIT_SLURM_GRES=gpu:1 \
-DEVKIT_SLURM_CPUS=8 \
+DEVKIT_SLURM_CPUS_PER_TASK=8 \
 DEVKIT_SLURM_TIME=12:00:00 \
-make run-sif SIF_MODE=slurm ENV=ros RUN_ARGS='python3 train.py --epochs 100'
+make run-sif SIF_MODE=slurm ENV=ros RUN_ARGS='ros2 run myproject train --epochs 100'
 
 # 2) APP_COMMAND 명시형 구문
-SIF_FILE=/scratch/user/images/myproject_ros_prod_latest.sif \
+SIF_FILE=/scratch/user/images/myproject-ros-prod-amd64.sif \
 DEVKIT_SLURM_PARTITION=gpu \
 DEVKIT_SLURM_GRES=gpu:1 \
-APP_COMMAND="python3 train.py --epochs 100" \
+APP_COMMAND="ros2 run myproject train --epochs 100" \
 make run-sif SIF_MODE=slurm ENV=ros
 ```
 
@@ -151,8 +154,8 @@ make run-sif SIF_MODE=slurm ENV=ros
 # 현재 제출한 SLURM 작업 목록 조회 (squeue 연동)
 make slurm-status
 
-# 실행 중이거나 대기 중인 SLURM 작업 전체 취소 (scancel 연동)
-make slurm-cancel
+# 작업 하나를 ID 로 취소 (scancel 연동; ID 를 생략하면 물어봅니다)
+make slurm-cancel JOB=12345
 ```
 
 #### 2) 💡 SLURM 로그 출력 경로 및 실시간 모니터링 팁
@@ -182,20 +185,32 @@ tail -f logs/*_12345.out
 | :--- | :--- | :--- |
 | **`SIF_FILE`** | *(자동 감지)* | **원격 서버 내 SIF 이미지 파일 절대/상대 경로** (예: `/scratch/user/images/myproject.sif`) |
 | **`SIF_MODE`** | `dev` | SIF 실행 대상 선택 (`dev`: 개발 셸, `prod`: 단독 실행, `slurm`: SLURM 배치 제출) |
-| **`RUN_ARGS`** | *(없음)* | 컨테이너 내부 실행 명령 축약 인자 (예: `RUN_ARGS='python3 train.py'`) |
-| **`APP_COMMAND`** | `python3 -V` | SIF 컨테이너 내부에서 실행할 수행 명령 (`RUN_ARGS` 지정 시 `RUN_ARGS` 우선) |
-| **`DEVKIT_SLURM_PARTITION`** | `local` | 작업을 제출할 SLURM 파티션(큐) 이름 (`--partition`) |
-| **`DEVKIT_SLURM_GRES`** | `gpu:1` | 요청할 GPU 제네릭 리소스 (`--gres`, 예: `gpu:a100:1` 또는 `gpu:2`) |
-| **`DEVKIT_SLURM_CPUS_PER_TASK`** | `4` | 태스크당 CPU 코어 수 (`--cpus-per-task`) |
+| **`RUN_ARGS`** | *(없음)* | 컨테이너 내부 실행 명령 축약 인자 (예: `RUN_ARGS='ros2 run myproject train'`) |
+| **`APP_COMMAND`** | *(없음)* | SIF 컨테이너 내부에서 실행할 수행 명령. 우선순위는 `RUN_ARGS` > `ROS_LAUNCH_COMMAND` > `APP_COMMAND`이며, 셋 다 없으면 prod SIF 는 명령이 없다고 종료(2)합니다 |
+| **`DEVKIT_SLURM_PARTITION`** | *(사이트 기본값)* | 작업을 제출할 SLURM 파티션(큐) 이름 (`--partition`). 파티션 이름은 클러스터마다 다르므로 DevKit 은 기본값을 두지 않습니다 — 지정하지 않으면 사이트 기본 파티션으로 갑니다 |
+| **`DEVKIT_SLURM_GRES`** | *(없음)* | 요청할 GPU 제네릭 리소스 (`--gres`, 예: `gpu:a100:1` 또는 `gpu:2`). **지정하지 않으면 GPU 가 할당되지 않습니다** |
+| **`DEVKIT_SLURM_CPUS_PER_TASK`** | `8` | 태스크당 CPU 코어 수 (`--cpus-per-task`) |
 | **`DEVKIT_SLURM_NODES`** / **`DEVKIT_SLURM_NTASKS`** | `1` / `1` | 노드 수 / 태스크 수 (`--nodes` / `--ntasks`) |
-| **`DEVKIT_SLURM_MEM`** | `32G` | 작업 메모리 (`--mem`, 예: `64G`) — 항상 지정됨(기본값은 `scripts/slurm_run.sh`의 `#SBATCH --mem`) |
-| **`DEVKIT_SLURM_TIME`** | `00:30:00` | 최대 작업 허용 시간 (`--time`, `HH:MM:SS`) |
+| **`DEVKIT_SLURM_MEM`** | `32G` | 작업 메모리 (`--mem`, 예: `64G`) |
+| **`DEVKIT_SLURM_TIME`** | `02:00:00` | 최대 작업 허용 시간 (`--time`, `HH:MM:SS`) |
 | **`DEVKIT_SLURM_JOB_NAME`** | `devkit` | 작업 이름 (`--job-name`; 로그 파일명 `%x`에 사용) |
+| **`DEVKIT_SLURM_OUTPUT`** / **`_ERROR`** | `logs/%x_%j.out` / `.err` | 표준 출력/에러 로그 경로 (`--output` / `--error`) |
+| **`DEVKIT_SLURM_SIGNAL`** | `B:TERM@60` | 시간 제한 도달 **전** 배치 셸에 보낼 신호 (`--signal`). `B:` 접두사가 있어야 작업 스텝이 아니라 배치 셸이 받으며, 그래야 `slurm_run.sh` 의 트랩이 작업을 정리할 시간을 얻습니다. 없으면 유예는 `KillWait`(기본 30초)뿐입니다 |
+| **`DEVKIT_SLURM_COMMENT`** | *(없음)* | 작업 주석 (`--comment`, 회계/추적용) |
+| **`DEVKIT_SLURM_ACCOUNT`** | *(사이트 기본값)* | 사용량을 청구할 계정/할당 (`--account`) |
+| **`DEVKIT_SLURM_ARRAY`** | *(없음)* | 배열 작업 인덱스 (`--array`, 예: `0-9%4` = 10개 중 동시 4개). 각 태스크는 `SLURM_ARRAY_TASK_ID` 로 구분되며 실행 기록에 남습니다 |
 | **`DEVKIT_SLURM_EXTRA_ARGS`** | *(없음)* | 위 목록에 없는 임의의 `sbatch` 플래그를 그대로 통과 (예: `--account=lab --qos=high --exclusive`) |
+| **`SLURM_DATA_ROOT`** / **`CONTAINER_DATA_ROOT`** | *(없음)* / `/workspace/data` | 읽기 전용 데이터셋 바인드: 호스트 경로 → 컨테이너 마운트 지점 |
+| **`SLURM_RUN_ROOT`** / **`CONTAINER_RUN_ROOT`** | *(없음)* / `/runs` | 쓰기 가능 산출물 바인드: 호스트 경로 → 컨테이너 마운트 지점 |
 
-> **적용 우선순위**: 환경변수 > `scripts/slurm_run.sh`의 `#SBATCH` 지시자 > 기본값. `DEVKIT_SLURM_EXTRA_ARGS`는 관리 대상
-> 인자 **뒤에** 추가되어 필요 시 이를 덮어쓸 수 있습니다. 단, 공백이 포함된 값은 지원하지 않으므로(단어 분할) 그런 경우
-> `scripts/slurm_run.sh`의 `#SBATCH` 지시자를 직접 사용하세요.
+> **기본값의 출처**: 위 기본값은 모두 `scripts/slurm_run.sh` 상단의 `#SBATCH` 지시자입니다. 클러스터 표준값을 고정하려면
+> 환경변수 대신 그 파일을 수정하세요.
+>
+> **적용 우선순위**: `DEVKIT_SLURM_*` 환경변수 > `scripts/slurm_run.sh`의 `#SBATCH` 지시자.
+> `scripts/apptainer_run.sh`가 환경변수를 `sbatch` **명령행 플래그**로 변환해 전달하며, 명령행 플래그는 스크립트 내
+> `#SBATCH` 지시자를 덮어씁니다. 지정하지 않은 변수는 `#SBATCH` 기본값을 그대로 유지합니다.
+> `DEVKIT_SLURM_EXTRA_ARGS`는 관리 대상 인자 **뒤에** 추가되어 필요 시 이를 덮어쓸 수 있습니다. 단, 공백이 포함된
+> 값은 지원하지 않으므로(단어 분할) 그런 경우 `#SBATCH` 지시자를 직접 사용하세요.
 
 > **예시 (보여주신 설정을 env만으로 재현)**:
 > ```bash
@@ -205,7 +220,7 @@ tail -f logs/*_12345.out
 > DEVKIT_SLURM_OUTPUT=/home/ailab/AILabDataset/slurm-logs/%x_%j.out \
 > DEVKIT_SLURM_ERROR=/home/ailab/AILabDataset/slurm-logs/%x_%j.err \
 > DEVKIT_SLURM_COMMENT=submitter:sangbum \
-> APP_COMMAND="python3 train.py" make run-sif SIF_MODE=slurm ENV=ros
+> APP_COMMAND="ros2 run myproject train" make run-sif SIF_MODE=slurm ENV=ros
 > ```
 
 ### 서버 공유 스토리지 바인드 마운트 (`APPTAINER_BIND`)
@@ -214,18 +229,18 @@ HPC 서버의 외부 공유 스토리지 폴더를 SIF 내부로 바인드 연�
 ```bash
 # /scratch 및 /global 공유 폴더를 SIF 내부 동일 경로로 마운트 실행
 APPTAINER_BIND="/scratch:/scratch,/global:/global" \
-SIF_FILE=/scratch/user/images/myproject_ros_prod_latest.sif \
-make run-sif SIF_MODE=prod ENV=ros RUN_ARGS='python3 train.py'
+SIF_FILE=/scratch/user/images/myproject-ros-prod-amd64.sif \
+make run-sif SIF_MODE=prod ENV=ros RUN_ARGS='ros2 run myproject train'
 ```
 
 ---
 
 ## 4. 트러블슈팅 (Troubleshooting)
 
-### Q1. `SIF not found: /path/to/sif` 오류가 발생합니다.
+### Q1. `SIF artifact not found: /path/to/sif` 오류가 발생합니다.
 - `SIF_FILE` 경로에 지정한 절대 경로가 올바른지 파일 존재 여부를 확인하세요:
   ```bash
-  ls -la /scratch/user/images/myproject_ros_prod_latest.sif
+  ls -la /scratch/user/images/myproject-ros-prod-amd64.sif
   ```
 
 ### Q2. `apptainer: command not found` 또는 `sbatch: command not found` 오류가 발생합니다.

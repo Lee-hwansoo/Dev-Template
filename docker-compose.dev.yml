@@ -1,51 +1,64 @@
 # =============================================================================
-# docker-compose.dev.yml
-# Development (Dev) Environment Configuration — GUI integration and Source Code Bind Mount
+# docker-compose.dev.yml — the concrete services: the ENV split (ros vs dev),
+# the workspace bind mount, GUI forwarding and the per-ENV healthcheck.
 # =============================================================================
 include:
   - path: docker-compose.common.yml
 
-# ── Development Volume Mounting Anchors (Source Code & Persistence) ──────────
-# Xauthority uses container-scoped version from check_env.sh when available
-# SSH uses agent forwarding through a stable in-container socket path.
+# ── Build output volumes (one set per ENV) ───────────────────────────────────
+# The host wiring lives in base-common and `extends` appends these to it, so the
+# eight shared mounts are written once. Empty in .env = a named volume (isolated
+# in Docker); a path = a bind mount onto the host.
 x-dev-volumes: &dev-volumes
-  - ${HOST_WORKSPACE_PATH:-.}:${WORKSPACE_PATH:-/workspace}:rw
-  - ${HOST_X11_DIR:-/tmp/.X11-unix}:/tmp/.X11-unix:rw
-  - ${HOST_XAUTHORITY:-/tmp/.container_xauth}:/tmp/.container_xauth:ro
-  - ${HOST_XDG_RUNTIME_DIR:-/tmp/.container_xdg}:/tmp/.container_xdg:rw
-  - ${GIT_CONFIG_PATH:-${HOST_GITCONFIG:-/dev/null}}:/home/${CONTAINER_USER:-user}/.gitconfig:ro
-  - ${HOST_SSH_AUTH_SOCK:-/dev/null}:/tmp/ssh-auth.sock:ro
-  - ${HOST_CACHE_DIR:-${HOST_WORKSPACE_PATH:-.}/.docker_cache}:/cache:rw
   - ${DEV_BUILD_VOL:-dev_build_data}:${WORKSPACE_PATH:-/workspace}/build
   - ${DEV_INSTALL_VOL:-dev_install_data}:${WORKSPACE_PATH:-/workspace}/install
   - ${DEV_LOG_VOL:-dev_log_data}:${WORKSPACE_PATH:-/workspace}/log
-  - ${WSL_LIB_DIR_MOUNT:-/tmp}:/usr/lib/wsl:ro
 
 x-ros-volumes: &ros-volumes
-  - ${HOST_WORKSPACE_PATH:-.}:${WORKSPACE_PATH:-/workspace}:rw
-  - ${HOST_X11_DIR:-/tmp/.X11-unix}:/tmp/.X11-unix:rw
-  - ${HOST_XAUTHORITY:-/tmp/.container_xauth}:/tmp/.container_xauth:ro
-  - ${HOST_XDG_RUNTIME_DIR:-/tmp/.container_xdg}:/tmp/.container_xdg:rw
-  - ${GIT_CONFIG_PATH:-${HOST_GITCONFIG:-/dev/null}}:/home/${CONTAINER_USER:-user}/.gitconfig:ro
-  - ${HOST_SSH_AUTH_SOCK:-/dev/null}:/tmp/ssh-auth.sock:ro
-  - ${HOST_CACHE_DIR:-${HOST_WORKSPACE_PATH:-.}/.docker_cache}:/cache:rw
   - ${ROS_BUILD_VOL:-ros_build_data}:${WORKSPACE_PATH:-/workspace}/build
   - ${ROS_INSTALL_VOL:-ros_install_data}:${WORKSPACE_PATH:-/workspace}/install
   - ${ROS_LOG_VOL:-ros_log_data}:${WORKSPACE_PATH:-/workspace}/log
-  - ${WSL_LIB_DIR_MOUNT:-/tmp}:/usr/lib/wsl:ro
+
+# ── Healthchecks (one per ENV) ───────────────────────────────────────────────
+# ROS: the DDS stack is only useful once the distro sourced, so probe that.
+# Dev: pid 1 liveness — cheaper than any command, and 'echo alive' would pass
+# in a container whose shell has already died.
+x-ros-healthcheck: &ros-healthcheck
+  test:
+    [
+      "CMD",
+      "bash",
+      "-c",
+      ". /opt/ros/$${ROS_DISTRO}/setup.bash 2>/dev/null && (ros2 --help >/dev/null 2>&1 || roscore -h >/dev/null 2>&1)",
+    ]
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 30s
+
+x-dev-healthcheck: &dev-healthcheck
+  test: ["CMD-SHELL", "kill -0 1 2>/dev/null || exit 1"]
+  interval: 30s
+  timeout: 5s
+  retries: 3
+  start_period: 10s
 
 # SSH Agent Forwarding environment (shared across dev services)
 x-ssh-agent-env: &ssh-agent-env
   SSH_AUTH_SOCK: ${HOST_SSH_AUTH_SOCK:+/tmp/ssh-auth.sock}
 
 # ── Developer Service Shared Configuration (Target: dev) ─────────────────────
+# `command: bash`, fixed: the dev container is the workspace, and APP_COMMAND /
+# ROS_LAUNCH_COMMAND belong to the production entrypoint. Reading them here
+# turned `make start` into a restart loop once .env carried one for bake-prod.
 x-dev-shared: &dev-shared
   build:
     target: dev
   environment:
     <<: *ssh-agent-env
   volumes: *dev-volumes
-  command: ${APP_COMMAND:-bash}
+  command: bash
+  healthcheck: *dev-healthcheck
 
 x-ros-dev-shared: &ros-dev-shared
   build:
@@ -53,12 +66,13 @@ x-ros-dev-shared: &ros-dev-shared
   environment:
     <<: *ssh-agent-env
   volumes: *ros-volumes
-  command: ${ROS_LAUNCH_COMMAND:-bash}
+  command: bash
+  healthcheck: *ros-healthcheck
 
 services:
   # [Pure Dev] Development Services
   basic-cpu:
-    extends: { file: docker-compose.common.yml, service: base-dev }
+    extends: { file: docker-compose.common.yml, service: base-common }
     <<: *dev-shared
     profiles: ["basic-cpu"]
 
@@ -74,17 +88,17 @@ services:
 
   # [ROS] Development Services (Default Entry Point)
   ros-cpu:
-    extends: { file: docker-compose.common.yml, service: base-ros }
+    extends: { file: docker-compose.common.yml, service: base-common }
     <<: *ros-dev-shared
     profiles: ["ros-cpu"]
 
   ros-igpu:
-    extends: { file: docker-compose.common.yml, service: base-ros-igpu }
+    extends: { file: docker-compose.common.yml, service: base-igpu }
     <<: *ros-dev-shared
     profiles: ["ros-igpu"]
 
   ros-nvidia:
-    extends: { file: docker-compose.common.yml, service: base-ros-nvidia }
+    extends: { file: docker-compose.common.yml, service: base-nvidia }
     <<: *ros-dev-shared
     profiles: ["ros-nvidia"]
 

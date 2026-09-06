@@ -1,14 +1,10 @@
 {
   // =========================================================================
-  // .vscode/tasks.json
-  // Build, test, and utility tasks for DevKit projects
+  // .vscode/tasks.json — build, test and utility tasks (ROS 1/2 and CMake).
   //
-  // Supports ROS 1/2 workspace builds and CMake projects.
-  // ROS version is auto-detected via the ROS_DISTRO environment variable.
-  //
-  // Execution Strategy:
-  //   - When inside a Dev Container: tasks run directly in the container shell
-  //   - When on the host: tasks use `docker exec` to reach the running container
+  // Every task runs in the shell VS Code is attached to, so run them from
+  // inside the container; the build tasks source config/util_aliases.sh for
+  // cbuild/mbuild/mtest/mlint. From the host use `make exec CMD='<command>'`.
   // =========================================================================
   "version": "2.0.0",
   "inputs": [
@@ -32,7 +28,7 @@
       "type": "shell",
       "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && cbuild --debug'",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "group": "build",
       "problemMatcher": [
@@ -45,7 +41,7 @@
       "type": "shell",
       "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && cbuild'",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "group": {
         "kind": "build",
@@ -61,7 +57,7 @@
       "type": "shell",
       "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && cbuild --debug --pkg ${input:packageName}'",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "group": "build",
       "problemMatcher": [
@@ -74,7 +70,7 @@
       "type": "shell",
       "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && cbuild --release'",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "group": "build",
       "problemMatcher": [
@@ -88,7 +84,7 @@
       "type": "shell",
       "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && cbt'",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "group": "test",
       "problemMatcher": [],
@@ -99,7 +95,7 @@
       "type": "shell",
       "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && cbtr --verbose'",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "group": "test",
       "problemMatcher": [],
@@ -111,9 +107,9 @@
     {
       "label": "🔨 cmake: Build (Debug)",
       "type": "shell",
-      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && __mbuild_impl --debug'",
+      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && mbuild --debug'",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "group": "build",
       "problemMatcher": [
@@ -124,9 +120,9 @@
     {
       "label": "🔨 cmake: Build (Release)",
       "type": "shell",
-      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && __mbuild_impl --release'",
+      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && mbuild --release'",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "group": "build",
       "problemMatcher": [
@@ -140,9 +136,9 @@
     {
       "label": "🐍 Python: uv sync",
       "type": "shell",
-      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && __uvs_impl'",
+      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && uvs'",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "problemMatcher": [],
       "detail": "Synchronize Python dependencies through the DevKit uvs alias logic"
@@ -152,7 +148,7 @@
       "type": "shell",
       "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && mkenv'",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "problemMatcher": [],
       "detail": "Create Python virtual environment through the DevKit mkenv alias logic"
@@ -161,21 +157,52 @@
     // Dependency Management
     // =====================================================================
     {
-      "label": "🔄 Sync Dependencies",
+      "label": "🔄 Sync Repos (.repos only)",
       "type": "shell",
-      "command": "bash \"${env:WS_SCRIPTS}/setup_sync_deps.sh\"",
+      "command": "bash \"${workspaceFolder}/scripts/setup_sync_deps.sh\"",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "problemMatcher": [],
-      "detail": "Clone external repos from dependencies.repos and install rosdep packages"
+      "detail": "Clone external repos listed in dependencies.repos (no rosdep)"
+    },
+    {
+      "label": "🧪 Project: Test (mtest)",
+      "type": "shell",
+      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && mtest'",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "problemMatcher": [],
+      "detail": "Run the project's tests — colcon test, ctest or pytest, chosen from the project layout"
+    },
+    {
+      "label": "🎨 Project: Lint (mlint)",
+      "type": "shell",
+      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && mlint'",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "detail": "Check ruff + clang-format rules without rewriting files (same rules as format-on-save)"
+    },
+    {
+      "label": "🎨 Project: Lint --fix",
+      "type": "shell",
+      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && mlint --fix'",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "detail": "Apply every fix ruff and clang-format can make automatically"
     },
     {
       "label": "🔍 Check Dependencies (Sanity)",
       "type": "shell",
-      "command": "bash \"${env:WS_SCRIPTS}/check_deps.sh\" \"${env:WS_INSTALL}\"",
+      "command": "bash \"${workspaceFolder}/scripts/check_deps.sh\" \"${workspaceFolder}/install\"",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "problemMatcher": [],
       "detail": "Verify no missing shared libraries in install/ directory"
@@ -184,31 +211,21 @@
     // Workspace Utilities
     // =====================================================================
     {
-      "label": "📋 Source ROS Workspace",
-      "type": "shell",
-      "command": "echo '⚠️  Use the terminal directly: source install/setup.bash (or use alias \"s\")'",
-      "options": {
-        "cwd": "${env:WS_ROOT}"
-      },
-      "problemMatcher": [],
-      "detail": "Note: 'source' must be run in an interactive terminal to affect your shell session"
-    },
-    {
       "label": "🚀 Full Hardware & GPU Check",
       "type": "shell",
-      "command": "bash \"${env:WS_SCRIPTS}/check_hardware.sh\"",
+      "command": "bash \"${workspaceFolder}/scripts/check_hardware.sh\"",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "problemMatcher": [],
       "detail": "Comprehensive diagnostic for GPU, CUDA, Display, and WSL2 configuration"
     },
     {
-      "label": "📦 Sync Workspace Dependencies",
+      "label": "📦 Sync Repos + rosdep (system deps)",
       "type": "shell",
-      "command": "bash \"${env:WS_SCRIPTS}/setup_sync_deps.sh\" --rosdep",
+      "command": "bash \"${workspaceFolder}/scripts/setup_sync_deps.sh\" --rosdep",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "problemMatcher": [],
       "detail": "Pull external repositories and install missing rosdep dependencies"
@@ -216,9 +233,9 @@
     {
       "label": "⚡ GPU Status & Diagnostics",
       "type": "shell",
-      "command": "bash \"${env:WS_SCRIPTS}/setup_gpu.sh\" status",
+      "command": "bash \"${workspaceFolder}/scripts/setup_gpu.sh\" status",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "problemMatcher": [],
       "detail": "Quick check of the active rendering mode and GPU driver visibility"
@@ -226,9 +243,9 @@
     {
       "label": "✅ DevKit: Verify (Script-only)",
       "type": "shell",
-      "command": "bash -lc 'ws_scripts=\"$WS_SCRIPTS\"; [ -n \"$ws_scripts\" ] || ws_scripts=/workspace/scripts; VERIFY_DOCKER=0 bash \"$ws_scripts/verify_repo.sh\"'",
+      "command": "bash -lc 'ws_scripts=\"$WS_SCRIPTS\"; [ -n \"$ws_scripts\" ] || ws_scripts=/workspace/scripts; bash \"$ws_scripts/verify_repo.sh\"'",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "problemMatcher": [],
       "detail": "Run DevKit repository validation without Docker socket access"
@@ -238,7 +255,7 @@
       "type": "shell",
       "command": "ccache -s",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "problemMatcher": [],
       "detail": "Show ccache hit/miss statistics and cache size usage"
@@ -246,9 +263,9 @@
     {
       "label": "🧹 Clean Workspace",
       "type": "shell",
-      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && mclean && __remove_workspace_path \"$WS_LOGS\"'",
+      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && mclean'",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "problemMatcher": [],
       "detail": "⚠️ WARNING: Removes all build artifacts — use with caution"
@@ -261,7 +278,7 @@
       "type": "shell",
       "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && cbuild --debug && (__smart_source || true)'",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "group": "build",
       "problemMatcher": [
@@ -278,7 +295,7 @@
       "type": "shell",
       "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && cbuild --debug --pkg ${input:packageName} && (__smart_source || true)'",
       "options": {
-        "cwd": "${env:WS_ROOT}"
+        "cwd": "${workspaceFolder}"
       },
       "group": "build",
       "problemMatcher": [

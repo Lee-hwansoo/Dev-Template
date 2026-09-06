@@ -1,839 +1,801 @@
 # =============================================================================
-# Makefile
-# Unified Workflow Orchestration (KISS-based Command Integration)
+# DevKit Makefile — the host-side entry points. `make help` is the index.
+# The literal "DevKit Makefile" above is a marker: tab completion walks up from
+# $PWD looking for it, so a DevKit tree is recognised from any subdirectory.
 # =============================================================================
 
 SHELL := /bin/bash
 
-# Colors and Logging Definitions
-BLUE   := \033[0;34m
+# MAKE_TERMOUT is set only when stdout is a terminal, so `make … > log`
+# (or NO_COLOR=1) comes out plain.
+DEVKIT_COLOR := $(if $(MAKE_TERMOUT),$(if $(NO_COLOR),,yes),)
+ifeq ($(DEVKIT_COLOR),)
+GREEN  :=
+RED    :=
+YELLOW :=
+CYAN   :=
+BCYAN  :=
+TEAL   :=
+NC     :=
+else
 GREEN  := \033[0;32m
 RED    := \033[0;31m
 YELLOW := \033[1;33m
 CYAN   := \033[0;36m
+BCYAN  := \033[1;36m
+TEAL   := \033[38;2;45;212;191m
 NC     := \033[0m
+endif
+
 INFO   := $(CYAN)[INFO]$(NC)
 OK     := $(GREEN)[OK]$(NC)
 WARN   := $(YELLOW)[WARN]$(NC)
 ERROR  := $(RED)[ERROR]$(NC)
 
-# Load Environment Variables
-USER_GPU_MODE := $(shell printf '%s' "$$GPU_MODE")
+# make gives file assignments priority over the environment, so snapshot a
+# `GPU_MODE=nvidia make start` override and restore it after the include.
+ifeq ($(origin GPU_MODE),environment)
+USER_GPU_MODE := $(GPU_MODE)
+endif
+# Capture detector overrides before file assignments hide their origin.
+shell_quote = '$(subst ','"'"',$(1))'
+DETECT_INPUTS := ROS_DISTRO BASE_IMAGE UV_PYTHON WORKSPACE_PATH DOCKER_DEV_CACHE_DIR
+DETECT_OVERRIDES := $(strip $(foreach v,$(DETECT_INPUTS),\
+	$(if $(filter command line environment override,$(origin $(v))),$(call shell_quote,$(v)=$($(v))))))
+# Committed defaults, followed by local overrides.
+-include .env.example
 -include .env
-ifneq ($(strip $(USER_GPU_MODE)),)
+ifdef USER_GPU_MODE
 GPU_MODE := $(USER_GPU_MODE)
 endif
 
-# Workspace Path Architecture (Separation of Host and Container)
-# HOST_WORKSPACE_PATH: Physical path on the host machine (Source)
-# WORKSPACE_PATH: Logical path inside the container (Target/SSOT)
+# Template revision. VERSION is committed, so it travels with a fork even when
+# the project was created from the GitHub template button and carries none of
+# DevKit's history; the short commit is best-effort on top of it.
+DEVKIT_VERSION := $(shell cat VERSION 2>/dev/null || echo unknown)
+DEVKIT_COMMIT  := $(shell git -C $(CURDIR) rev-parse --short HEAD 2>/dev/null)
+
+# `make adopt` inputs, honoured ONLY from the command line: NAME and DESC are
+# ordinary environment variables (WSL exports NAME=<hostname>) and make imports
+# the environment, so an inherited value would silently adopt the wrong name.
+ADOPT_NAME := $(if $(filter command line,$(origin NAME)),$(NAME),)
+ADOPT_DESC := $(if $(filter command line,$(origin DESC)),$(DESC),)
+
 HOST_WORKSPACE_PATH ?= $(CURDIR)
 WORKSPACE_PATH      ?= /workspace
-
-# Fallback cache path for targets that skip the env detector (e.g. clean%),
-# mirroring scripts/check_env.sh. The detector's -include overrides this when it runs.
-HOST_CACHE_DIR      ?= $(if $(DOCKER_DEV_CACHE_DIR),$(DOCKER_DEV_CACHE_DIR),$(HOST_WORKSPACE_PATH)/.docker_cache)
-
-# Auto-match TARGETARCH
-TARGETARCH ?= $(HOST_ARCH)
+COMPOSE_PROJECT_NAME?= devkit
+ENV                 ?= ros
+SIF_MODE            ?= dev
+IMAGE_TAG           ?= latest
 
 export
 
-# Environment Detection Engine (Auto-detection — triggered by relevant targets)
-# Applied to Docker-related operations to ensure hardware and display compatibility
-# Pure teardown/cleanup/log targets need only .env (COMPOSE_PROJECT_NAME) + compose,
-# not host GPU/display detection — exclude them so they don't pay the docker-info/
-# nvidia-smi cost. (stop/restart/status keep detection: they resolve the GPU-variant
-# service via DETECT_MODE.)
-# INVARIANT: targets excluded here never see detector-emitted vars (HOST_CACHE_DIR,
-# HOST_XAUTHORITY, HAS_*, etc.) — those expand empty. Only reference such vars through a
-# non-detector source: a parse-time `?=` default (see HOST_CACHE_DIR below), an `-include
-# .env` value, a `$(MAKE)` sub-target that re-runs detection (see setup -> xauth), or a
-# `[ -n ... ]` guard (see VALIDATE_HOST_INTEGRATION_PATHS). verify_repo.sh guards the
-# HOST_CACHE_DIR case (verify_make_detector_excluded_cache_default).
-NEEDS_DETECTOR := $(filter-out help setup env-check% verify down logs clean% docker-clean,$(MAKECMDGOALS))
+# =============================================================================
+# Host Environment Detection (cached, atomic, fail-fast)
+# =============================================================================
+# Help/teardown/validation targets skip detection and never pay the
+# nvidia-smi / docker-info probe.
+# Bakes require detection to derive BASE_IMAGE and UV_PYTHON from ROS_DISTRO.
+DETECTOR_EXEMPT := help setup adopt verify ci ci-on ci-off stop down logs clean clean-cache clean-all docker-clean slurm-status slurm-cancel completion completion-install check-host env-check run-sif
+# A bare `make` runs the default target (help), so it must not pay for
+# detection either — substitute 'help' before filtering.
+NEEDS_DETECTOR  := $(filter-out $(DETECTOR_EXEMPT),$(or $(MAKECMDGOALS),help))
+
+# Explicit distro/interpreter overrides must not reuse another pairing's cache.
+DETECTED_ENV_FILE := .docker_cache/detected-env$(if $(DETECT_OVERRIDES),-$(shell printf '%s' $(call shell_quote,$(DETECT_OVERRIDES)) | cksum | cut -d' ' -f1)).mk
 ifneq ($(NEEDS_DETECTOR),)
-DETECTED_ENV_FILE := .docker_cache/detected-env.mk
-$(shell mkdir -p .docker_cache && tmp=$$(mktemp "$(DETECTED_ENV_FILE).XXXXXX") && { bash scripts/check_env.sh --makefile > "$$tmp" && mv "$$tmp" "$(DETECTED_ENV_FILE)" || { rm -f "$$tmp"; printf '%s\n' '$$(error Environment detection failed. Run scripts/check_env.sh for details.)' > "$(DETECTED_ENV_FILE)"; }; })
+# Included AFTER .env, so its `:=` wins — stale whenever .env is newer, or a
+# cache built before an edit overrides ROS_DISTRO forever. `shell test`, not
+# `wildcard`: make caches directory listings within a run.
+DETECTED_ENV_FRESH := $(shell [ -f "$(DETECTED_ENV_FILE)" ] \
+	&& [ ! .env -nt "$(DETECTED_ENV_FILE)" ] \
+	&& [ ! .env.example -nt "$(DETECTED_ENV_FILE)" ] \
+	&& [ ! scripts/check_env.sh -nt "$(DETECTED_ENV_FILE)" ] && echo yes)
+ifeq ($(DETECTED_ENV_FRESH),)
+# Write via temp + mv: a failed or interrupted probe must never leave a partial
+# cache behind, because the freshness guard above would then reuse it forever and
+# every host mount would silently degrade to its placeholder default.
+DETECT_STATUS := $(shell mkdir -p .docker_cache && tmp=$$(mktemp "$(DETECTED_ENV_FILE).XXXXXX") && \
+	{ env $(DETECT_OVERRIDES) bash scripts/check_env.sh --makefile > "$$tmp" && mv "$$tmp" "$(DETECTED_ENV_FILE)" && echo ok; } || \
+	{ rm -f "$$tmp"; echo fail; })
+ifeq ($(DETECT_STATUS),fail)
+$(error Host environment detection failed. Run 'bash scripts/check_env.sh' to see the error)
+endif
+endif
 -include $(DETECTED_ENV_FILE)
 endif
 
-COMPOSE := docker compose
-COMPOSE_DEV := -f docker-compose.dev.yml
-TERMINAL ?= terminator
-ENV ?= ros
-SIF_MODE ?= dev
-truthy = $(filter 1 true yes on,$(shell printf '%s' '$(strip $1)' | tr '[:upper:]' '[:lower:]'))
+# Fail fast on input that would silently pick the wrong compose profile.
+# Scoped to every target consuming ENV — including down/clean-all, where
+# `make down ENV=ros2` would volume-delete the wrong profile without a word.
+ENV_EXEMPT := help h setup adopt verify ci ci-on ci-off clean clean-cache docker-clean update-gpg xauth gpus slurm-status slurm-cancel completion completion-install
+ifneq ($(filter-out $(ENV_EXEMPT),$(or $(MAKECMDGOALS),help)),)
+ifeq ($(filter ros dev,$(ENV)),)
+$(error ENV must be 'ros' or 'dev' (got: '$(ENV)'))
+endif
+GPU_MODE ?= auto
+# intel/amd are aliases for the shared iGPU profile (same vocabulary as the
+# in-container `gpu` helper). `override` so the mapping also applies to
+# command-line assignments (make GPU_MODE=intel ...).
+override GPU_MODE := $(if $(filter intel amd,$(GPU_MODE)),igpu,$(GPU_MODE))
+ifeq ($(filter auto nvidia igpu cpu,$(GPU_MODE)),)
+$(error GPU_MODE must be auto, nvidia, igpu or cpu (got: '$(GPU_MODE)'))
+endif
+ifeq ($(filter dev prod slurm,$(SIF_MODE)),)
+$(error SIF_MODE must be 'dev', 'prod' or 'slurm' (got: '$(SIF_MODE)'))
+endif
+endif
+ifneq ($(NEEDS_DETECTOR),)
+# Build for the host architecture by default (Apple Silicon / Jetson would
+# otherwise silently emulate amd64 via compose's linux/amd64 fallback).
+TARGETARCH ?= $(HOST_ARCH)
+endif
 
-SERVICE_PREFIX := $(if $(filter ros,$(ENV)),ros,$(if $(filter dev,$(ENV)),basic,))
-SERVICE_LABEL := $(if $(filter ros,$(ENV)),ROS Development,$(if $(filter dev,$(ENV)),Pure Development,))
-SERVICE_FILTER := ^$(SERVICE_PREFIX)-(cpu|igpu|nvidia)$$
-FIND_CONTAINER = docker ps --filter "label=com.docker.compose.project=$(COMPOSE_PROJECT_NAME)" --format '{{.Names}}\t{{.Label "com.docker.compose.service"}}' | awk -F '\t' '$$2 ~ /$1/ {print $$1; exit}'
+COMPOSE := docker compose -f docker-compose.dev.yml
+SERVICE_PREFIX := $(if $(filter ros,$(ENV)),ros,basic)
+# Every GPU variant of the selected ENV. Naming them explicitly keeps stop/down
+# scoped to this ENV without paying for hardware detection: whichever variant is
+# actually up gets hit, and the other ENV's containers are left alone.
+ENV_SERVICES := $(SERVICE_PREFIX)-cpu $(SERVICE_PREFIX)-igpu $(SERVICE_PREFIX)-nvidia
 
-# Macros (Deduplication & SSOT)
-# Integrated GPU Mode Detection Logic
-DETECT_MODE := \
-	CHOSEN_MODE=$(GPU_MODE); \
-	case "$$CHOSEN_MODE" in \
-		""|auto|cpu|igpu|intel|amd|nvidia) ;; \
-		*) echo -e "  $(ERROR) GPU_MODE must be auto, cpu, igpu, intel, amd, or nvidia (current: $$CHOSEN_MODE)."; exit 1 ;; \
-	esac; \
-	if [ -z "$$CHOSEN_MODE" ] || [ "$$CHOSEN_MODE" = "auto" ]; then \
-		if [ "$(HAS_NVIDIA)" = "true" ] && [ "$(HAS_TOOLKIT)" = "true" ]; then CHOSEN_MODE=nvidia; \
-		elif [ "$(HAS_DRI)" = "true" ]; then CHOSEN_MODE=igpu; \
-		else CHOSEN_MODE=cpu; fi; \
-	elif [ "$$CHOSEN_MODE" = "intel" ] || [ "$$CHOSEN_MODE" = "amd" ]; then \
-		CHOSEN_MODE=igpu; \
-	fi;
-
-# $1: COMPOSE_FILES, $2: SERVICE_PREFIX, $3: MSG
-define RUN_SERVICE
-	@$(DETECT_MODE) \
-	PROF=$$CHOSEN_MODE; \
-	TARGET_SVC=$2-$$CHOSEN_MODE; \
-	echo -e "  $(INFO) [$$CHOSEN_MODE] Starting $3 environment (Service: $$TARGET_SVC)..."; \
-	$(COMPOSE) $1 --profile $$TARGET_SVC up -d $$TARGET_SVC
-endef
-
-# $1: COMPOSE_FILES, $2: SERVICE_PREFIX, $3: MSG
-define STOP_SERVICE
-	@$(DETECT_MODE) \
-	PROF=$$CHOSEN_MODE; \
-	TARGET_SVC=$2-$$CHOSEN_MODE; \
-	echo -e "  $(INFO) [$$CHOSEN_MODE] Stopping $3 environment (Service: $$TARGET_SVC)..."; \
-	$(COMPOSE) $1 --profile $$TARGET_SVC stop $$TARGET_SVC
-endef
-
-define VALIDATE_ROS_ENV
-	@if [ -n "$(ROS_DOMAIN_ID)" ]; then \
-		if ! [ "$(ROS_DOMAIN_ID)" -eq "$(ROS_DOMAIN_ID)" ] 2>/dev/null || [ "$(ROS_DOMAIN_ID)" -lt 0 ] || [ "$(ROS_DOMAIN_ID)" -gt 101 ]; then \
-			echo -e "  $(ERROR) ROS_DOMAIN_ID must be a number between 0 and 101 (Current: $(ROS_DOMAIN_ID))"; \
-			exit 1; \
-		fi \
-	fi
-	@if [ -n "$(RMW_IMPLEMENTATION)" ] && [ "$(RMW_IMPLEMENTATION)" != "rmw_cyclonedds_cpp" ] && [ "$(RMW_IMPLEMENTATION)" != "rmw_fastrtps_cpp" ]; then \
-		echo -e "  $(WARN) Non-standard RMW_IMPLEMENTATION detected: $(RMW_IMPLEMENTATION)"; \
-	fi
-endef
-
-define VALIDATE_COMPOSE_NAME
-	@if [[ ! "$(COMPOSE_PROJECT_NAME)" =~ ^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$$ ]]; then \
-		echo -e "  $(ERROR) COMPOSE_PROJECT_NAME must start and end with a lowercase letter or digit, using only lowercase letters, digits, dashes (-), or underscores (_)."; \
-		exit 1; \
-	fi
-endef
-
-define VALIDATE_IMAGE_TAG
-	@if [[ ! "$(IMAGE_TAG)" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$$ ]]; then \
-		echo -e "  $(ERROR) IMAGE_TAG must be a valid Docker tag (start with alnum/_; use alnum, _, ., -; max 128 chars)."; \
-		exit 1; \
-	fi
-endef
-
-define VALIDATE_ROS_DISTRO
-	@if [ "$(ROS_DISTRO)" != "humble" ] && [ "$(ROS_DISTRO)" != "noetic" ]; then \
-		echo -e "  $(ERROR) ROS_DISTRO must be 'humble' or 'noetic' (current: $(ROS_DISTRO))."; \
-		exit 1; \
-	fi
-endef
-
-define VALIDATE_ROS_BASE_IMAGE
-	@case "$(BASE_IMAGE)" in \
-		"") \
-			echo -e "  $(ERROR) BASE_IMAGE must not be empty."; \
-			exit 1 ;; \
-		*[[:space:]]*) \
-			echo -e "  $(ERROR) BASE_IMAGE must not contain whitespace (current: $(BASE_IMAGE))."; \
-			exit 1 ;; \
-		ubuntu:22.04|ubuntu:22.04@*) \
-			if [ "$(ROS_DISTRO)" != "humble" ]; then \
-				echo -e "  $(ERROR) BASE_IMAGE=ubuntu:22.04 must be paired with ROS_DISTRO=humble (current: $(ROS_DISTRO))."; \
-				exit 1; \
-			fi ;; \
-		ubuntu:20.04|ubuntu:20.04@*) \
-			if [ "$(ROS_DISTRO)" != "noetic" ]; then \
-				echo -e "  $(ERROR) BASE_IMAGE=ubuntu:20.04 must be paired with ROS_DISTRO=noetic (current: $(ROS_DISTRO))."; \
-				exit 1; \
-			fi ;; \
-		ubuntu:*) \
-			echo -e "  $(ERROR) Official Ubuntu BASE_IMAGE must be ubuntu:22.04 for ROS_DISTRO=humble or ubuntu:20.04 for ROS_DISTRO=noetic (current: $(BASE_IMAGE))."; \
-			exit 1 ;; \
-	esac
-endef
-
-define VALIDATE_WORKSPACE_PATHS
-	@if [ -z "$(HOST_WORKSPACE_PATH)" ] || [ "$(HOST_WORKSPACE_PATH)" = "/" ] || [[ "$(HOST_WORKSPACE_PATH)" != /* ]]; then \
-		echo -e "  $(ERROR) HOST_WORKSPACE_PATH must be an absolute non-root path (current: $(HOST_WORKSPACE_PATH))."; \
-		exit 1; \
-	fi
-	@if [ -z "$(WORKSPACE_PATH)" ] || [ "$(WORKSPACE_PATH)" = "/" ] || [[ "$(WORKSPACE_PATH)" != /* ]]; then \
-		echo -e "  $(ERROR) WORKSPACE_PATH must be an absolute non-root path inside the container (current: $(WORKSPACE_PATH))."; \
-		exit 1; \
-	fi
-endef
-
-define VALIDATE_TARGETARCH
-	@if [ -n "$(TARGETARCH)" ] && [ "$(TARGETARCH)" != "amd64" ] && [ "$(TARGETARCH)" != "arm64" ]; then \
-		echo -e "  $(ERROR) TARGETARCH must be 'amd64' or 'arm64' (current: $(TARGETARCH))."; \
-		exit 1; \
-	fi
-endef
-
-define VALIDATE_C_STANDARDS
-	@if [ -n "$(CMAKE_C_STANDARD)" ] && [ "$(CMAKE_C_STANDARD)" != "11" ] && [ "$(CMAKE_C_STANDARD)" != "17" ]; then \
-		echo -e "  $(ERROR) CMAKE_C_STANDARD must be '11' or '17' (current: $(CMAKE_C_STANDARD))."; \
-		exit 1; \
-	fi
-	@if [ -n "$(CMAKE_CXX_STANDARD)" ] && [ "$(CMAKE_CXX_STANDARD)" != "17" ] && [ "$(CMAKE_CXX_STANDARD)" != "20" ]; then \
-		echo -e "  $(ERROR) CMAKE_CXX_STANDARD must be '17' or '20' (current: $(CMAKE_CXX_STANDARD))."; \
-		exit 1; \
-	fi
-endef
-
-define VALIDATE_OPENCV_CUDA
-	@if [ "$(OPENCV_CUDA)" != "auto" ] && [ "$(OPENCV_CUDA)" != "off" ]; then \
-		echo -e "  $(ERROR) OPENCV_CUDA must be 'auto' or 'off' (current: $(OPENCV_CUDA))."; \
-		exit 1; \
-	fi
-endef
-
-define VALIDATE_COMPOSE_RUNTIME
-	@if [ -n "$(NETWORK_MODE)" ] && [ "$(NETWORK_MODE)" != "host" ] && [ "$(NETWORK_MODE)" != "bridge" ] && [ "$(NETWORK_MODE)" != "none" ]; then \
-		echo -e "  $(ERROR) NETWORK_MODE must be 'host', 'bridge', or 'none' (current: $(NETWORK_MODE))."; \
-		exit 1; \
-	fi
-	@if [ -n "$(IPC_MODE)" ] && [ "$(IPC_MODE)" != "host" ] && [ "$(IPC_MODE)" != "private" ] && [ "$(IPC_MODE)" != "shareable" ] && [ "$(IPC_MODE)" != "none" ]; then \
-		echo -e "  $(ERROR) IPC_MODE must be 'host', 'private', 'shareable', or 'none' (current: $(IPC_MODE))."; \
-		exit 1; \
-	fi
-	@if [ -n "$(PRIVILEGED)" ] && [ "$(PRIVILEGED)" != "true" ] && [ "$(PRIVILEGED)" != "false" ]; then \
-		echo -e "  $(ERROR) PRIVILEGED must be 'true' or 'false' (current: $(PRIVILEGED))."; \
-		exit 1; \
-	fi
-	@if [ -n "$(ULIMIT_NOFILE)" ] && { ! [[ "$(ULIMIT_NOFILE)" =~ ^[0-9]+$$ ]] || [ "$(ULIMIT_NOFILE)" -lt 1 ]; }; then \
-		echo -e "  $(ERROR) ULIMIT_NOFILE must be a positive integer (current: $(ULIMIT_NOFILE))."; \
-		exit 1; \
-	fi
-endef
-
-define VALIDATE_HOST_INTEGRATION_PATHS
-	@if [ -n "$(GIT_CONFIG_PATH)" ] && [ "$(GIT_CONFIG_PATH)" != "/dev/null" ] && [ ! -f "$(GIT_CONFIG_PATH)" ]; then \
-		echo -e "  $(ERROR) GIT_CONFIG_PATH must point to an existing git config file (current: $(GIT_CONFIG_PATH))."; \
-		exit 1; \
-	fi
-	@if [ -n "$(HOST_XAUTHORITY)" ] && [ ! -f "$(HOST_XAUTHORITY)" ]; then \
-		echo -e "  $(ERROR) HOST_XAUTHORITY must point to an existing Xauthority file (current: $(HOST_XAUTHORITY))."; \
-		exit 1; \
-	fi
-	@if [ -n "$(HOST_XDG_RUNTIME_DIR)" ] && [ ! -d "$(HOST_XDG_RUNTIME_DIR)" ]; then \
-		echo -e "  $(ERROR) HOST_XDG_RUNTIME_DIR must point to an existing runtime directory (current: $(HOST_XDG_RUNTIME_DIR))."; \
-		exit 1; \
-	fi
-	@if [ -n "$(HOST_X11_DIR)" ] && [ ! -d "$(HOST_X11_DIR)" ]; then \
-		echo -e "  $(ERROR) HOST_X11_DIR must point to an existing X11 socket directory (current: $(HOST_X11_DIR))."; \
-		exit 1; \
-	fi
-	@if [ -n "$(HOST_SSH_AUTH_SOCK)" ] && [ "$(HOST_SSH_AUTH_SOCK)" != "/dev/null" ] && [ ! -S "$(HOST_SSH_AUTH_SOCK)" ]; then \
-		echo -e "  $(ERROR) HOST_SSH_AUTH_SOCK must point to an existing SSH agent UNIX socket (current: $(HOST_SSH_AUTH_SOCK))."; \
-		exit 1; \
-	fi
-endef
-
-define VALIDATE_PROJECT_CONFIG
-	$(call VALIDATE_WORKSPACE_PATHS)
-	$(call VALIDATE_HOST_INTEGRATION_PATHS)
-	$(call VALIDATE_COMPOSE_NAME)
-	$(call VALIDATE_IMAGE_TAG)
-	$(call VALIDATE_ROS_DISTRO)
-	$(call VALIDATE_ROS_BASE_IMAGE)
-	$(call VALIDATE_TARGETARCH)
-	$(call VALIDATE_C_STANDARDS)
-	$(call VALIDATE_OPENCV_CUDA)
-	$(call VALIDATE_COMPOSE_RUNTIME)
-	$(call VALIDATE_ROS_ENV)
-endef
-
-define REQUIRE_ENV_FILE
-	@if [ ! -f .env ]; then echo -e "  $(ERROR) .env not found. Please run 'make setup' first."; exit 1; fi
-endef
-
-define REQUIRE_HOST_WORKSPACE_DIR
-	@if [ ! -d "$(HOST_WORKSPACE_PATH)" ]; then echo -e "  $(ERROR) HOST_WORKSPACE_PATH ($(HOST_WORKSPACE_PATH)) does not exist."; exit 1; fi
-endef
-
-# Reusable helper: run a command, capture stdout/stderr to temp files, display
-# the output on success or a warning with stderr on failure, then clean up.
-# $1: temp file prefix, $2: command to run, $3: warning message on failure
-COMMA := ,
-define DOCKER_QUERY
-	@OUT=$$(mktemp /tmp/devkit_$(1).out.XXXXXX); ERR=$$(mktemp /tmp/devkit_$(1).err.XXXXXX); \
-	if $(2) >"$$OUT" 2>"$$ERR"; then \
-		sed 's/^/  /' "$$OUT"; \
-	else \
-		echo -e "  $(WARN) $(3)"; \
-		sed 's/^/  /' "$$ERR"; \
-	fi; \
-	rm -f "$$OUT" "$$ERR"
-endef
-
-define VALIDATE_ENV_FILE_VALUES
-	@awk -F= '\
-		$$1 == "COMPOSE_PROJECT_NAME" || $$1 == "IMAGE_TAG" { \
-			key=$$1; value=$$2; \
-			gsub(/^[[:space:]]+|[[:space:]]+$$/, "", value); \
-			gsub(/^"|"$$/, "", value); \
-			gsub(/^'\''|'\''$$/, "", value); \
-			values[key]=value; \
-		} \
-		END { \
-			if (values["COMPOSE_PROJECT_NAME"] !~ /^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$$/) { \
-				print "  $(ERROR) COMPOSE_PROJECT_NAME must start and end with a lowercase letter or digit, using only lowercase letters, digits, dashes (-), or underscores (_)."; \
-				exit 1; \
-			} \
-			if (values["IMAGE_TAG"] !~ /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$$/) { \
-				print "  $(ERROR) IMAGE_TAG must be a valid Docker tag (start with alnum/_; use alnum, _, ., -; max 128 chars)."; \
-				exit 1; \
-			} \
-		}' .env
-endef
-
-define VALIDATE_ENV_MODE
-	@if [ "$(ENV)" != "ros" ] && [ "$(ENV)" != "dev" ]; then \
-		echo -e "  $(ERROR) ENV must be 'ros' or 'dev' (current: $(ENV))."; \
-		exit 1; \
-	fi
-endef
-
-define VALIDATE_SIF_MODE
-	@if [ "$(SIF_MODE)" != "dev" ] && [ "$(SIF_MODE)" != "prod" ] && [ "$(SIF_MODE)" != "slurm" ]; then \
-		echo -e "  $(ERROR) SIF_MODE must be 'dev', 'prod', or 'slurm' (current: $(SIF_MODE))."; \
-		exit 1; \
-	fi
-endef
-
-define CHECK_SIF_READY
-	$(call GUARD_HOST_ONLY)
-	$(call REQUIRE_ENV_FILE)
-	$(call VALIDATE_PROJECT_CONFIG)
-	$(call REQUIRE_HOST_WORKSPACE_DIR)
-endef
-
-# $1: FILTER, $2: COMMAND, $3: MSG (For error display)
-define EXEC_CONTAINER
-	@CONTAINER=$$($(call FIND_CONTAINER,$1)); \
-	if [ -n "$$CONTAINER" ]; then \
-		docker exec -it -u $(CONTAINER_USER) $$CONTAINER $2 || [ $$? -eq 130 ]; \
-	else \
-		echo -e "  $(ERROR) No running container found for $3."; \
-		exit 1; \
-	fi
-endef
-
-# $1: FILTER, $2: COMMAND, $3: MSG (For error display)
-define EXEC_DETACHED
-	@CONTAINER=$$($(call FIND_CONTAINER,$1)); \
-	if [ -n "$$CONTAINER" ]; then \
-		docker exec -d -u $(CONTAINER_USER) $$CONTAINER $2; \
-	else \
-		echo "  [ERROR] No running container found for $3."; \
-		exit 1; \
-	fi
-endef
-
-# $1: COMPOSE_FILES, $2: SERVICE_PREFIX, $3: MSG, $4: EXTRA_ARGS, $5: HINT_MSG
-define BUILD_SERVICE
-	@$(DETECT_MODE) \
-	TARGET_SVC=$2-$$CHOSEN_MODE; \
-	echo -e "  $(INFO) Building image for [$3] (Service: $$TARGET_SVC)..."; \
-	$(COMPOSE) $1 build $4 $$TARGET_SVC
-	@echo -e "\n  $(INFO) [Hint] $5"
-endef
-
-# $1: EXTRA_ARGS (e.g. -v for volumes)
-define TEARDOWN_SERVICES
-	$(COMPOSE) $(COMPOSE_DEV) --profile "*" down $1 --remove-orphans
-endef
-
-# $1: MOUNT_DIR (Absolute Path), $2: Targets to delete
-define SUDO_FREE_RM
-	if [ "$1" = "/" ] || [ -z "$1" ]; then \
-		echo -e "  $(ERROR) Critical Safety: Refusing to delete from root directory!"; \
-		exit 1; \
-	fi; \
-	if [ ! -d "$1" ]; then \
-		echo -e "  $(ERROR) Refusing to clean missing directory: $1"; \
-		exit 1; \
-	fi; \
-	echo -e "  $(INFO) Performing sudo-free deletion: $2 in $1"; \
-	docker run --rm -v "$1:/mnt" alpine sh -c 'cd /mnt || exit 1; for target do rm -rf -- "$$target"; done' sh $2; \
-	if [ "$(SKIP_ALPINE_RM)" != "1" ]; then \
-		$(call CLEAN_ALPINE_IMAGE); \
-	fi
-endef
-
-define CLEAN_ALPINE_IMAGE
-	echo -e "  $(INFO) Cleaning up the temporary alpine image used for sudo-free deletion..."; \
-	docker rmi alpine:latest 2>/dev/null || true
-endef
-
-# Core Infrastructure Variables Export
-CONTAINER_USER ?= user
-HOST_UID ?= $(shell id -u 2>/dev/null || echo 1000)
-HOST_GID ?= $(shell id -g 2>/dev/null || echo 1000)
-export IS_WSL HOST_DXG_MOUNT HOST_ARCH HAS_NVIDIA HAS_TOOLKIT HAS_DRI HOST_DRI_MOUNT TARGETARCH DISPLAY_TYPE HOST_XDG_RUNTIME_DIR HOST_WAYLAND_DISPLAY HOST_XAUTHORITY HOST_HOME NVIDIA_VISIBLE_DEVICES NVIDIA_DRIVER_CAPABILITIES NVIDIA_GPU_COUNT HOST_CACHE_DIR HOST_X11_DIR HOST_GITCONFIG HOST_SSH_AUTH_SOCK WSL_LIB_DIR_MOUNT CUDA_VERSION CUDNN_VERSION PYTHON_EXECUTABLE HOST_UID HOST_GID CONTAINER_USER
-
-# Centralized UI Sub-Header Macro
-define PRINT_SECTION
-	@bash -c "source scripts/util_logging.sh && print_section \"$1\""
-endef
-
-.PHONY: h help completion completion-install setup check check-host xauth status verify \
-        build start stop restart shell term \
-		bake-dev bake-prod run-sif slurm-status slurm-cancel \
-		update-gpg stats top logs down clean clean-cache clean-all docker-clean env-check
-
-h: help
-
-# =============================================================================
-# Infrastructure Logic
-# =============================================================================
 IS_CONTAINER := $(shell [ -f /.dockerenv ] && echo true || echo false)
-
 define GUARD_HOST_ONLY
 	@if [ "$(IS_CONTAINER)" = "true" ]; then \
-		echo -e "  ${RED}[ERROR]${NC} This command must be run on the HOST, not inside the container."; \
-		echo -e "  ${CYAN}[Hint]${NC} Use container aliases. (type ${YELLOW}h${NC} or ${YELLOW}help${NC})"; \
+		echo -e "  $(ERROR) Run this command on the HOST machine."; \
 		exit 1; \
 	fi
 endef
 
-# =============================================================================
-# Help
-# =============================================================================
-
-help:
-	@if [ "$(IS_CONTAINER)" = "true" ]; then \
-		bash -c "source scripts/util_logging.sh && print_banner GUIDE && echo -e \"\n  ${YELLOW}Notice:${NC} You are INSIDE the container.\n  Please use aliases (type ${GREEN}h${NC} or ${GREEN}help${NC}) instead of make commands.\n\""; \
-	else \
-		bash scripts/util_make_help.sh Makefile; \
-	fi
-
-completion:
-	@cat config/devkit_make_completion.bash
-
-completion-install:
-	$(call GUARD_HOST_ONLY)
-	@set -e; \
-	COMPLETION_DIR="$${HOME}/.bash_completion.d"; \
-	COMPLETION_FILE="$$COMPLETION_DIR/devkit_make_completion.bash"; \
-	BASH_COMPLETION_FILE="$${HOME}/.bash_completion"; \
-	mkdir -p "$$COMPLETION_DIR"; \
-	cp config/devkit_make_completion.bash "$$COMPLETION_FILE"; \
-	touch "$$BASH_COMPLETION_FILE"; \
-	if ! grep -Fq "$$COMPLETION_FILE" "$$BASH_COMPLETION_FILE"; then \
-		{ \
-			echo ""; \
-			echo "# DevKit make completion"; \
-			echo "[ -f \"$$COMPLETION_FILE\" ] && source \"$$COMPLETION_FILE\""; \
-		} >> "$$BASH_COMPLETION_FILE"; \
+# RESOLVE_SVC_MODE: shell snippet resolving GPU_MODE=auto against detected hardware.
+# NVIDIA is only chosen when the container toolkit is actually usable.
+define RESOLVE_SVC_MODE
+SVC_MODE=$${GPU_MODE:-auto}; \
+	if [ "$$SVC_MODE" = "auto" ]; then \
+		if [ "$(HAS_NVIDIA)" = "true" ] && [ "$(HAS_TOOLKIT)" = "true" ]; then SVC_MODE=nvidia; \
+		elif [ "$(HAS_DRI)" = "true" ]; then SVC_MODE=igpu; \
+		else SVC_MODE=cpu; fi; \
 	fi; \
-	echo -e "  $(OK) Installed DevKit make completion for new Bash sessions."; \
-	echo -e "  $(INFO) Open a new terminal, or run: source ~/.bash_completion"
+	TARGET_SVC="$(SERVICE_PREFIX)-$$SVC_MODE"
+endef
+
+# FIND_CONTAINER: the running container of the SELECTED ENV. An unfiltered
+# `docker ps | head -1` landed `make exec ENV=ros` in the non-ROS container.
+# Docker ANDs repeated `--filter label=`, so the service is matched in awk.
+define FIND_CONTAINER
+CONTAINER=$$(docker ps --filter "label=com.docker.compose.project=$(COMPOSE_PROJECT_NAME)" \
+		--format '{{.Label "com.docker.compose.service"}} {{.Names}}' \
+		| awk '$$1 ~ /^$(SERVICE_PREFIX)-/ { print $$2; exit }')
+endef
+
+# REQUIRE_CONTAINER: FIND_CONTAINER plus the ONE message for "nothing is up",
+# with a non-zero exit — six targets need exactly this and no other wording.
+define REQUIRE_CONTAINER
+$(FIND_CONTAINER); \
+	if [ -z "$$CONTAINER" ]; then \
+		echo -e "  $(ERROR) No running $(ENV) container for '$(COMPOSE_PROJECT_NAME)'. Run 'make start ENV=$(ENV)' first." >&2; \
+		exit 1; \
+	fi
+endef
+
+# EXEC_USER_FLAG: run as CONTAINER_USER when the image has that user.
+# `shell` and `exec` must agree, or one of them writes root-owned files
+# into the bind-mounted workspace.
+define EXEC_USER_FLAG
+: "$${CONTAINER_USER:=user}"; \
+	USER_FLAG=""; \
+	if [ "$$CONTAINER_USER" != "root" ] && docker exec $$CONTAINER id -u "$$CONTAINER_USER" >/dev/null 2>&1; then \
+		USER_FLAG="-u $$CONTAINER_USER"; \
+	fi
+endef
+
+# HINT_ROOT_OWNED: remediation for paths Docker re-created as root.
+# $(1) = host paths. `clean` and `clean-cache` need the same words.
+define HINT_ROOT_OWNED
+	echo -e "  $(INFO) Docker creates a missing mount source as root at container start."; \
+	echo -e "  $(INFO) Remove it from inside a container (no sudo needed):"; \
+	echo -e "  $(INFO)   docker run --rm -v \"$(HOST_WORKSPACE_PATH):/w\" alpine rm -rf $(addprefix /w/,$(1))"
+endef
+
+# CONFIRM: cleanup requires interactive consent or an exact true FORCE/CI value.
+define CONFIRM
+	@SKIP=; \
+	for flag in "$$FORCE" "$$CI"; do \
+		case "$$flag" in 1|true|TRUE|True|yes|YES|Yes|on|ON|On) SKIP=1 ;; esac; \
+	done; \
+	if [ -z "$$SKIP" ] && [ -t 0 ]; then \
+		printf "  $(YELLOW)[CONFIRM]$(NC) %s [y/N]: " "$(1)"; \
+		read -r REPLY; \
+		case "$$REPLY" in y|Y|yes|YES) ;; *) echo -e "  $(INFO) Aborted."; exit 1 ;; esac; \
+	elif [ -z "$$SKIP" ]; then \
+		echo -e "  $(ERROR) Non-interactive cleanup requires FORCE=1." >&2; exit 2; \
+	fi
+endef
+
+.PHONY: help h setup adopt status check verify ci ci-on ci-off xauth gpus build start stop restart shell exec test lint term bake-dev bake-prod run-sif slurm-status slurm-cancel stats top logs update-gpg down clean clean-cache clean-all docker-clean ide-config
 
 # =============================================================================
-# Initial Setup and Status Check
+# Help & Setup
 # =============================================================================
 
-## @arg ENV=ros|dev | Docker/SIF family selector (default: ros)
-## @arg SIF_MODE=dev|prod|slurm | SIF execution target (default: dev)
-## @arg SHARE=1 | Bind-mount the host workspace into the container
-## @arg NO_CACHE=1 | Force an image rebuild without layer cache
-## @arg PROD_FULL_CUDA=1 | Include the full CUDA toolkit in the prod image
-## @arg RUN_ARGS='cmd' | Command to execute inside the SIF
-## @arg IMAGE_TAG=latest | Image tag used for build/run (default: latest)
-
-## @section 🧰 | Setup & Infrastructure | BLUE
-## @target h : Alias for help
 ## @target help : Show this command guide
-## @target completion : Print bash completion script for make commands
-## @target completion-install : Install host bash completion for make commands
+help:
+	@echo -e "\n$(TEAL)DevKit Makefile Targets & Arguments$(NC)"
+	@echo -e "$(BCYAN)Start here — five commands is the whole loop$(NC)"
+	@echo -e "  $(GREEN)make setup$(NC) → $(GREEN)make build$(NC) → $(GREEN)make start$(NC) → $(GREEN)make shell$(NC), then $(GREEN)mksync$(NC) inside the container"
+	@echo -e "  Add $(CYAN)ENV=ros$(NC) (default) or $(CYAN)ENV=dev$(NC) to pick the environment. In-container help: $(GREEN)h$(NC)\n"
+	@echo -e "$(CYAN)[ Host Workflows & Setup ] ==========================$(NC)"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "setup" "Initialize .env and host prerequisites"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "adopt NAME=my-robot" "Make this checkout your project (identity files)"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "status / check" "Diagnose project, container & host status"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "gpus" "Monitor host-side GPU (NVIDIA/iGPU) status"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "verify" "Run fast repository validation checks"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "ci / ci-on / ci-off" "Show GitHub Actions state / switch every workflow on or off"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "xauth" "Refresh X11 GUI authentication"
+	@echo -e "\n$(CYAN)[ Docker Container Workflows ] ======================$(NC)"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "build / start / stop" "Build image, launch containers, stop"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "restart / down" "Restart containers / stop & remove containers"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "shell / term" "Interactive container shell / new window"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "ide-config" "Prepare VS Code for the selected ENV and GPU profile"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "exec CMD='...'" "Run command"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "test / lint" "Run project tests / check style (FIX=1 applies)"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "logs / stats / top" "Stream logs, real-time stats, process monitor"
+	@echo -e "\n$(CYAN)[ Apptainer SIF & SLURM ] ===========================$(NC)"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "bake-dev / bake-prod" "Bake development / production SIF artifacts"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "run-sif" "Run SIF artifact locally or submit to SLURM"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "slurm-status / cancel" "Query active SLURM jobs or cancel jobs"
+	@echo -e "\n$(CYAN)[ Cleanup & Maintenance ] ===========================$(NC)"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "clean / clean-cache" "Delete build outputs / wipe .docker_cache"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "clean-all / docker-clean" "Reset containers & volumes / prune docker cache"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "update-gpg" "Update ROS GPG keys in build scripts"
+	@echo ""
+
+## @target h : Alias for help (muscle memory from earlier versions)
+h: help
+
 ## @target setup : Initialize .env and host prerequisites
-## @target status : Diagnose overall project & GPU state
-## @target check : Validate host prerequisites before running workflows
-## @target check-host : Deep audit of WSL2/Host permissions
-## @target env-check : Verify .env synchronization with example
-## @target verify : Run fast repository validation checks
-## @target xauth : Refresh X11/GUI authentication
 setup:
 	$(call GUARD_HOST_ONLY)
+	@# Per-user project name on FRESH setup only: on a shared host everyone
+	@# using the stock 'myproject' would own each other's containers/volumes.
+	@# Never rewrite an existing .env — renaming the project would orphan the
+	@# volumes (including the built .venv) already created under the old name.
+	@# The username is sanitized to compose's [a-z0-9][a-z0-9_-]* rule (LDAP/AD
+	@# names like 'John.Doe' or 'LAB\user' would otherwise break every target).
+	@# Atomic: .env appears only via mv, fully rewritten — an interrupt can
+	@# never leave the un-scoped 'myproject' behind. The \r? tolerates CRLF.
 	@if [ ! -f .env ]; then \
-		cp .env.example .env; \
-		SAFE_USER=$$(whoami | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-'); \
-		TMP_ENV=$$(mktemp /tmp/devkit_env.XXXXXX); \
-		sed "s/^COMPOSE_PROJECT_NAME=\(.*\)/COMPOSE_PROJECT_NAME=\1-$$SAFE_USER/" .env > "$$TMP_ENV"; \
-		mv "$$TMP_ENV" .env; \
-		PROJECT_NAME=$$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' .env); \
-		echo -e "  $(OK) Created .env file and dynamically isolated project name to '$$PROJECT_NAME'."; \
-	else \
-		echo -e "  $(INFO) .env file already exists."; \
+		U="$$(whoami 2>/dev/null || id -un 2>/dev/null || echo user)"; \
+		U="$$(printf '%s' "$$U" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-')"; U="$${U%-}"; U="$${U:-user}"; \
+		awk -v u="$$U" '/^COMPOSE_PROJECT_NAME=myproject\r?$$/{print "COMPOSE_PROJECT_NAME=myproject-" u; next} {print}' \
+			.env.example > .env.tmp && mv .env.tmp .env; \
+		echo -e "  $(OK) Created .env (project: myproject-$$U)"; \
 	fi
-	@$(MAKE) --no-print-directory completion-install || echo -e "  $(WARN) Completion install skipped."
+	@bash config/devkit_make_completion.bash --install
 	@$(MAKE) xauth
+	@$(MAKE) ide-config
 
+## @target adopt : Make this checkout YOUR project (NAME=my-robot [DESC='...'])
+# The identity a fork owns, in one step: the Python package name, the compose
+# project name, and the two files only you can decide. Idempotent, and every
+# edit is a normal working-tree change you can review with `git diff`.
+adopt:
+	$(call GUARD_HOST_ONLY)
+	@if [ -z "$(ADOPT_NAME)" ]; then \
+		echo -e "  $(ERROR) Usage: make adopt NAME=my-robot [DESC='One line about it']" >&2; exit 2; \
+	fi
+	@# compose and PEP 508 both want [a-z0-9][a-z0-9_-]*; refuse rather than
+	@# silently mangle a name that would break `docker compose` later.
+	@printf '%s' "$(ADOPT_NAME)" | grep -qE '^[a-z0-9][a-z0-9_-]*$$' || { \
+		echo -e "  $(ERROR) NAME must match [a-z0-9][a-z0-9_-]* (got: '$(ADOPT_NAME)')" >&2; exit 2; }
+	@if [ -n "$$(git status --porcelain 2>/dev/null)" ]; then \
+		echo -e "  $(ERROR) Working tree is not clean; commit or stash first." >&2; \
+		echo -e "  $(INFO) Adoption rewrites tracked files — keep the diff reviewable." >&2; exit 1; \
+	fi
+	@# Scoped to the [project] table: a bare `sed s/^name = /` also renamed the
+	@# [[tool.uv.index]] entries, and [tool.uv.sources] then pointed at indexes
+	@# that no longer existed. Atomic via mv, like setup's .env write.
+	@# The description is USER text: read it from the environment (never spliced
+	@# into the command) and escape it for a TOML basic string. A DESC carrying a
+	@# quote produced description = "Robot "A"" and adopt still reported success.
+	@awk ' \
+		BEGIN { n = ENVIRON["ADOPT_NAME"]; d = ENVIRON["ADOPT_DESC"]; \
+		        gsub(/\\/, "\\\\", d); gsub(/"/, "\\\"", d) } \
+		/^\[/            { inproj = ($$0 == "[project]") } \
+		inproj && /^name = /                  { print "name = \"" n "\""; next } \
+		inproj && d != "" && /^description = / { print "description = \"" d "\""; next } \
+		{ print }' src/pyproject.toml > src/pyproject.toml.tmp
+	@# Publish only what parses: a half-written identity file is worse than none.
+	@python3 -c 'import sys,tomllib; tomllib.load(open(sys.argv[1],"rb"))' src/pyproject.toml.tmp \
+		|| { rm -f src/pyproject.toml.tmp; \
+		     echo -e "  $(ERROR) The generated src/pyproject.toml is not valid TOML; nothing was changed." >&2; exit 1; }
+	@mv src/pyproject.toml.tmp src/pyproject.toml
+	@if [ -f .env ]; then \
+		sed 's/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=$(ADOPT_NAME)/' .env > .env.tmp && mv .env.tmp .env; \
+	fi
+	@sed 's/^COMPOSE_PROJECT_NAME=myproject$$/COMPOSE_PROJECT_NAME=$(ADOPT_NAME)/' .env.example > .env.example.tmp && mv .env.example.tmp .env.example
+	@echo -e "  $(OK) Adopted as '$(ADOPT_NAME)': src/pyproject.toml, .env, .env.example"
+	@echo -e "  $(INFO) Run mksync in the container and commit the updated src/uv.lock."
+	@echo -e "  $(INFO) Two files are yours to decide — DevKit cannot guess them:"
+	@echo -e "  $(INFO)   README.md   this front page still describes DevKit"
+	@echo -e "  $(INFO)   LICENSE     MIT-0 lets you relicense (docs/DEVELOPMENT.md)"
+	@echo -e "  $(INFO) The kit's own guides stay in docs/ — keep or delete them."
+	@echo -e "  $(INFO) The rest of the checklist: docs/GETTING_STARTED.md"
+	@echo -e "  $(INFO) Review with: git diff"
+
+## @target status : Diagnose project and container status
 status: check
 	$(call GUARD_HOST_ONLY)
-	$(call PRINT_SECTION,Project Configuration Summary)
-	@printf "  %-19s %s\n" "Host User:"          "$(shell whoami) (UID: $(HOST_UID) / GID: $(HOST_GID))"
-	@printf "  %-19s %s\n" "Container User:"     "$(CONTAINER_USER)"
+	@echo -e "\n$(BCYAN)[Project Configuration Summary]$(NC)"
+	@printf "  %-19s %s\n" "Host User:"          "$$(whoami)"
+	@printf "  %-19s %s\n" "Host OS:"            "$(if $(filter true,$(IS_MACOS)),macOS Darwin ($(HOST_ARCH)),$(if $(filter true,$(IS_WSL)),Windows WSL2,Linux Native))"
 	@printf "  %-19s %s\n" "Project Name:"       "$(COMPOSE_PROJECT_NAME)"
-	@printf "  %-19s %s\n" "Workspace(Host):"    "$(HOST_WORKSPACE_PATH)"
-	@printf "  %-19s %s\n" "Workspace(Docker):"  "$(WORKSPACE_PATH)"
-	@printf "  %-19s %s\n" "OS Environment:"     "$(if $(filter true,$(IS_WSL)),WSL 2 (Windows Subsystem for Linux),Linux Native)"
-	@printf "  %-19s %s\n" "Architecture:"       "$(HOST_ARCH) (Target: $(TARGETARCH))"
-	@printf "  %-19s %s\n" "Display:"            "$(DISPLAY) ($(DISPLAY_TYPE))"
-	@printf "  %-19s %s\n" "GPU Mode (Set):"     "$(GPU_MODE)"
+	@printf "  %-19s %s\n" "DevKit Version:"     "$(DEVKIT_VERSION)$(if $(DEVKIT_COMMIT), ($(DEVKIT_COMMIT)),)"
+	@printf "  %-19s %s\n" "Workspace Path:"     "$(HOST_WORKSPACE_PATH)"
 	@printf "  %-19s %s\n" "ROS Version:"        "$(ROS_DISTRO)"
-	@printf "  %-19s %s\n" "Python Interpreter:" "$(PYTHON_EXECUTABLE)"
-	$(call PRINT_SECTION,Running Containers)
-	$(call DOCKER_QUERY,status_docker_ps,docker ps --filter "label=com.docker.compose.project=$(COMPOSE_PROJECT_NAME)" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}",Unable to query Docker containers. Check Docker daemon/socket permissions.)
-	$(call PRINT_SECTION,Created Docker Volumes)
-	$(call DOCKER_QUERY,status_docker_volume,docker volume ls --filter "name=$(COMPOSE_PROJECT_NAME)" --format "table {{.Name}}\t{{.Driver}}",Unable to query Docker volumes. Check Docker daemon/socket permissions.)
-	@if [ "$(HAS_NVIDIA)" = "true" ]; then \
-		bash -c "source scripts/util_logging.sh && print_section 'NVIDIA GPU Details'"; \
-	fi
-	$(if $(filter true,$(HAS_NVIDIA)),$(call DOCKER_QUERY,status_nvidia,nvidia-smi --query-gpu=name$(COMMA)driver_version$(COMMA)memory.total --format=csv$(COMMA)noheader$(COMMA)nounits,Unable to query NVIDIA GPU details.))
+	@$(RESOLVE_SVC_MODE); \
+	printf "  %-19s %s\n" "GPU Mode:" "$${GPU_MODE:-auto} → $$TARGET_SVC"
+	@# Live, not cached: it reads GitHub, so it belongs here rather than under the wiring header.
+	@$(CI_STATE); printf "  %-19s %s\n" "GitHub CI:" "$$CI_SUMMARY"
+	@echo -e "\n$(BCYAN)[Detected Host Wiring]$(NC)  (refresh: make clean-cache)"
+	@printf "  %-19s %s\n" "GPU devices:"  "$(HOST_DRI_MOUNT) | $(HOST_DXG_MOUNT)"
+	@printf "  %-19s %s\n" "WSL libs:"     "$(WSL_LIB_DIR_MOUNT)"
+	@printf "  %-19s %s\n" "Display:"      "$(DISPLAY_TYPE) | X11=$(HOST_X11_DIR) | WAYLAND=$(if $(HOST_WAYLAND_DISPLAY),$(HOST_WAYLAND_DISPLAY),-)"
+	@printf "  %-19s %s\n" "XDG runtime:"  "$(HOST_XDG_RUNTIME_DIR)"
+	@printf "  %-19s %s\n" "Xauthority:"   "$(HOST_XAUTHORITY)"
+	@printf "  %-19s %s\n" "ssh-agent:"    "$(if $(HOST_SSH_AUTH_SOCK),$(HOST_SSH_AUTH_SOCK),- (not forwarded))"
+	@printf "  %-19s %s\n" "git identity:" "$(HOST_GITCONFIG)"
+	@printf "  %-19s %s\n" "Container user:" "$(CONTAINER_USER) ($(HOST_UID):$(HOST_GID))"
+	@echo -e "\n$(BCYAN)[Running Containers]$(NC)  (project-wide; other targets act on ENV=$(ENV))"
+	@docker ps --filter "label=com.docker.compose.project=$(COMPOSE_PROJECT_NAME)" || true
 
-check-host:
-	$(call GUARD_HOST_ONLY)
-	@REQUESTED_GPU=$$(printf '%s' "$(GPU_MODE)" | tr '[:upper:]' '[:lower:]'); \
-	case "$$REQUESTED_GPU" in ""|auto|nvidia) CHECK_NVIDIA=true ;; *) CHECK_NVIDIA=false ;; esac; \
-	if [ "$$CHECK_NVIDIA" = "true" ] && [ "$(HAS_NVIDIA)" = "true" ]; then \
-		if [ "$(HAS_TOOLKIT_BIN)" = "false" ]; then \
-			echo -e "  $(WARN) NVIDIA GPU detected but NVIDIA Container Toolkit is not installed."; \
-			echo -e "  $(INFO) Refer to README.md for installation instructions."; \
-		elif [ "$(HAS_TOOLKIT)" = "false" ]; then \
-			echo -e "  $(WARN) NVIDIA Container Toolkit is installed but NOT configured for Docker."; \
-			echo -e "  $(INFO) Fix: Run 'sudo nvidia-ctk runtime configure --runtime=docker'"; \
-			echo -e "  $(INFO) Then restart Docker: 'sudo systemctl restart docker' OR 'sudo service docker restart'"; \
-		fi \
-	fi
-
-xauth:
-	$(call GUARD_HOST_ONLY)
-	@if [ -n "$(DISPLAY)" ]; then \
-		if command -v xauth >/dev/null 2>&1 || command -v xhost >/dev/null 2>&1; then \
-			TMP_DIR=$$(mktemp -d /tmp/devkit_xauth.XXXXXX); \
-			trap 'rm -rf "$$TMP_DIR"' EXIT; \
-			ERR="$$TMP_DIR/err"; \
-			XAUTH_DATA="$$TMP_DIR/data"; \
-			if command -v xauth >/dev/null 2>&1; then \
-				if [ ! -f "$(HOST_XAUTHORITY)" ] && ! touch "$(HOST_XAUTHORITY)" 2> "$$ERR"; then \
-					echo -e "  $(WARN) Unable to create Xauthority file: $(HOST_XAUTHORITY)"; \
-					while read -r line; do echo "    $$line"; done < "$$ERR"; \
-				elif ! xauth nlist "$(DISPLAY)" > "$$XAUTH_DATA" 2> "$$ERR"; then \
-					echo -e "  $(WARN) Unable to read X11 authentication for DISPLAY=$(DISPLAY). GUI apps may not open."; \
-					while read -r line; do echo "    $$line"; done < "$$ERR"; \
-				elif ! (while read -r line; do echo "ffff$${line#????}"; done < "$$XAUTH_DATA") | xauth -f "$(HOST_XAUTHORITY)" nmerge - 2>> "$$ERR"; then \
-					echo -e "  $(WARN) Unable to merge X11 authentication for DISPLAY=$(DISPLAY). GUI apps may not open."; \
-					while read -r line; do echo "    $$line"; done < "$$ERR"; \
-				fi; \
-			fi; \
-			if command -v xhost >/dev/null 2>&1; then \
-				if ! xhost +local:root > /dev/null 2> "$$ERR"; then \
-					echo -e "  $(WARN) Unable to grant X11 local root access."; \
-					while read -r line; do echo "    $$line"; done < "$$ERR"; \
-				fi; \
-				if ! xhost +si:localuser:root > /dev/null 2> "$$ERR"; then \
-					echo -e "  $(WARN) Unable to grant X11 root user access."; \
-					while read -r line; do echo "    $$line"; done < "$$ERR"; \
-				fi; \
-				if ! xhost +si:localuser:$(shell whoami) > /dev/null 2> "$$ERR"; then \
-					echo -e "  $(WARN) Unable to grant X11 access for user $(shell whoami)."; \
-					while read -r line; do echo "    $$line"; done < "$$ERR"; \
-				fi; \
-			fi; \
-		fi; \
-	fi
-
-
+## @target check : Validate host environment
 check:
 	$(call GUARD_HOST_ONLY)
-	$(call REQUIRE_ENV_FILE)
-	$(call VALIDATE_PROJECT_CONFIG)
-	$(call REQUIRE_HOST_WORKSPACE_DIR)
-	@$(MAKE) --no-print-directory check-host
-	@if [ "$(IS_WSL)" = "true" ]; then \
-		bash scripts/check_wsl.sh; \
-		if [[ "$(CURDIR)" == /mnt/* ]]; then \
-			echo -e "  $(WARN) You are running from a Windows mount path ($(CURDIR))."; \
-			echo -e "  $(INFO) IO performance will be significantly degraded in WSL 2."; \
-			echo -e "  $(INFO) Recommendation: Move the project to the WSL home directory (e.g., ~/work/)."; \
-		fi \
-	fi
-
-# Verify environment variables synchronization
-env-check:
-	$(call GUARD_HOST_ONLY)
-	$(call REQUIRE_ENV_FILE)
-	@echo -e "  $(INFO) Comparing .env settings against .env.example..."
-	@MISSING=$$(awk -F= 'FNR == NR { if ($$0 ~ /^[^#][^=]*=/) expected[$$1] = 1; next } $$0 ~ /^[^#][^=]*=/ { delete expected[$$1] } END { for (key in expected) print key }' .env.example .env | sort); \
+	@if [ ! -f .env ]; then echo -e "  $(ERROR) .env file missing. Run 'make setup' first."; exit 1; fi
+	@MISSING=$$(awk -F= 'FNR==NR { if ($$0 ~ /^[^#][^=]*=/) want[$$1]=1; next } $$0 ~ /^[^#][^=]*=/ { delete want[$$1] } END { for (k in want) print "    - " k }' .env.example .env); \
 	if [ -n "$$MISSING" ]; then \
-		echo -e "  $(ERROR) The following environment variables are missing in your .env:\n$$MISSING"; \
-		exit 1; \
-	else \
-		echo -e "  $(OK) All required environment variables are properly set."; \
+		echo -e "  $(WARN) .env is missing keys present in .env.example:"; echo "$$MISSING"; \
+		echo -e "  $(INFO) They fall back to built-in defaults; copy them over if you need to override."; \
 	fi
-	$(call VALIDATE_ENV_FILE_VALUES)
-	$(call VALIDATE_PROJECT_CONFIG)
-	@echo -e "  $(OK) Environment variable values are valid."
+	@# HAS_NVIDIA reaches preflight through make's export: the "GPU but no
+	@# NVIDIA runtime" notice lives there, next to the GPU_MODE=nvidia refusal.
+	@bash scripts/check_preflight.sh
+	@if [ "$(IS_WSL)" = "true" ]; then bash scripts/check_wsl.sh; fi
 
+## @target xauth : Refresh X11 GUI authentication
+xauth:
+	$(call GUARD_HOST_ONLY)
+	@if [ -z "$$DISPLAY" ]; then \
+		echo -e "  $(INFO) DISPLAY is not set — nothing to authorise."; exit 0; \
+	fi
+	@# Merge a wildcard-host cookie into HOST_XAUTHORITY. Without this the file
+	@# stays empty, check_env.sh falls back to a dummy and every container start
+	@# warns "Xauthority missing" — granting xhost alone does not fix that.
+	@if command -v xauth >/dev/null 2>&1 && [ -n "$(HOST_XAUTHORITY)" ]; then \
+		ERR=$$(mktemp "$${TMPDIR:-/tmp}/devkit-xauth.XXXXXX"); \
+		if [ ! -f "$(HOST_XAUTHORITY)" ] && ! touch "$(HOST_XAUTHORITY)" 2>"$$ERR"; then \
+			echo -e "  $(WARN) Cannot create $(HOST_XAUTHORITY)"; sed 's/^/    /' "$$ERR"; \
+		elif ! xauth nlist "$$DISPLAY" > "$$ERR.list" 2>"$$ERR"; then \
+			echo -e "  $(WARN) Could not read X11 authentication for DISPLAY=$$DISPLAY."; \
+			sed 's/^/    /' "$$ERR"; \
+		elif [ ! -s "$$ERR.list" ]; then \
+			echo -e "  $(INFO) No X11 cookie exists for DISPLAY=$$DISPLAY."; \
+			echo -e "  $(INFO) Normal on WSLg/XWayland, which authorises local clients via xhost instead."; \
+		elif sed -e 's/^..../ffff/' "$$ERR.list" | xauth -f "$(HOST_XAUTHORITY)" nmerge - 2>>"$$ERR"; then \
+			echo -e "  $(OK) X11 cookie merged into $(HOST_XAUTHORITY)"; \
+		else \
+			echo -e "  $(WARN) Could not merge the X11 cookie; GUI apps may not open."; \
+			sed 's/^/    /' "$$ERR"; \
+		fi; \
+		rm -f "$$ERR.list"; \
+		rm -f "$$ERR"; \
+	fi
+	@if command -v xhost >/dev/null 2>&1; then \
+		for E in "si:localuser:root" "si:localuser:$$(whoami)"; do \
+			xhost +$$E >/dev/null 2>&1 || echo -e "  $(WARN) xhost +$$E failed."; \
+		done; \
+	fi
+
+## @target verify : Run fast repository validation checks
 verify:
 	$(call GUARD_HOST_ONLY)
-	$(call PRINT_SECTION,Repository Validation)
-	@VERIFY_DOCKER="$(VERIFY_DOCKER)" bash scripts/verify_repo.sh
+	@echo -e "\n$(BCYAN)[Repository Validation]$(NC)"
+	@bash scripts/verify_repo.sh
+
+# CI_STATE: read the GitHub Actions switch ONCE into CI_LIST (gh's table) and
+# CI_SUMMARY (one line). The truth lives on GitHub, never in a local file.
+define CI_STATE
+CI_LIST=""; \
+if ! command -v gh >/dev/null 2>&1; then CI_SUMMARY="unknown — GitHub CLI 'gh' not installed (https://cli.github.com)"; \
+elif ! CI_LIST="$$(gh workflow list --all 2>/dev/null)"; then CI_SUMMARY="unknown — gh cannot reach GitHub (gh auth login?)"; \
+else \
+	CI_TOTAL=$$(grep -c . <<< "$$CI_LIST"); CI_ACTIVE=$$(awk -F'\t' '$$2 == "active"' <<< "$$CI_LIST" | grep -c .); \
+	if [ "$$CI_ACTIVE" -eq "$$CI_TOTAL" ]; then CI_SUMMARY="on  ($$CI_ACTIVE/$$CI_TOTAL workflows active)"; \
+	elif [ "$$CI_ACTIVE" -eq 0 ]; then CI_SUMMARY="off (0/$$CI_TOTAL workflows active)"; \
+	else CI_SUMMARY="mixed ($$CI_ACTIVE/$$CI_TOTAL active)"; fi; \
+fi
+endef
+
+## @target ci : Show the GitHub Actions switch (per workflow); ci-on / ci-off flip it
+# A switch, not a setting: the state is read from and written to GitHub through
+# gh, so a copy in .env could only drift. Every workflow FILE is switched, so a
+# fork's own one is covered; disabling stops push, cron and dispatch alike.
+ci:
+	$(call GUARD_HOST_ONLY)
+	@$(CI_STATE); \
+	printf "  %-19s %s\n" "GitHub CI:" "$$CI_SUMMARY"; \
+	[ -z "$$CI_LIST" ] || sed 's/^/    /' <<< "$$CI_LIST"
+
+ci-on ci-off:
+	$(call GUARD_HOST_ONLY)
+	@command -v gh >/dev/null 2>&1 || { \
+		echo -e "  $(ERROR) GitHub CLI 'gh' is required (https://cli.github.com); log in once with 'gh auth login'." >&2; exit 1; }
+	@ACTION=$(if $(filter ci-on,$@),enable,disable); \
+	for wf in .github/workflows/*.yml; do \
+		gh workflow "$$ACTION" "$${wf##*/}" || exit 1; \
+	done; \
+	$(CI_STATE); echo -e "  $(OK) GitHub CI: $$CI_SUMMARY"
 
 # =============================================================================
-# Build
+# Docker Workflows
 # =============================================================================
 
-## @section 🏭 | Image Building | BLUE
-## @target build ENV=ros|dev [NO_CACHE=1] : Build development image
+## @target build : Build development Docker image
 build: check
-	@bash scripts/check_preflight.sh
-	$(call VALIDATE_ENV_MODE)
-	$(call BUILD_SERVICE,$(COMPOSE_DEV),$(SERVICE_PREFIX),$(SERVICE_LABEL),$(if $(call truthy,$(NO_CACHE)),--no-cache,),Build finished! Run 'make start ENV=$(ENV)' to start the container.)
+	$(call GUARD_HOST_ONLY)
+	@$(RESOLVE_SVC_MODE); \
+	echo -e "  $(INFO) Building image for $$TARGET_SVC..."; \
+	$(COMPOSE) --profile $$TARGET_SVC build $$TARGET_SVC $(if $(filter 1 true,$(NO_CACHE)),--no-cache,)
 
-# =============================================================================
-# Execution and Shell Access (Dev) - Auto GPU Detection
-# =============================================================================
+## @target start : Run container environment in background
+start: check
+	$(call GUARD_HOST_ONLY)
+	@$(RESOLVE_SVC_MODE); \
+	echo -e "  $(INFO) Starting $$TARGET_SVC environment..."; \
+	$(COMPOSE) --profile $$TARGET_SVC up -d $$TARGET_SVC
 
-## @section 💻 | Development (Interactive) | BLUE
-## @target start ENV=ros|dev : Run ROS or Pure Dev environment
-## @target stop ENV=ros|dev : Stop environment
-## @target restart ENV=ros|dev : Restart environment
-## @target shell ENV=ros|dev : Enter container shell
-## @target term ENV=ros|dev : Open container in new window
-start: check xauth
-	$(call VALIDATE_ENV_MODE)
-	$(call RUN_SERVICE,$(COMPOSE_DEV),$(SERVICE_PREFIX),$(SERVICE_LABEL))
-	@echo -e "\n  $(INFO) [Hint] Container started! Use 'make shell ENV=$(ENV)' or 'make term ENV=$(ENV)' to attach."
+## @target ide-config : Point VS Code at the compose service this host resolves to
+# Rewrites one key — which service — because no devcontainer variable can
+# express a profile chosen from detected hardware. A line edit, not a JSON
+# round-trip: this file is JSONC like every other IDE config here.
+# Run by `make setup`; re-run after changing ENV or GPU_MODE. A host without
+# compose (a SLURM submit node) has no container to attach to: skip, so that
+# `make setup` still finishes its .env / completion / xauth work there.
+ide-config:
+	$(call GUARD_HOST_ONLY)
+	@if ! docker compose version >/dev/null 2>&1; then \
+		echo -e "  $(INFO) docker compose is not available here — VS Code attach config skipped."; exit 0; fi; \
+	$(RESOLVE_SVC_MODE); \
+	DC=.devcontainer/devcontainer.json; \
+	mkdir -p .docker_cache && \
+	TMP=$$(mktemp .docker_cache/ide.XXXXXX) && \
+	trap 'rm -f "$$TMP" "$$DC.tmp"' EXIT && \
+	$(COMPOSE) --profile "$$TARGET_SVC" config --format json > "$$TMP" && \
+	mv "$$TMP" .docker_cache/ide.compose.json && \
+	sed -E -e 's|("service"[[:space:]]*:[[:space:]]*)"[^"]*"|\1"'"$$TARGET_SVC"'"|' \
+	       -e 's|("remoteUser"[[:space:]]*:[[:space:]]*)"[^"]*"|\1"'"$(CONTAINER_USER)"'"|' "$$DC" > "$$DC.tmp" && \
+	mv "$$DC.tmp" "$$DC" && \
+	echo -e "  $(OK) VS Code attaches to $$TARGET_SVC (Reopen in Container)"
 
+## @target stop : Stop environment containers
 stop:
 	$(call GUARD_HOST_ONLY)
-	$(call VALIDATE_ENV_MODE)
-	$(call STOP_SERVICE,$(COMPOSE_DEV),$(SERVICE_PREFIX),$(SERVICE_LABEL))
+	$(COMPOSE) --profile "*" stop $(ENV_SERVICES)
+	@echo -e "  $(OK) Stopped $(ENV) containers (other ENV untouched)."
 
+## @target restart : Restart environment containers
 restart: stop start
 
-shell: check xauth
-	$(call VALIDATE_ENV_MODE)
-	$(call EXEC_CONTAINER,$(SERVICE_FILTER),bash,$(SERVICE_LABEL))
+## @target shell : Enter container interactive shell
+shell:
+	$(call GUARD_HOST_ONLY)
+	@$(REQUIRE_CONTAINER); \
+	$(EXEC_USER_FLAG); \
+	docker exec -it $$USER_FLAG -w "$(WORKSPACE_PATH)" $$CONTAINER bash
 
-term: check xauth
-	$(call VALIDATE_ENV_MODE)
-	$(call EXEC_DETACHED,$(SERVICE_FILTER),$(TERMINAL),$(SERVICE_LABEL))
+## @target exec : Run a command inside the container with the full DevKit environment
+# The paved path for automation. Goes through the entrypoint's --env mode, so a
+# bare binary, `sh -c` or a Python process gets what an interactive session has
+# (rc hooks only ever reach bash). Falls back to bash on older images.
+#   make exec CMD='ros2 topic list'    make exec CMD='./install/bin/app'
+# Double any '$' — it belongs to make first: CMD='echo $$ROS_DISTRO'.
+exec:
+	$(call GUARD_HOST_ONLY)
+	@if [ -z "$$CMD" ]; then \
+		echo -e "  $(ERROR) Usage: make exec CMD='<command>'   e.g. CMD='python3 -m pytest'"; \
+		echo -e "  $(INFO) Double any '$$' so it survives make: CMD='echo \$$\$$ROS_DISTRO'"; \
+		exit 2; fi
+	@$(REQUIRE_CONTAINER); \
+	$(EXEC_USER_FLAG); \
+	if docker exec $$CONTAINER test -x /entrypoint.sh 2>/dev/null && \
+	   docker exec $$CONTAINER grep -q '"--env"' /entrypoint.sh 2>/dev/null; then \
+		docker exec $$USER_FLAG -w "$(WORKSPACE_PATH)" $$CONTAINER /entrypoint.sh --env bash -c "$$CMD"; \
+	else \
+		docker exec $$USER_FLAG -w "$(WORKSPACE_PATH)" $$CONTAINER bash -c "$$CMD"; \
+	fi
+
+## @target test : Run the project's tests inside the container
+# Both go through `make exec` to inherit its entrypoint routing, user
+# resolution and container guard. mtest/mlint pick the runner by layout.
+test:
+	$(call GUARD_HOST_ONLY)
+	@$(MAKE) --no-print-directory exec CMD='mtest'
+
+## @target lint : Check style and lint rules inside the container (FIX=1 applies them)
+lint:
+	$(call GUARD_HOST_ONLY)
+	@$(MAKE) --no-print-directory exec CMD='mlint $(if $(filter 1 true,$(FIX)),--fix,)'
+
+## @target term : Launch in-container Terminator GUI window (2x2 grid layout)
+# terminator is opt-in (dependencies/apt.txt), so the binary is probed first:
+# `docker exec -d` would report success for a launch that never happened.
+# Probes with xdpyinfo (x11-utils), not xset: the image ships no
+# x11-xserver-utils, and xset reported "no display" on a working WSLg host.
+# Same user as `shell`/`exec`, or every pane is a root shell writing root-owned
+# files into the bind mount. terminator's config flag is -g; -u is --no-dbus,
+# and a stray positional argument makes it exit before drawing — silently,
+# because `docker exec -d` returns 0 whatever the detached process does.
+term:
+	$(call GUARD_HOST_ONLY)
+	@$(MAKE) xauth >/dev/null 2>&1 || true
+	@$(REQUIRE_CONTAINER); \
+	$(EXEC_USER_FLAG); \
+	TERM_BIN="$${TERMINAL:-terminator}"; \
+	if ! docker exec $$CONTAINER command -v "$$TERM_BIN" >/dev/null 2>&1; then \
+		echo -e "  $(ERROR) '$$TERM_BIN' is not installed in this image." >&2; \
+		echo -e "  $(INFO) Uncomment 'terminator # gui' in dependencies/apt.txt and run 'make build' (or set TERMINAL= in .env)."; \
+		exit 1; \
+	elif docker exec $$CONTAINER xdpyinfo >/dev/null 2>&1; then \
+		echo -e "  $(INFO) Launching in-container Terminator GUI ($$CONTAINER)..."; \
+		if [ "$$TERM_BIN" = "terminator" ]; then \
+			docker exec -d $$USER_FLAG -w "$(WORKSPACE_PATH)" $$CONTAINER terminator -g "$(WORKSPACE_PATH)/config/terminator_config"; \
+		else \
+			docker exec -d $$USER_FLAG -w "$(WORKSPACE_PATH)" $$CONTAINER "$$TERM_BIN"; \
+		fi; \
+	else \
+		echo -e "  $(WARN) In-container Terminator GUI requires an active X11 display server."; \
+		if [ "$(IS_MACOS)" = "true" ]; then \
+			echo -e "  $(CYAN)[Hint]$(NC) On macOS, start XQuartz (X11 server) first, or run '$(GREEN)make shell$(NC)'."; \
+		else \
+			echo -e "  $(CYAN)[Hint]$(NC) Start your X11 display server, or run '$(GREEN)make shell$(NC)'."; \
+		fi; \
+	fi
 
 # =============================================================================
-# Apptainer Baking (Portable Snapshot)
+# Apptainer & SLURM Artifact Workflows
 # =============================================================================
 
-## @section 🧊 | Apptainer Workflow (Dev Snapshot & Production & Server) | BLUE
-## @target bake-dev ENV=ros|dev [SHARE=1] : Bake development SIF snapshot
-## @target bake-prod ENV=ros|dev [PROD_FULL_CUDA=1] : Bake user-facing production SIF
-## @target run-sif SIF_MODE=dev|prod|slurm [ENV=ros|dev] [SHARE=1] [RUN_ARGS='cmd'] : Run or submit a SIF artifact
-bake-dev: check
-	@bash scripts/check_preflight.sh
-	$(call VALIDATE_ENV_MODE)
-	$(call PRINT_SECTION,Baking Development Apptainer Snapshot)
-	@./scripts/apptainer_bake.sh --mode dev --env $(ENV) $(if $(call truthy,$(SHARE)),--share,)
+## @target bake-dev : Bake development SIF snapshot (SHARE=1 for system site-packages)
+bake-dev:
+	$(call GUARD_HOST_ONLY)
+	@bash scripts/apptainer_bake.sh --mode dev --env $(ENV) $(if $(filter 1 true,$(SHARE)),--share,)
 
-bake-prod: check
-	@bash scripts/check_preflight.sh
-	$(call VALIDATE_ENV_MODE)
-	$(call PRINT_SECTION,Baking Production Apptainer Image)
-	@./scripts/apptainer_bake.sh --mode prod --env $(ENV)
+## @target bake-prod : Bake production SIF artifact
+bake-prod:
+	$(call GUARD_HOST_ONLY)
+	@bash scripts/apptainer_bake.sh --mode prod --env $(ENV)
 
+## @target run-sif : Run or submit SIF artifact
 run-sif:
-	$(call CHECK_SIF_READY)
-	$(call VALIDATE_SIF_MODE)
-	$(call VALIDATE_ENV_MODE)
-	$(call PRINT_SECTION,Running Apptainer Image)
-	$(if $(and $(filter dev,$(SIF_MODE)),$(if $(call truthy,$(DEVKIT_DRY_RUN)),,1)),@$(MAKE) xauth,)
-	@SHARE="$(SHARE)" ./scripts/apptainer_run.sh --mode $(SIF_MODE) --env $(ENV) -- $(RUN_ARGS)
+	$(call GUARD_HOST_ONLY)
+	@# RUN_ARGS travels through the ENVIRONMENT (make exports it), like `make exec`
+	@# does with CMD: as a quoted argument its inner quotes went through a second
+	@# round of shell parsing. apptainer_run.sh owns the precedence.
+	@# A '$' still belongs to make first — double it: RUN_ARGS='echo $$HOME'.
+	@bash scripts/apptainer_run.sh --mode $(SIF_MODE) --env $(ENV)
 
-# =============================================================================
-# SLURM Scheduling (HPC)
-# =============================================================================
-
-## @section 📡 | SLURM Scheduling (Server) | BLUE
-## @target slurm-status : Query active/pending SLURM jobs
-## @target slurm-cancel : Cancel running/pending SLURM jobs
+## @target slurm-status : Query active SLURM jobs
 slurm-status:
 	$(call GUARD_HOST_ONLY)
-	@if command -v squeue >/dev/null 2>&1; then \
-		squeue -u $$USER; \
-	else \
-		echo -e "  $(ERROR) SLURM binary 'squeue' not found."; \
-		exit 1; \
-	fi
+	@if command -v squeue >/dev/null 2>&1; then squeue -u $$(whoami); else echo "squeue unavailable."; fi
 
+## @target slurm-cancel : Cancel active SLURM jobs
 slurm-cancel:
 	$(call GUARD_HOST_ONLY)
-	@if command -v scancel >/dev/null 2>&1; then \
-		echo -en "  $(WARN) Enter Job ID to cancel: "; \
-		read jobid; \
-		if [ -z "$$jobid" ]; then \
-			echo -e "  $(ERROR) Job ID is required. Operation cancelled."; \
-			exit 1; \
-		fi; \
-		scancel $$jobid && echo -e "  $(OK) Cancelled job $$jobid."; \
+	@# Cancel ONE job, asked for by id. `scancel -u $$USER` would kill every job
+	@# the user has queued, including ones this project never submitted.
+	@if ! command -v scancel >/dev/null 2>&1; then \
+		echo -e "  $(ERROR) SLURM binary 'scancel' not found."; exit 1; \
+	fi
+	@if [ -n "$(JOB)" ]; then \
+		scancel "$(JOB)" && echo -e "  $(OK) Cancelled job $(JOB)."; \
+	elif [ -t 0 ]; then \
+		printf "  $(YELLOW)[CONFIRM]$(NC) Job ID to cancel (blank aborts): "; \
+		read -r JOBID; \
+		if [ -z "$$JOBID" ]; then echo -e "  $(INFO) Aborted."; exit 1; fi; \
+		scancel "$$JOBID" && echo -e "  $(OK) Cancelled job $$JOBID."; \
 	else \
-		echo -e "  $(ERROR) SLURM binary 'scancel' not found."; \
-		exit 1; \
+		echo -e "  $(ERROR) Non-interactive: pass the id explicitly, e.g. 'make slurm-cancel JOB=12345'."; \
+		exit 2; \
 	fi
 
 # =============================================================================
-# Maintenance
+# Resource Monitoring & Diagnostics
 # =============================================================================
 
-## @section 📊 | Monitoring & Maintenance | BLUE
-## @target stats : Real-time resource monitor (CPU/Mem/GPU)
-## @target top : Detailed per-process monitor
+## @target gpus : Monitor NVIDIA / DRI GPU usage on host
+gpus:
+	$(call GUARD_HOST_ONLY)
+	@if command -v nvidia-smi >/dev/null 2>&1; then \
+		nvidia-smi; \
+	elif [ -d /dev/dri ] && compgen -G "/dev/dri/renderD*" >/dev/null; then \
+		echo -e "  $(INFO) Intel/AMD iGPU (DRI) active: $$(ls /dev/dri/renderD* 2>/dev/null)"; \
+	else \
+		echo -e "  $(WARN) No dedicated NVIDIA GPU or DRI iGPU detected on host."; \
+	fi
+
+## @target stats : Real-time container resource monitor
+stats:
+	$(call GUARD_HOST_ONLY)
+	@$(REQUIRE_CONTAINER); \
+	echo -e "  $(INFO) Streaming container resource stats (Ctrl+C to stop)..."; \
+	docker stats $$CONTAINER
+
+## @target top : Detailed process monitor
+top:
+	$(call GUARD_HOST_ONLY)
+	@$(FIND_CONTAINER); \
+	if [ -n "$$CONTAINER" ]; then \
+		docker top $$CONTAINER; \
+	else \
+		echo -e "  $(INFO) No running container found. Host process monitor:"; \
+		if command -v nvtop >/dev/null 2>&1; then nvtop; elif command -v htop >/dev/null 2>&1; then htop; else top; fi; \
+	fi
+
 ## @target logs : Stream real-time container logs
+logs:
+	$(call GUARD_HOST_ONLY)
+	@$(REQUIRE_CONTAINER)
+	$(COMPOSE) --profile "*" logs -f --tail 100 $(ENV_SERVICES)
+
 ## @target update-gpg : Update ROS GPG keys in build scripts
-## @target down : Stop and remove all containers
 update-gpg:
 	$(call GUARD_HOST_ONLY)
 	@bash scripts/setup_ros_gpg.sh
 
-# Real-time Monitoring (CPU, MEM, NVIDIA/Intel/AMD GPU)
-stats:
-	$(call GUARD_HOST_ONLY)
-	@echo -e "  $(INFO) Initiating real-time resource monitoring (Ctrl+C to terminate)..."
-	@watch -t -n 2 "bash scripts/util_make_stats.sh $(HAS_NVIDIA) $(HAS_DRI)" || [ $$? -eq 130 ]
-
-# Detailed Expert Monitoring (Per CPU Core + Per GPU Process)
-top:
-	$(call GUARD_HOST_ONLY)
-	$(call VALIDATE_ENV_MODE)
-	@CONTAINER=$$($(call FIND_CONTAINER,$(SERVICE_FILTER))); \
-	if [ -n "$$CONTAINER" ]; then \
-		echo -e "  $(INFO) Initiating granular $(SERVICE_LABEL) container monitoring ($$CONTAINER)..."; \
-		docker exec -it -u $(CONTAINER_USER) $$CONTAINER bash "$(WORKSPACE_PATH)/scripts/util_make_top.sh" container || [ $$? -eq 130 ]; \
-	else \
-		echo -e "  $(ERROR) No running $(SERVICE_LABEL) container found. Trying host tools instead..."; \
-		bash scripts/util_make_top.sh host "$(HAS_DRI)" || [ $$? -eq 130 ]; \
-	fi
-
-logs:
-	$(call GUARD_HOST_ONLY)
-	@if [ -n "$$($(COMPOSE) $(COMPOSE_DEV) ps --status running -q 2>/dev/null)" ]; then \
-		echo -e "  $(INFO) [Dev] Streaming development logs..."; \
-		$(COMPOSE) $(COMPOSE_DEV) logs -f --tail 100; \
-	else \
-		echo -e "  $(WARN) No running development containers found."; \
-	fi
-
+## @target down : Stop and remove all project containers
 down:
 	$(call GUARD_HOST_ONLY)
-	$(call TEARDOWN_SERVICES)
-	@echo -e "  $(OK) All containers have successfully been stopped and removed."
+	$(COMPOSE) --profile "*" down --remove-orphans $(ENV_SERVICES)
+	@echo -e "  $(OK) Removed $(ENV) containers (other ENV untouched)."
 
-# =============================================================================
-# Cleanup
-# =============================================================================
-
-## @section 🧹 | Cleanup | BLUE
-## @target clean : Delete build output (build/install/log)
-## @target clean-cache : Wipe .docker_cache (ccache/uv/apt)
-## @target clean-all : Reset everything (images/volumes/cache)
-## @target docker-clean : Global Docker system cleanup
+## @target clean : Delete build and install output directories
 clean:
-	$(call GUARD_HOST_ONLY)
-	$(call TEARDOWN_SERVICES,-v)
-	@echo -e "  $(INFO) Removing all named volumes related to $(COMPOSE_PROJECT_NAME)..."
-	@VOLUMES=$$(docker volume ls -q --filter "label=com.docker.compose.project=$(COMPOSE_PROJECT_NAME)"); \
-	if [ -n "$$VOLUMES" ]; then \
-		docker volume rm $$VOLUMES; \
-	else \
-		echo -e "  $(INFO) No project-related volumes to delete."; \
+	@# devel/ is the ROS 1 (catkin_make) counterpart of install/: it lives next to
+	@# build/ on the workspace root and goes stale exactly the same way. With a
+	@# bind-mounted build/ (ROS_BUILD_VOL=./build) Docker created it as root,
+	@# and a raw rm failure here gave no way out while install/ got a hint.
+	@rm -rf build devel log 2>/dev/null || { \
+		echo -e "  $(WARN) build/, devel/ or log/ holds root-owned entries and cannot be removed from the host."; \
+		$(call HINT_ROOT_OWNED,build devel log); }
+	@# Workspace convenience links point INTO build/ and install/ using the
+	@# container path (/workspace/...), so they are dangling on the host and
+	@# certainly dead once the targets are gone. util_setup_links.sh recreates
+	@# them on the next interactive shell, so removing them here is free.
+	@for l in compile_commands.json .venv colcon.meta; do \
+		[ -L "$$l" ] && rm -f "$$l"; \
+	done; true
+	@if [ -d install ]; then \
+		find install -mindepth 1 -maxdepth 1 ! -name '.venv' -exec rm -rf {} + 2>/dev/null || true; \
 	fi
-	@if [ -n "$(call truthy,$(FORCE))" ] || [ -n "$(call truthy,$(CI))" ]; then \
-		echo -e "  $(WARN) CI/FORCE mode: Forcibly deleting host folders without prompting."; ans="y"; \
+	$(if $(filter 0 false no,$(KEEP_VENV)),$(call CONFIRM,This also deletes install/.venv — recreating it needs a full 'mksync'))
+	@if [ -n "$(filter 0 false no,$(KEEP_VENV))" ]; then \
+		rm -rf install/.venv 2>/dev/null || true; \
+		echo -e "  $(OK) Build artifacts and virtualenv removed."; \
+	elif [ -d install/.venv ]; then \
+		echo -e "  $(OK) Build artifacts cleaned (install/.venv preserved)."; \
+		echo -e "  $(INFO) Add KEEP_VENV=0 to remove the virtualenv as well."; \
 	else \
-		echo -e "  $(WARN) Do you want to delete the [build, devel, install, log, .venv, colcon.meta] host folders?"; \
-		echo -en "  $(WARN) If you used bind mounts in [.env], actual data will be lost! [Y/N]: "; \
-		read ans || true; \
-	fi; \
-	if [ "$$ans" = "y" ] || [ "$$ans" = "Y" ]; then \
-		$(call SUDO_FREE_RM,$(HOST_WORKSPACE_PATH),build devel install log .venv colcon.meta); \
-	else \
-		echo -e "  $(INFO) Safely skipped deleting host folders."; \
+		echo -e "  $(OK) Build artifacts cleaned."; \
 	fi
-	@echo -e "  $(OK) General project clean up completed."
+	@# Drop install/ itself once nothing is left in it. The entrypoint recreates
+	@# it as root inside the container, so a leftover empty dir is both useless
+	@# and (being root-owned) un-removable by a later plain `rm`.
+	@if [ -d install ] && [ -z "$$(ls -A install 2>/dev/null)" ]; then \
+		rmdir install 2>/dev/null || { \
+			echo -e "  $(WARN) install/ is root-owned and cannot be removed from the host."; \
+			$(call HINT_ROOT_OWNED,install); \
+		}; \
+	fi
+	@if [ -z "$(ROS_INSTALL_VOL)$(DEV_INSTALL_VOL)" ]; then \
+		echo -e "  $(INFO) build/install/log are named Docker volumes in this configuration;"; \
+		echo -e "  $(INFO) container-side artifacts are removed by 'make clean-all'."; \
+	fi
 
+## @target clean-cache : Wipe .docker_cache (host detection cache & placeholders)
 clean-cache:
-	$(call GUARD_HOST_ONLY)
-	@CACHE_DIR="$(HOST_CACHE_DIR)"; \
-		CACHE_DIR="$${CACHE_DIR%/}"; \
-		HOST_ROOT="$(HOST_WORKSPACE_PATH)"; \
-		HOST_ROOT="$${HOST_ROOT%/}"; \
-		if [ -z "$$CACHE_DIR" ] || [ "$$CACHE_DIR" = "/" ] || [[ "$$CACHE_DIR" != /* ]]; then \
-			echo -e "  $(ERROR) Cache directory must be an absolute non-root path (current: $$CACHE_DIR)."; \
-			exit 1; \
-		fi; \
-		if [ "$$CACHE_DIR" = "$$HOST_ROOT" ]; then \
-			echo -e "  $(ERROR) Refusing to clean the workspace root as a cache directory: $$CACHE_DIR"; \
-			exit 1; \
-		fi; \
-		case "$$CACHE_DIR" in \
-			*"$(COMPOSE_PROJECT_NAME)"*|"$$HOST_ROOT"/*) ;; \
-			*) echo -e "  $(WARN) This cache string ($$CACHE_DIR) points to a shared global cache. Proceeding here affects all projects." ;; \
-		esac; \
-	if [ -d "$$CACHE_DIR" ]; then \
-		if [ -n "$(call truthy,$(FORCE))" ] || [ -n "$(call truthy,$(CI))" ]; then \
-			ans="y"; \
-		else \
-			echo -en "  $(WARN) Are you sure you want to delete the host cache directory ($$CACHE_DIR)? [Y/N]: "; \
-			read ans || true; \
-		fi; \
-		if [ "$$ans" != "y" ] && [ "$$ans" != "Y" ]; then echo -e "  $(INFO) Deletion cancelled."; exit 1; fi; \
-		echo -e "  $(INFO) Clearing cache directory contents: $$CACHE_DIR"; \
-		docker run --rm -v "$$CACHE_DIR:/mnt" alpine sh -c 'find /mnt -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +'; \
-		if [ "$(SKIP_ALPINE_RM)" != "1" ]; then \
-			$(call CLEAN_ALPINE_IMAGE); \
-		fi; \
+	@RUNNING=$$(docker ps -q --filter "label=com.docker.compose.project=$(COMPOSE_PROJECT_NAME)" 2>/dev/null | wc -l); \
+	if [ "$$RUNNING" -gt 0 ]; then \
+		echo -e "  $(ERROR) $$RUNNING container(s) still running with .docker_cache bind-mounted."; \
+		echo -e "  $(INFO) Deleting it now makes Docker re-create the mount source as root,"; \
+		echo -e "  $(INFO) which locks you out of your own cache. Run 'make down' first."; \
+		exit 1; \
 	fi
-	@echo -e "  $(OK) Docker local cache clean up (clean-cache) completed."
+	@# DOCKER_DEV_CACHE_DIR relocates ccache/uv caches (see .env.example).
+	@# Guards run on the RESOLVED path: '<ws>/cache/../../<ws>' carries the word
+	@# 'cache' and used to pass, aiming this rm -rf at the workspace itself.
+	@CACHE_DIR="$(or $(DOCKER_DEV_CACHE_DIR),.docker_cache)"; \
+	if [ "$$CACHE_DIR" != .docker_cache ]; then \
+		case "$$CACHE_DIR" in \
+			/*) ;; \
+			*)  echo -e "  $(ERROR) DOCKER_DEV_CACHE_DIR must be an absolute path (got: $$CACHE_DIR)"; exit 1 ;; \
+		esac; \
+		eval "$$(bash -c 'source config/util_paths.sh >/dev/null 2>&1; \
+			printf "REAL_CACHE=%s\nREAL_WS=%s\n" "$$(devkit_resolve_path "$$1")" "$$(devkit_resolve_path "$$2")"' \
+			_ "$$CACHE_DIR" "$(HOST_WORKSPACE_PATH)")"; \
+		case "$$REAL_CACHE" in \
+			/|"$$REAL_WS") echo -e "  $(ERROR) '$$CACHE_DIR' resolves to '$$REAL_CACHE'; refusing to delete it."; exit 1 ;; \
+		esac; \
+		case "$$REAL_CACHE" in \
+			*cache*) ;; \
+			*)  if ! bash -c 'source config/util_paths.sh >/dev/null 2>&1; devkit_is_true "$$1"' _ "$$FORCE"; then \
+					echo -e "  $(ERROR) '$$REAL_CACHE' does not look like a cache directory (no 'cache' in the resolved path)."; \
+					echo -e "  $(INFO) Re-run with FORCE=1 if this really is your relocated cache."; exit 1; \
+				fi ;; \
+		esac; \
+		CACHE_DIR="$$REAL_CACHE"; \
+	fi; \
+	if ! rm -rf "$$CACHE_DIR" .docker_cache 2>/dev/null; then \
+		echo -e "  $(ERROR) $$CACHE_DIR contains root-owned entries and cannot be removed."; \
+		$(call HINT_ROOT_OWNED,.docker_cache); \
+		exit 1; \
+	fi
+	@echo -e "  $(OK) Cache directory cleaned."
 
-# Reset all project-related resources (including images)
+## @target clean-all : Reset containers, named volumes, output & cache
+# Containers first, cache second — clean-cache aborts while one is running.
+# Asks unless FORCE=1/CI=true. KEEP_VENV=1 keeps the venv and its volume, so a
+# rebuild reconnects instead of re-running mksync.
+clean-all: KEEP_VENV := $(if $(filter 1 true yes,$(KEEP_VENV)),1,0)
 clean-all:
 	$(call GUARD_HOST_ONLY)
-	@$(MAKE) clean SKIP_ALPINE_RM=1
-	@$(MAKE) clean-cache SKIP_ALPINE_RM=1
-	@$(call CLEAN_ALPINE_IMAGE)
-	@echo -e "  $(INFO) Cleaning up all images related to project $(COMPOSE_PROJECT_NAME)..."
-	@IMAGES=$$(docker images -q --filter "label=com.docker.compose.project=$(COMPOSE_PROJECT_NAME)"); \
-	if [ -n "$$IMAGES" ]; then \
-		docker rmi -f $$IMAGES; \
-		echo -e "  $(OK) Project-related images removed."; \
+	$(call CONFIRM,This removes '$(COMPOSE_PROJECT_NAME)' containers / named volumes (build/install/log) / compose-built images and host build artifacts$(if $(filter 0,$(KEEP_VENV)), — including install/.venv))
+	@# `clean` runs as a sub-make (not a prerequisite) so this single [y/N]
+	@# covers everything — FORCE=1 suppresses clean's own venv prompt.
+	@$(MAKE) --no-print-directory clean KEEP_VENV=$(KEEP_VENV) FORCE=1
+	@# --rmi local drops the images compose built for THIS project only; other
+	@# projects' images on the host are never touched.
+	@if [ "$(KEEP_VENV)" = "1" ]; then \
+		$(COMPOSE) --profile "*" down --remove-orphans --rmi local; \
+		for v in $$(docker volume ls -q --filter "label=com.docker.compose.project=$(COMPOSE_PROJECT_NAME)" 2>/dev/null); do \
+			case "$$v" in *install*) echo -e "  $(INFO) Kept volume $$v (holds the virtualenv)." ;; \
+			                      *) docker volume rm "$$v" >/dev/null 2>&1 || true ;; esac; \
+		done; \
 	else \
-		echo -e "  $(INFO) No project-related images to delete."; \
+		$(COMPOSE) --profile "*" down --volumes --remove-orphans --rmi local; \
 	fi
-	@echo -e "  $(OK) Full project reset (clean-all) completed."
+	@$(MAKE) --no-print-directory clean-cache
+	@echo -e "  $(OK) Full project reset complete (containers, volumes & cache)."
 
-# Global Docker cleanup (Warning: affects build caches across all projects on the system)
+## @target docker-clean : Remove dangling Docker images, build cache & unused volumes
+# HOST-WIDE: `prune --volumes` also takes volumes of other, merely-stopped
+# projects. Shows what is at stake and asks, unless FORCE=1 / CI=true.
 docker-clean:
-	$(call GUARD_HOST_ONLY)
-	@if [ -n "$(call truthy,$(FORCE))" ] || [ -n "$(call truthy,$(CI))" ]; then \
-		ans="y"; \
-	else \
-		echo -en "  $(WARN) Do you want to globally clean Docker on this host? (Deletes all build cache and unused images) [Y/N]: "; \
-		read ans || true; \
-	fi; \
-	if [ "$$ans" != "y" ] && [ "$$ans" != "Y" ]; then echo -e "  $(INFO) Operation cancelled."; exit 1; fi
-	@echo -e "  $(INFO) Cleaning up Docker BuildKit caches..."
+	@echo -e "  $(WARN) This prunes Docker data for EVERY project on this host, not just $(COMPOSE_PROJECT_NAME)."
+	@docker system df 2>/dev/null | sed 's/^/    /' || true
+	@ORPHANS=$$(docker volume ls -qf dangling=true 2>/dev/null); \
+	if [ -n "$$ORPHANS" ]; then \
+		echo -e "  $(WARN) Unused volumes that WILL be deleted (data is unrecoverable):"; \
+		echo "$$ORPHANS" | sed 's/^/    - /'; \
+	fi
+	$(call CONFIRM,This deletes every unused Docker volume and the whole build cache on this host)
+	@docker system prune -f --volumes
 	@docker builder prune -a -f
-	@echo -e "  $(INFO) Cleaning up unused images..."
-	@docker image prune -f
-	@echo -e "  $(OK) Global Docker cleanup completed."
+	@echo -e "  $(OK) Global Docker build cache, volumes & dangling images pruned."
+
+# =============================================================================
+# Deprecated target names (pre-streamline spellings)
+# =============================================================================
+# Renaming an entry point breaks the CI of every project built on this kit, so
+# these forward and say where to go. Absent from .PHONY and help on purpose.
+DEPRECATED = @echo -e "  $(WARN) 'make $(1)' is deprecated — use 'make $(2)'." >&2
+
+## deprecated: check-host, env-check → check
+check-host env-check:
+	$(call DEPRECATED,$@,check)
+	@$(MAKE) --no-print-directory check
+
+## deprecated: completion, completion-install → setup
+completion completion-install:
+	$(call DEPRECATED,$@,setup)
+	@bash config/devkit_make_completion.bash --install

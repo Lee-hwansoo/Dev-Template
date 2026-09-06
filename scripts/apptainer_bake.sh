@@ -1,209 +1,173 @@
 #!/bin/bash
 # =============================================================================
-# scripts/apptainer_bake.sh
-# Bake development snapshots or production runtime artifacts into SIF files.
+# scripts/apptainer_bake.sh — bake a development snapshot or a production
+# runtime into an Apptainer SIF artifact.
+# Usage: apptainer_bake.sh [--mode dev|prod] [--env ros|dev] [--share]
 # =============================================================================
-
 set -euo pipefail
 
-source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || source "/tmp/util_paths.sh"
-devkit_require "util_sif_runtime.sh"
-init_sif_context "$(dirname "${BASH_SOURCE[0]}")"
+# WS_ROOT comes from util_paths.sh, which ignores a WORKSPACE_PATH that is not a
+# DevKit tree on THIS machine — the Makefile exports the container path.
+source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || { echo "  [ERROR] Cannot load config/util_paths.sh (broken checkout?)" >&2; exit 1; }
 devkit_require "util_logging.sh"
+devkit_require "util_sif_common.sh"
 LOG_PREFIX="[Bake]"
-devkit_enable_error_trap
 
 MODE="dev"
-SIF_ENV="${ENV:-ros}"
+ENV_NAME="${ENV:-ros}"
 SHARE_MODE="false"
-CLEANUP_IMAGES=()
-TEMP_ARCHIVES=()
 
-cleanup_images() {
-    if [ "${#TEMP_ARCHIVES[@]}" -gt 0 ]; then
-        rm -f "${TEMP_ARCHIVES[@]}" 2>/dev/null || true
-    fi
-    if sif_dry_run; then
-        return 0
-    fi
-    if sif_truthy "${DEVKIT_KEEP_IMAGES:-false}"; then
-        return 0
-    fi
-    [ "${#CLEANUP_IMAGES[@]}" -gt 0 ] || return 0
-    if ! docker rmi "${CLEANUP_IMAGES[@]}" >/dev/null 2>&1; then
-        log_warn "Could not remove temporary Docker image(s): ${CLEANUP_IMAGES[*]}"
-    fi
-    return 0
-}
-trap cleanup_images EXIT
-
-build_sif_from_docker_image() {
-    local runtime="$1"
-    local sif_file="$2"
-    local docker_image="$3"
-    local archive_dir="${SINGULARITY_CACHEDIR:-${APPTAINER_CACHEDIR:-/tmp}}"
-    local archive
-
-    mkdir -p "$archive_dir"
-    archive="$(mktemp "${archive_dir%/}/devkit-image.XXXXXX.tar")"
-    TEMP_ARCHIVES+=( "$archive" )
-
-    docker save -o "$archive" "$docker_image"
-    "$runtime" build --force "$sif_file" "docker-archive://${archive}"
-}
-
-usage() {
-    cat <<'EOF'
-Usage: apptainer_bake.sh [--mode dev|prod] [--env ros|dev] [--share]
-
-Bake a development snapshot or production runtime into a SIF file.
-
-Options:
-  --mode   SIF type to bake. Default: dev.
-  --env    Image family to bake. Default: ENV or ros.
-  --share  Development mode only: share system site packages.
-  DEVKIT_DRY_RUN=1 validates and prints the planned bake without building.
-  -h, --help Show this help.
-EOF
-}
-
-while [[ "$#" -gt 0 ]]; do
+while [ $# -gt 0 ]; do
     case "$1" in
-        --mode) require_sif_option_value "$1" "${2:-}" || { usage; exit 2; }; MODE="$2"; shift 2 ;;
-        --env) require_sif_option_value "$1" "${2:-}" || { usage; exit 2; }; SIF_ENV="$2"; shift 2 ;;
+        --mode) [ $# -ge 2 ] || { log_error "--mode needs a value (dev|prod)"; exit 2; }
+                MODE="$2"; shift 2 ;;
+        --env)  [ $# -ge 2 ] || { log_error "--env needs a value (ros|dev)"; exit 2; }
+                ENV_NAME="$2"; shift 2 ;;
         --share) SHARE_MODE="true"; shift ;;
-        -h|--help) usage; exit 0 ;;
-        *) log_error "Unknown option: $1"; usage; exit 2 ;;
+        -h|--help)
+            echo "Usage: apptainer_bake.sh [--mode dev|prod] [--env ros|dev] [--share]"
+            exit 0 ;;
+        *) log_error "Unknown option: $1"; exit 2 ;;
     esac
 done
 
-validate_sif_mode "$MODE" "dev prod" || exit 1
-validate_sif_env "$SIF_ENV" || exit 1
-
-if [ "$MODE" = "prod" ] && [ "$SHARE_MODE" = "true" ]; then
-    log_error "--share is only valid with --mode dev."
+sif_require_choice --mode "$MODE" dev prod || exit 2
+sif_require_choice --env "$ENV_NAME" ros dev || exit 2
+if [ "$SHARE_MODE" = "true" ] && [ "$MODE" = "prod" ]; then
+    log_error "--share is a dev-snapshot option; prod builds always install a self-contained venv."
     exit 2
 fi
 
-source_detected_env "${WS_SCRIPTS}/check_env.sh"
-apply_sif_detected_env_defaults
-configure_sif_cache_dirs
+BAKE_FORMAT="${BAKE_FORMAT:-sif}"
+sif_require_choice BAKE_FORMAT "$BAKE_FORMAT" sif oci || exit 2
+RUNTIME=""
+if [ "$BAKE_FORMAT" = sif ]; then
+    RUNTIME="$(sif_runtime)" || { log_detail 'On macOS use BAKE_FORMAT=oci, then convert the archive on Linux.' >&2; exit 1; }
+fi
+# Direct script calls need the same .env/default pairing and host IDs as make.
+detected_env="$(bash "${WS_ROOT}/scripts/check_env.sh")" || exit 1
+eval "$detected_env"
+TARGETARCH="$(sif_arch)"
+sif_require_choice TARGETARCH "$TARGETARCH" amd64 arm64 || exit 2
+COMPOSE_PROJECT="$(sif_project_name)"
+# --share bakes a different artifact (system-site-packages venv): give it its
+# own filename so the two dev variants stop overwriting each other.
+SHARE_SUFFIX=""
+[ "$SHARE_MODE" = "true" ] && SHARE_SUFFIX="-share"
+SIF_FILE="${SIF_FILE:-${WS_ROOT}/${COMPOSE_PROJECT}-${ENV_NAME}-${MODE}${SHARE_SUFFIX}-${TARGETARCH}.sif}"
+GIT_COMMIT="$(git -C "${WS_ROOT}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+# PROD_FULL_CUDA is the documented user-facing spelling of the FULL_CUDA build arg.
+FULL_CUDA="${FULL_CUDA:-${PROD_FULL_CUDA:-false}}"
+[ "$FULL_CUDA" = "1" ] && FULL_CUDA="true"
 
-IMAGE_TAG="${IMAGE_TAG:-latest}"
-validate_image_tag "$IMAGE_TAG"
-COMPOSE_PROJECT_NAME="$(resolve_sif_project_name "${HOST_ROOT}")"
-GIT_COMMIT="$(git -C "${HOST_ROOT}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-BUILD_FULL_CUDA="${FULL_CUDA:-false}"
-if [ "$MODE" = "prod" ]; then
-    BUILD_FULL_CUDA="${PROD_FULL_CUDA:-false}"
-fi
-# GPG policy (hybrid): production artifacts default to fail-closed (strict) ROS key
-# verification; dev iteration defaults to fail-open (availability). An explicit
-# STRICT_GPG_CHECK always wins. apt verifies package signatures either way.
-if [ "$MODE" = "prod" ]; then
-    STRICT_GPG_CHECK_DEFAULT="${STRICT_GPG_CHECK:-true}"
-else
-    STRICT_GPG_CHECK_DEFAULT="${STRICT_GPG_CHECK:-false}"
-fi
+# Pass the release pin policy into every stage that imports dependencies.
+[ "$MODE" = "prod" ] && DEVKIT_REQUIRE_PINNED="${DEVKIT_REQUIRE_PINNED:-1}"
 
 BUILD_ARGS=(
     --build-arg "BASE_IMAGE=${BASE_IMAGE:-ubuntu:22.04}"
-    --build-arg "WORKSPACE_PATH=${CONTAINER_WORKSPACE_PATH}"
+    --build-arg "WORKSPACE_PATH=${WORKSPACE_PATH:-/workspace}"
     --build-arg "CONTAINER_USER=${CONTAINER_USER:-user}"
     --build-arg "USER_UID=${HOST_UID:-1000}"
     --build-arg "USER_GID=${HOST_GID:-1000}"
-    --build-arg "DEBIAN_FRONTEND=${DEBIAN_FRONTEND:-noninteractive}"
-    --build-arg "LANG=${LANG:-C.UTF-8}"
-    --build-arg "TZ=${TZ:-UTC}"
-    --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-}"
     --build-arg "ROS_DISTRO=${ROS_DISTRO:-humble}"
-    --build-arg "APT_SNAPSHOT_DATE=${APT_SNAPSHOT_DATE:-latest}"
-    --build-arg "STRICT_GPG_CHECK=${STRICT_GPG_CHECK_DEFAULT}"
-    --build-arg "UV_VERSION=${UV_VERSION:-0.10.10}"
-    --build-arg "UV_PYTHON=${UV_PYTHON:-3.10}"
-    --build-arg "CMAKE_C_STANDARD=${CMAKE_C_STANDARD:-11}"
-    --build-arg "CMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD:-17}"
-    --build-arg "TARGETARCH=${TARGETARCH:-amd64}"
-    --build-arg "SYS_PYTHON_EXE=${SYS_PYTHON_EXE:-/usr/bin/python3}"
-    --build-arg "UV_SYNC_FLAGS=${UV_SYNC_FLAGS:-}"
-    --build-arg "CMAKE_EXTRA_ARGS=${CMAKE_EXTRA_ARGS:-}"
-    --build-arg "COLCON_EXTRA_FLAGS=${COLCON_EXTRA_FLAGS:-}"
-    --build-arg "HAS_NVIDIA=${HAS_NVIDIA:-false}"
-    --build-arg "INSTALL_INTEL_GPU_TOOLS=${INSTALL_INTEL_GPU_TOOLS:-false}"
-    --build-arg "CUDA_VERSION=${CUDA_VERSION:-}"
-    --build-arg "CUDNN_VERSION=${CUDNN_VERSION:-}"
-    --build-arg "FULL_CUDA=${BUILD_FULL_CUDA}"
-    --build-arg "OPENCV_CUDA=${OPENCV_CUDA:-auto}"
-    --build-arg "IMAGE_TAG=${IMAGE_TAG}"
+    --build-arg "FULL_CUDA=${FULL_CUDA}"
+    --build-arg "IMAGE_TAG=${IMAGE_TAG:-latest}"
+    --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-}"
+    --build-arg "DEVKIT_STRIP_SOURCE=${DEVKIT_STRIP_SOURCE:-}"
+    --build-arg "DEVKIT_FAIL_ON_SOURCE=${DEVKIT_FAIL_ON_SOURCE:-}"
     --build-arg "GIT_COMMIT=${GIT_COMMIT}"
-    --build-arg "COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-devkit}"
+    --build-arg "DEVKIT_REQUIRE_PINNED=${DEVKIT_REQUIRE_PINNED:-0}"
+    --build-arg "COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT}"
 )
 
-if [ "$MODE" = "dev" ]; then
-    BASE_TARGET="$SIF_ENV"
-    BASE_IMAGE="${COMPOSE_PROJECT_NAME}_${SIF_ENV}_base:${IMAGE_TAG}"
-    FROZEN_IMAGE="${COMPOSE_PROJECT_NAME}_${SIF_ENV}_snapshot:${IMAGE_TAG}"
-    CLEANUP_IMAGES=( "$FROZEN_IMAGE" "$BASE_IMAGE" )
-    SIF_FILE="${SIF_FILE:-$(default_sif_file dev "$SIF_ENV" "$COMPOSE_PROJECT_NAME" "$IMAGE_TAG" "$SHARE_MODE")}"
-    if [ "$SHARE_MODE" = "true" ]; then
-        SYNC_MODE="--share"
-    else
-        SYNC_MODE=""
-    fi
+# Forward the remaining Dockerfile knobs only when set, so unset ones keep
+# their Dockerfile defaults (--build-arg KEY= would override with empty).
+# Without CUDA_VERSION in particular, a SIF baked on a GPU host silently
+# ships with no CUDA while the equivalent compose build installs it.
+for arg in APT_SNAPSHOT_DATE APT_SNAPSHOT_FALLBACK ROS_SNAPSHOT_DATE STRICT_GPG_CHECK OPENCV_CUDA \
+           UV_VERSION UV_PYTHON UV_EXTRA TARGETARCH \
+           SYS_PYTHON_EXE UV_SYNC_FLAGS CMAKE_EXTRA_ARGS COLCON_EXTRA_FLAGS \
+           CMAKE_C_STANDARD CMAKE_CXX_STANDARD CUDA_VERSION CUDNN_VERSION LANG TZ; do
+    [ -n "${!arg:-}" ] && BUILD_ARGS+=(--build-arg "${arg}=${!arg}")
+done
 
-    log_info "Baking development SIF: ${SIF_FILE} (ENV=${SIF_ENV}, SHARE=${SHARE_MODE})"
-    if sif_dry_run; then
-        echo "Target image       : ${BASE_TARGET}"
-        echo "Base image         : ${BASE_IMAGE}"
-        echo "Frozen image       : ${FROZEN_IMAGE}"
-        echo "SIF image          : ${SIF_FILE}"
-        echo "Sync mode          : ${SYNC_MODE:-default}"
-        printf 'Docker build args  :'
-        printf ' %q' "${BUILD_ARGS[@]}"
-        echo
-        log_ok "Dry-run completed; Docker and SIF build were not executed."
-        exit 0
-    fi
-    SIF_RUNTIME="$(resolve_sif_runtime)"
-    docker build \
-        -f "${HOST_ROOT}/docker/Dockerfile" \
+TEMP_ARCHIVE="$(mktemp "${TMPDIR:-/tmp}/devkit-bake.XXXXXX")"
+trap 'rm -f "$TEMP_ARCHIVE"' EXIT
+
+if [ "$MODE" = "dev" ]; then
+    BASE_TARGET="$ENV_NAME"
+    DOCKER_IMG="${COMPOSE_PROJECT}_${ENV_NAME}_snapshot:latest"
+    SYNC_FLAG=""
+    [ "$SHARE_MODE" = "true" ] && SYNC_FLAG="--share"
+
+    log_info "Building dev snapshot image (target=${BASE_TARGET})..."
+    docker build --platform "linux/${TARGETARCH}" \
+        -f "${WS_ROOT}/docker/Dockerfile" \
         --target "$BASE_TARGET" \
         "${BUILD_ARGS[@]}" \
-        -t "$BASE_IMAGE" "${HOST_ROOT}"
+        -t "${COMPOSE_PROJECT}_${ENV_NAME}_base:latest" "${WS_ROOT}"
 
-    docker build -t "$FROZEN_IMAGE" -f - "${HOST_ROOT}" <<EOF
-FROM ${BASE_IMAGE}
-COPY . ${CONTAINER_WORKSPACE_PATH}
-RUN FORCE_LOAD_ALIASES=true bash -lc "source ${CONTAINER_WORKSPACE_PATH}/config/util_aliases.sh && mksync ${SYNC_MODE}"
-WORKDIR ${CONTAINER_WORKSPACE_PATH}
+    docker build --platform "linux/${TARGETARCH}" -t "$DOCKER_IMG" -f - "${WS_ROOT}" <<EOF
+FROM ${COMPOSE_PROJECT}_${ENV_NAME}_base:latest
+COPY . ${WORKSPACE_PATH:-/workspace}
+RUN DEVKIT_BUILD_TYPE=${DEVKIT_BUILD_TYPE:-dev} bash -lc "source ${WORKSPACE_PATH:-/workspace}/config/util_aliases.sh && mksync ${SYNC_FLAG}"
+WORKDIR ${WORKSPACE_PATH:-/workspace}
 EOF
-
-    build_sif_from_docker_image "$SIF_RUNTIME" "$SIF_FILE" "$FROZEN_IMAGE"
 else
-    PROD_TARGET="prod-${SIF_ENV}-runtime"
-    PROD_IMAGE="${COMPOSE_PROJECT_NAME}_${SIF_ENV}_prod:${IMAGE_TAG}"
-    CLEANUP_IMAGES=( "$PROD_IMAGE" )
-    SIF_FILE="${SIF_FILE:-$(default_sif_file prod "$SIF_ENV" "$COMPOSE_PROJECT_NAME" "$IMAGE_TAG")}"
+    DOCKER_IMG="${COMPOSE_PROJECT}_${ENV_NAME}_prod:latest"
 
-    log_info "Baking production SIF: ${SIF_FILE} (target=${PROD_TARGET})"
-    if sif_dry_run; then
-        echo "Target image       : ${PROD_TARGET}"
-        echo "Docker image       : ${PROD_IMAGE}"
-        echo "SIF image          : ${SIF_FILE}"
-        printf 'Docker build args  :'
-        printf ' %q' "${BUILD_ARGS[@]}"
-        echo
-        log_ok "Dry-run completed; Docker and SIF build were not executed."
-        exit 0
-    fi
-    SIF_RUNTIME="$(resolve_sif_runtime)"
-    docker build \
-        -f "${HOST_ROOT}/docker/Dockerfile" \
-        --target "$PROD_TARGET" \
+    log_info "Building production runtime image (PROD_ENV=${ENV_NAME})..."
+    docker build --platform "linux/${TARGETARCH}" \
+        -f "${WS_ROOT}/docker/Dockerfile" \
+        --target prod-runtime --build-arg "PROD_ENV=${ENV_NAME}" \
         "${BUILD_ARGS[@]}" \
-        -t "$PROD_IMAGE" "${HOST_ROOT}"
-
-    build_sif_from_docker_image "$SIF_RUNTIME" "$SIF_FILE" "$PROD_IMAGE"
+        -t "$DOCKER_IMG" "${WS_ROOT}"
 fi
 
-log_ok "Baking completed: ${SIF_FILE}"
+actual_arch="$(docker image inspect --format '{{.Architecture}}' "$DOCKER_IMG")"
+[ "$actual_arch" = "$TARGETARCH" ] || { log_error "Image architecture mismatch: $actual_arch != $TARGETARCH"; exit 1; }
+
+# Record the OCI identity and declared base. A local tag may refer to a
+# different image from BuildKit's base, so only an explicit digest is recorded.
+write_provenance() {   # write_provenance <destination>
+    local base="${BASE_IMAGE:-ubuntu:22.04}" digest=""
+    case "$base" in *@sha256:*) digest="${base##*@}" ;; esac
+    {
+        printf 'oci_image_id=%s\n' "$(docker image inspect --format '{{.Id}}' "$DOCKER_IMG")"
+        printf 'base_image=%s\n'   "$base"
+        printf 'base_digest=%s\n' "$digest"
+        printf 'git_commit=%s\narch=%s\ndevkit_version=%s\n' \
+            "$GIT_COMMIT" "$TARGETARCH" "$(cat "${WS_ROOT}/VERSION" 2>/dev/null || echo unknown)"
+        # Cheap staleness check for the sha256 sidecar: a run compares this
+        # against the artifact on disk instead of re-hashing gigabytes.
+        [ "${1##*.}" = provenance ] && [ -f "${1%.provenance}" ] && \
+            printf 'artifact_bytes=%s\n' "$(wc -c < "${1%.provenance}" | tr -d ' ')"
+    } > "$1"
+}
+docker save -o "$TEMP_ARCHIVE" "$DOCKER_IMG"
+if [ "$BAKE_FORMAT" = oci ]; then
+    archive="${SIF_FILE%.sif}.oci.tar"
+    mv "$TEMP_ARCHIVE" "$archive"
+    write_provenance "${archive}.provenance"
+    log_ok "Docker/OCI transport archive: $archive"
+    log_detail "On Linux: apptainer build '${SIF_FILE##*/}' 'docker-archive://${archive##*/}'"
+    exit 0
+fi
+log_info "Converting Docker image to SIF artifact: ${SIF_FILE}..."
+# Convert beside the destination and publish only after a successful build.
+TEMP_SIF="$(mktemp "${SIF_FILE}.XXXXXX")"
+trap 'rm -f "$TEMP_ARCHIVE" "$TEMP_SIF"' EXIT
+"$RUNTIME" build --force "$TEMP_SIF" "docker-archive://${TEMP_ARCHIVE}"
+mv "$TEMP_SIF" "$SIF_FILE"
+# Hash once, here: every run and every job submission wants this digest, and
+# re-reading a multi-GB artifact per launch is minutes of I/O for a value that
+# cannot change. sif_record_run reuses the sidecar when it is present.
+if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$(dirname "$SIF_FILE")" && sha256sum "$(basename "$SIF_FILE")") > "${SIF_FILE}.sha256"
+elif command -v shasum >/dev/null 2>&1; then
+    (cd "$(dirname "$SIF_FILE")" && shasum -a 256 "$(basename "$SIF_FILE")") > "${SIF_FILE}.sha256"
+fi
+
+write_provenance "${SIF_FILE}.provenance"
+
+log_ok "SIF artifact baked successfully: ${SIF_FILE}"

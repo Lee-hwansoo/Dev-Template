@@ -1,30 +1,33 @@
 #!/bin/bash
 # =============================================================================
-# scripts/check_env.sh
-# Diagnostic engine for host environment detection
-#
-# Precisely detects GPU availability, hardware architecture, container toolkits,
-# and display server configurations (X11/Wayland). Results are output in
-# KEY=VALUE format for Makefile integration.
+# scripts/check_env.sh — host detection (Linux, macOS, WSL2, GPU, display) as
+# key=value output. Every key here is consumed by docker-compose*.yml, and
+# check [host-detect-contract] asserts none goes missing.
 # =============================================================================
+set -euo pipefail
 
-source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || source "/tmp/util_paths.sh"
+# The path SSOT, for devkit_env_value. Sourced like every other script here; it
+# defines no HOST_* name this detector emits.
+source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || { echo "  [ERROR] Cannot load config/util_paths.sh (broken checkout?)" >&2; exit 1; }
 devkit_require "util_logging.sh"
-LOG_PREFIX="[Env Detector]"
+LOG_PREFIX="[Env Detect]"
+
 OUTPUT_MODE="${1:-env}"
 
 usage() {
     cat <<'EOF'
 Usage: check_env.sh [--makefile]
 
-Detect host/container integration settings and print them as shell assignments.
+Detect host integration settings (GPU, display, paths, ids) and print them.
 
 Options:
-  --makefile  Print Makefile-compatible assignments.
+  --makefile  Print Makefile-compatible 'KEY := value' assignments.
   -h, --help  Show this help.
 EOF
 }
 
+# Fail loudly on a typo: falling back to shell-assignment output would make the
+# Makefile cache a file full of lines make cannot parse.
 case "$OUTPUT_MODE" in
     env|--makefile) ;;
     -h|--help) usage; exit 0 ;;
@@ -34,9 +37,10 @@ esac
 emit_env() {
     local key="$1"
     local value="$2"
-
     if [ "$OUTPUT_MODE" = "--makefile" ]; then
-        value="${value//\\/\\\\}"
+        # Escape make metacharacters: '#' truncates the line, '$' re-expands,
+        # a newline injects a make line. env mode is %q-safe already.
+        value="${value//$'\n'/ }"
         value="${value//\$/\$\$}"
         value="${value//#/\\#}"
         printf '%s := %s\n' "$key" "$value"
@@ -45,240 +49,257 @@ emit_env() {
     fi
 }
 
-trim_ws() {
-    local value="${1:-}"
-    value="${value#"${value%%[![:space:]]*}"}"
-    value="${value%"${value##*[![:space:]]}"}"
-    printf '%s' "$value"
-}
-
-ensure_dir() {
-    local dir="$1"
-    if ! mkdir -p -- "$dir" 2>/dev/null; then
-        log_error "Failed to create required directory: $dir"
-        exit 2
-    fi
-}
-
-ensure_file() {
-    local file="$1"
-    if ! touch -- "$file" 2>/dev/null; then
-        log_error "Failed to create required file: $file"
-        exit 2
-    fi
-}
-
-# 0. Detect Workspace Paths (Host & Container Separation)
-HOST_WORKSPACE_PATH="${HOST_WORKSPACE_PATH:-$(pwd)}"
-WORKSPACE_PATH="${WORKSPACE_PATH:-/workspace}"
-
-# 1. Check Environment and Determine host CPU architecture
-IS_WSL="false"
-PROC_VERSION="$(cat /proc/version 2>/dev/null || true)"
-PROC_VERSION_LC="${PROC_VERSION,,}"
-case "$PROC_VERSION_LC" in
-    *microsoft*)
-        if [[ "$PROC_VERSION_LC" == *wsl2* || "$PROC_VERSION_LC" == *microsoft-standard* ]] || [ -d "/mnt/wslg" ] || [ -d "/run/WSL" ]; then
-            IS_WSL="true"
-        fi
-        ;;
+# 1. Host Architecture, macOS & WSL Detection
+HOST_ARCH="amd64"
+case "$(uname -m)" in
+    aarch64|arm64) HOST_ARCH="arm64" ;;
 esac
-unset PROC_VERSION PROC_VERSION_LC
 
-# WSL2 D3D12/DirectX Device Mount
-if [ "${IS_WSL}" = "true" ] && [ -e "/dev/dxg" ]; then
-    HOST_DXG_MOUNT="/dev/dxg:/dev/dxg"
-else
-    HOST_DXG_MOUNT="/dev/null:/dev/null"
+IS_WSL="false"
+IS_MACOS="false"
+
+if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+    IS_MACOS="true"
+elif grep -qi microsoft /proc/version 2>/dev/null; then
+    IS_WSL="true"
 fi
 
-RAW_ARCH=$(uname -m)
-case "${RAW_ARCH}" in
-    x86_64)  HOST_ARCH="amd64" ;;
-    aarch64) HOST_ARCH="arm64" ;;
-    armv8*)  HOST_ARCH="arm64" ;;
-    *)       HOST_ARCH="unknown" ;;
-esac
-
-# 2. Identify GPU hardware and container toolkit compatibility
+# 2. GPU Detection (NVIDIA / DRI)
+# macOS is skipped entirely: Docker Desktop runs a Linux VM with no CUDA/DRI
+# passthrough, so every macOS host resolves to cpu (LLVMpipe).
 HAS_NVIDIA="false"
 HAS_TOOLKIT="false"
-HAS_TOOLKIT_BIN="false"
 HAS_DRI="false"
 
-if command -v nvidia-smi >/dev/null 2>&1; then
-    HAS_NVIDIA="true"
-    HOST_CUDA_MAX=$(trim_ws "$(nvidia-smi 2>/dev/null | grep -o "CUDA Version: [0-9.]*" | cut -d: -f2 || true)")
-    [ -z "$HOST_CUDA_MAX" ] && HOST_CUDA_MAX="Unknown"
+if [ "$IS_MACOS" = "false" ]; then
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        HAS_NVIDIA="true"
+        if command -v docker >/dev/null 2>&1 && docker info 2>/dev/null | grep -qi nvidia; then
+            HAS_TOOLKIT="true"
+        fi
+    fi
+
+    if [ -d /dev/dri ] && compgen -G "/dev/dri/renderD*" >/dev/null; then
+        HAS_DRI="true"
+    elif [ "$IS_WSL" = "true" ] && [ -e "/dev/dxg" ]; then
+        HAS_DRI="true"
+    fi
 fi
 
-if command -v nvidia-ctk >/dev/null 2>&1; then
-    HAS_TOOLKIT_BIN="true"
+# 3. Path, User & Cache Setup
+# Two layers, in the order make reads them: the local .env wins, .env.example
+# carries the committed project answer. This is the ONLY place they are
+# resolved — the cache written here is what every later stage reads, so a second
+# resolution point could only ever disagree with it.
+DEVKIT_ENV_FILE="${DEVKIT_ENV_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.env}"
+DEVKIT_ENV_DEFAULTS="${DEVKIT_ENV_DEFAULTS:-${DEVKIT_ENV_FILE}.example}"
+env_setting() {
+    local value; value="$(devkit_env_value "$1" "$DEVKIT_ENV_FILE")"
+    [ -n "$value" ] || value="$(devkit_env_value "$1" "$DEVKIT_ENV_DEFAULTS")"
+    printf '%s' "$value"
+}
+HOST_WORKSPACE_PATH="${HOST_WORKSPACE_PATH:-$(pwd)}"
+# Read through the same two layers as ROS_DISTRO: a WORKSPACE_PATH or a
+# relocated cache set in .env used to be emitted as the default here, and the
+# include that follows then overwrote the user's answer with it.
+WORKSPACE_PATH="${WORKSPACE_PATH:-$(env_setting WORKSPACE_PATH)}"
+WORKSPACE_PATH="${WORKSPACE_PATH:-/workspace}"
+DOCKER_DEV_CACHE_DIR="${DOCKER_DEV_CACHE_DIR:-$(env_setting DOCKER_DEV_CACHE_DIR)}"
+# Under sudo, bind the invoking user's HOME and ids, not root's. macOS has no
+# getent, hence the fallbacks; each is `|| true` so a missing tool degrades.
+if [ -n "${SUDO_USER:-}" ]; then
+    if command -v getent >/dev/null 2>&1; then
+        HOST_HOME="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)"
+    elif command -v dscl >/dev/null 2>&1; then
+        HOST_HOME="$(dscl . -read "/Users/$SUDO_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
+    else
+        HOST_HOME="$(awk -F: -v u="$SUDO_USER" '$1==u{print $6}' /etc/passwd 2>/dev/null || true)"
+    fi
+    HOST_UID="${SUDO_UID:-}"
+    HOST_GID="${SUDO_GID:-}"
 fi
-
-if [ "$HAS_NVIDIA" = "true" ] && command -v docker >/dev/null 2>&1; then
-    DOCKER_INFO="$(docker info 2>/dev/null || true)"
-    case "${DOCKER_INFO,,}" in
-        *runtimes:*nvidia*) HAS_TOOLKIT="true" ;;
+HOST_HOME="${HOST_HOME:-${HOME:-/root}}"
+HOST_UID="${HOST_UID:-$(id -u)}"
+HOST_GID="${HOST_GID:-$(id -g)}"
+# DOCKER_DEV_CACHE_DIR relocates the ccache/uv/apt cache (e.g. to a shared disk).
+# Rejected outright when it would alias the workspace itself: `make clean-cache`
+# deletes this directory recursively.
+HOST_CACHE_DIR="${HOST_WORKSPACE_PATH}/.docker_cache"
+if [ -n "${DOCKER_DEV_CACHE_DIR:-}" ]; then
+    _cache_root="${DOCKER_DEV_CACHE_DIR%/}"
+    case "$DOCKER_DEV_CACHE_DIR" in
+        /*) ;;
+        *)  log_error "DOCKER_DEV_CACHE_DIR must be an absolute path: ${DOCKER_DEV_CACHE_DIR}"; exit 2 ;;
     esac
-    unset DOCKER_INFO
+    if [ -z "$_cache_root" ] || [ "$_cache_root" = "${HOST_WORKSPACE_PATH%/}" ]; then
+        log_error "DOCKER_DEV_CACHE_DIR must not be '/' or the workspace root."
+        exit 2
+    fi
+    HOST_CACHE_DIR="$_cache_root"
+fi
+# Placeholders need this directory: emitting a nonexistent path lets Docker
+# recreate it root-owned. Fatal for --makefile (compose consumes them),
+# warn-only otherwise — the SIF path only reads ROS/GPU facts.
+if ! mkdir -p "$HOST_CACHE_DIR" 2>/dev/null; then
+    if [ "$OUTPUT_MODE" = "--makefile" ]; then
+        log_error "Cannot create the cache directory: ${HOST_CACHE_DIR}"
+        exit 2
+    fi
+    log_warn "Cannot create ${HOST_CACHE_DIR}; placeholder mounts unavailable."
 fi
 
-if [ -d /dev/dri ] && compgen -G "/dev/dri/renderD*" >/dev/null; then
-    HAS_DRI="true"
-elif [ "${IS_WSL}" = "true" ] && [ -e "/dev/dxg" ]; then
-    HAS_DRI="true"
-fi
+# placeholder <name> [--file] — a stand-in for an absent host resource. Docker
+# creates a missing mount source as root, breaking the later real mount.
+placeholder() {
+    local path="${HOST_CACHE_DIR}/dummy_$1"
+    if [ "${2:-}" = "--file" ]; then
+        [ -f "$path" ] || : > "$path" 2>/dev/null || true
+    else
+        mkdir -p "$path" 2>/dev/null || true
+    fi
+    printf '%s' "$path"
+}
 
+# 4. Device passthrough mounts (compose 'devices:' entries → host:container)
 if [ -d /dev/dri ]; then
     HOST_DRI_MOUNT="/dev/dri:/dev/dri"
 else
     HOST_DRI_MOUNT="/dev/null:/dev/null"
 fi
-
-# 3. Establish Workspace Path and Secure Cache Paths
-if [ -z "${DOCKER_DEV_CACHE_DIR}" ]; then
-    HOST_CACHE_DIR="${HOST_WORKSPACE_PATH}/.docker_cache"
+if [ -e /dev/dxg ]; then
+    HOST_DXG_MOUNT="/dev/dxg:/dev/dxg"
 else
-    HOST_WORKSPACE_ROOT="${HOST_WORKSPACE_PATH%/}"
-    CACHE_ROOT="${DOCKER_DEV_CACHE_DIR%/}"
-    case "${DOCKER_DEV_CACHE_DIR}" in
-        /*) ;;
-        *)
-            log_error "DOCKER_DEV_CACHE_DIR must be an absolute path when set: ${DOCKER_DEV_CACHE_DIR}"
-            exit 2
-            ;;
-    esac
-    if [ "${CACHE_ROOT}" = "" ]; then
-        log_error "DOCKER_DEV_CACHE_DIR must not be root (/)."
-        exit 2
-    fi
-    if [ "${CACHE_ROOT}" = "${HOST_WORKSPACE_ROOT}" ]; then
-        log_error "DOCKER_DEV_CACHE_DIR must not be the workspace root: ${DOCKER_DEV_CACHE_DIR}"
-        exit 2
-    fi
-    HOST_CACHE_DIR="${CACHE_ROOT}"
+    HOST_DXG_MOUNT="/dev/null:/dev/null"
 fi
-ensure_dir "${HOST_CACHE_DIR}"
+# WSL2 ships libcuda/libd3d12 under /usr/lib/wsl — without this mount the
+# container loses GPU acceleration entirely on WSL2.
+if [ "$IS_WSL" = "true" ] && [ -d /usr/lib/wsl ]; then
+    WSL_LIB_DIR_MOUNT="/usr/lib/wsl"
+else
+    WSL_LIB_DIR_MOUNT="$(placeholder wsl_lib)"
+fi
 
+# 5. Display, Authentication & Session Sockets
 DISPLAY_TYPE="X11"
-HOST_XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}"
+if [ "$IS_MACOS" = "true" ]; then
+    case "${DISPLAY:-}" in
+        ""|/private/*|/tmp/*) HOST_DISPLAY="host.docker.internal:0" ;;
+        *) HOST_DISPLAY="$DISPLAY" ;;
+    esac
+else
+    HOST_DISPLAY="${DISPLAY:-:0}"
+fi
+
 HOST_WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}"
+HOST_XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}"
 
-if [ "${IS_WSL}" = "true" ]; then
-    if [ -d "/mnt/wslg/runtime-dir" ]; then
-        HOST_XDG_RUNTIME_DIR="/mnt/wslg/runtime-dir"
-        [ -z "${HOST_WAYLAND_DISPLAY}" ] && HOST_WAYLAND_DISPLAY="wayland-0"
-    fi
-fi
-
-if [ -n "${SUDO_USER:-}" ]; then
-    HOST_HOME=$(getent passwd "${SUDO_USER}" | cut -d: -f6)
-else
-    HOST_HOME="${HOME:-}"
-fi
-REAL_HOST_XAUTH="${XAUTHORITY:-${HOST_HOME}/.Xauthority}"
-
-HOST_XAUTHORITY_SCOPED="${HOST_CACHE_DIR}/container_xauthority"
-if [ -s "${REAL_HOST_XAUTH}" ] && command -v xauth >/dev/null 2>&1; then
-    DISPLAY_NUM="${DISPLAY:-:0}"
-    DISPLAY_NUM="${DISPLAY_NUM#:}"
-    DISPLAY_NUM="${DISPLAY_NUM%%.*}"
-    rm -f "${HOST_XAUTHORITY_SCOPED}"
-    if xauth -b -f "${REAL_HOST_XAUTH}" extract - ":${DISPLAY_NUM}" 2>/dev/null | xauth -b -f "${HOST_XAUTHORITY_SCOPED}" merge - 2>/dev/null; then
-        chmod 644 "${HOST_XAUTHORITY_SCOPED}"
-        HOST_XAUTHORITY="${HOST_XAUTHORITY_SCOPED}"
-    fi
-fi
-
-if [ ! -f "${HOST_XAUTHORITY:-}" ]; then
-    HOST_XAUTHORITY="${HOST_CACHE_DIR}/dummy_xauthority"
-    ensure_file "${HOST_XAUTHORITY}"
-fi
-
-if [ -S "${SSH_AUTH_SOCK:-}" ]; then
-    HOST_SSH_AUTH_SOCK="${SSH_AUTH_SOCK}"
-elif [ -n "${SUDO_USER:-}" ]; then
-    _USER_SOCK=$(find /tmp/ssh-* /tmp/ssh-agent-* -type s -user "${SUDO_USER}" -name "agent.*" -print -quit 2>/dev/null)
-    HOST_SSH_AUTH_SOCK="${_USER_SOCK:-}"
-else
-    HOST_SSH_AUTH_SOCK=""
+# WSLg publishes its own X11 socket dir, Wayland socket and runtime dir.
+if [ "$IS_WSL" = "true" ] && [ -d /mnt/wslg/runtime-dir ]; then
+    HOST_XDG_RUNTIME_DIR="/mnt/wslg/runtime-dir"
+    HOST_WAYLAND_DISPLAY="${HOST_WAYLAND_DISPLAY:-wayland-0}"
 fi
 
 if [ -n "$HOST_WAYLAND_DISPLAY" ]; then
     DISPLAY_TYPE="Wayland"
-    if [ -S "${HOST_XDG_RUNTIME_DIR}/${HOST_WAYLAND_DISPLAY}" ]; then
-        :
-    elif [ -S "/run/user/$(id -u)/${HOST_WAYLAND_DISPLAY}" ]; then
-        HOST_XDG_RUNTIME_DIR="/run/user/$(id -u)"
+    # Point at whichever runtime dir actually holds the compositor socket.
+    if [ ! -S "${HOST_XDG_RUNTIME_DIR}/${HOST_WAYLAND_DISPLAY}" ] \
+       && [ -S "/run/user/${HOST_UID}/${HOST_WAYLAND_DISPLAY}" ]; then
+        HOST_XDG_RUNTIME_DIR="/run/user/${HOST_UID}"
     fi
 fi
-
-if [ -z "${HOST_XDG_RUNTIME_DIR}" ] || [ ! -d "${HOST_XDG_RUNTIME_DIR}" ]; then
-    ensure_dir "${HOST_CACHE_DIR}/dummy_xdg_runtime"
-    HOST_XDG_RUNTIME_DIR="${HOST_CACHE_DIR}/dummy_xdg_runtime"
-fi
+[ -d "${HOST_XDG_RUNTIME_DIR:-}" ] || HOST_XDG_RUNTIME_DIR="$(placeholder xdg_runtime)"
 
 if [ -d /tmp/.X11-unix ]; then
     HOST_X11_DIR="/tmp/.X11-unix"
-elif [ "${IS_WSL}" = "true" ] && [ -d "/mnt/wslg/.X11-unix" ]; then
+elif [ "$IS_WSL" = "true" ] && [ -d /mnt/wslg/.X11-unix ]; then
     HOST_X11_DIR="/mnt/wslg/.X11-unix"
 else
-    ensure_dir "${HOST_CACHE_DIR}/dummy_x11_unix"
-    HOST_X11_DIR="${HOST_CACHE_DIR}/dummy_x11_unix"
+    HOST_X11_DIR="$(placeholder x11_unix)"
 fi
 
-if [ "${IS_WSL}" = "true" ] && [ -d "/usr/lib/wsl" ]; then
-    WSL_LIB_DIR_MOUNT="/usr/lib/wsl"
+HOST_XAUTHORITY="${XAUTHORITY:-${HOST_HOME}/.Xauthority}"
+[ -f "$HOST_XAUTHORITY" ] || HOST_XAUTHORITY="$(placeholder xauthority --file)"
+
+# ssh-agent forwarding & host git identity (mounted read-only into the container)
+if [ -S "${SSH_AUTH_SOCK:-}" ]; then
+    HOST_SSH_AUTH_SOCK="${SSH_AUTH_SOCK}"
 else
-    WSL_LIB_DIR_DUMMY="${HOST_CACHE_DIR}/dummy_wsl_lib"
-    ensure_dir "$WSL_LIB_DIR_DUMMY"
-    WSL_LIB_DIR_MOUNT="$WSL_LIB_DIR_DUMMY"
+    HOST_SSH_AUTH_SOCK=""
 fi
 
 if [ -f "${HOST_HOME}/.gitconfig" ]; then
     HOST_GITCONFIG="${HOST_HOME}/.gitconfig"
 else
-    ensure_file "${HOST_CACHE_DIR}/dummy_gitconfig"
-    HOST_GITCONFIG="${HOST_CACHE_DIR}/dummy_gitconfig"
+    HOST_GITCONFIG="$(placeholder gitconfig --file)"
 fi
 
-for _path_var in HOST_HOME HOST_CACHE_DIR HOST_X11_DIR HOST_GITCONFIG HOST_XAUTHORITY; do
-    _val="${!_path_var}"
-    if [[ "$_val" == *" "* ]]; then
-        log_warn "$_path_var contains spaces ('$_val'). Some shell tools may require extra quoting."
-    fi
-done
+# 6. ROS distro → base image. make's `export` does not reach $(shell …), so
+# every caller must read .env itself or the detector caches the humble/22.04
+# default. Read, never source: .env is data, not code.
+ROS_DISTRO="${ROS_DISTRO:-$(env_setting ROS_DISTRO)}"
+BASE_IMAGE="${BASE_IMAGE:-$(env_setting BASE_IMAGE)}"
+UV_PYTHON="${UV_PYTHON:-$(env_setting UV_PYTHON)}"
+ROS_DISTRO="${ROS_DISTRO:-humble}"
+# One distro fixes BOTH the Ubuntu release and its Python: apt installs rclpy and
+# rospy into the SYSTEM interpreter, so a venv on any other version imports
+# neither. Derived together — pinning BASE_IMAGE by digest must not silently
+# leave the interpreter behind.
+case "$ROS_DISTRO" in
+    noetic|foxy)          distro_base="ubuntu:20.04"; distro_python="3.8"  ;;
+    jazzy|kilted|rolling) distro_base="ubuntu:24.04"; distro_python="3.12" ;;
+    humble|iron)          distro_base="ubuntu:22.04"; distro_python="3.10" ;;
+    *)                    distro_base="";             distro_python=""     ;;
+esac
+if [ -z "${BASE_IMAGE:-}" ]; then
+    [ -n "$distro_base" ] || {
+        log_error "Unsupported ROS_DISTRO '${ROS_DISTRO}'. Each distro is bound to one Ubuntu release:"
+        log_detail "20.04: noetic, foxy | 22.04: humble, iron | 24.04: jazzy, kilted, rolling" >&2
+        log_detail "Set BASE_IMAGE yourself to build against a pairing DevKit does not know." >&2
+        exit 2; }
+    BASE_IMAGE="$distro_base"
+fi
+UV_PYTHON="${UV_PYTHON:-${distro_python:-3.10}}"
 
-# 4. Python Interpreter Detection
-GET_PY_SCRIPT="${WS_SCRIPTS}/util_get_python.sh"
-[ ! -f "$GET_PY_SCRIPT" ] && GET_PY_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/util_get_python.sh"
-if [ -f "$GET_PY_SCRIPT" ]; then
-    PYTHON_EXECUTABLE=$(bash "$GET_PY_SCRIPT")
-else
-    PYTHON_EXECUTABLE="${SYS_PYTHON_EXE:-/usr/bin/python3}"
+# An explicit value WINS — DEPLOY.md tells you to pin BASE_IMAGE by digest — but
+# a .env written before ROS_DISTRO changed pins the OLD pairing and nothing says
+# so until apt fails deep in the build. Say it here, once, and keep going.
+if [ -n "$distro_base" ]; then
+    case "$BASE_IMAGE" in
+        "$distro_base"|*"${distro_base#ubuntu:}"*) ;;
+        *) log_warn "ROS_DISTRO=${ROS_DISTRO} expects ${distro_base}, but BASE_IMAGE is '${BASE_IMAGE}'." >&2
+           log_detail "Comment BASE_IMAGE out in .env to follow ROS_DISTRO, or ignore this if the pin is deliberate." >&2 ;;
+    esac
+    [ "$UV_PYTHON" = "$distro_python" ] \
+        || { log_warn "ROS_DISTRO=${ROS_DISTRO} ships Python ${distro_python}, but UV_PYTHON is '${UV_PYTHON}'." >&2
+             log_detail "The venv will not import the apt-installed rclpy/rospy. Comment UV_PYTHON out in .env." >&2; }
 fi
 
-# 5. Output for Makefile integration
-emit_env "HOST_WORKSPACE_PATH" "${HOST_WORKSPACE_PATH}"
-emit_env "WORKSPACE_PATH" "${WORKSPACE_PATH}"
-emit_env "IS_WSL" "${IS_WSL}"
-emit_env "HOST_DXG_MOUNT" "${HOST_DXG_MOUNT}"
-emit_env "HOST_ARCH" "${HOST_ARCH}"
-emit_env "HAS_NVIDIA" "${HAS_NVIDIA}"
-emit_env "HAS_TOOLKIT" "${HAS_TOOLKIT}"
-emit_env "HAS_TOOLKIT_BIN" "${HAS_TOOLKIT_BIN}"
-emit_env "HAS_DRI" "${HAS_DRI}"
-emit_env "HOST_DRI_MOUNT" "${HOST_DRI_MOUNT}"
-emit_env "DISPLAY_TYPE" "${DISPLAY_TYPE}"
-emit_env "HOST_XDG_RUNTIME_DIR" "${HOST_XDG_RUNTIME_DIR}"
-emit_env "HOST_WAYLAND_DISPLAY" "${HOST_WAYLAND_DISPLAY}"
-emit_env "HOST_XAUTHORITY" "${HOST_XAUTHORITY}"
-emit_env "HOST_HOME" "${HOST_HOME}"
-emit_env "HOST_CACHE_DIR" "${HOST_CACHE_DIR}"
-emit_env "HOST_X11_DIR" "${HOST_X11_DIR}"
-emit_env "HOST_GITCONFIG" "${HOST_GITCONFIG}"
-emit_env "HOST_SSH_AUTH_SOCK" "${HOST_SSH_AUTH_SOCK}"
-emit_env "HOST_CUDA_MAX" "${HOST_CUDA_MAX:-Unknown}"
-emit_env "WSL_LIB_DIR_MOUNT" "${WSL_LIB_DIR_MOUNT}"
-emit_env "PYTHON_EXECUTABLE" "${PYTHON_EXECUTABLE}"
+# 7. Output key-value pairs
+# NOTE: every key below is consumed by docker-compose*.yml. Keep this list and
+#       scripts/verify_repo.sh check [host-detect-contract] in sync when adding a compose variable.
+emit_env "ROS_DISTRO" "$ROS_DISTRO"
+emit_env "BASE_IMAGE" "$BASE_IMAGE"
+emit_env "UV_PYTHON" "$UV_PYTHON"
+emit_env "HOST_WORKSPACE_PATH" "$HOST_WORKSPACE_PATH"
+emit_env "WORKSPACE_PATH" "$WORKSPACE_PATH"
+emit_env "IS_WSL" "$IS_WSL"
+emit_env "IS_MACOS" "$IS_MACOS"
+emit_env "HOST_ARCH" "$HOST_ARCH"
+emit_env "HOST_UID" "$HOST_UID"
+emit_env "HOST_GID" "$HOST_GID"
+emit_env "HAS_NVIDIA" "$HAS_NVIDIA"
+emit_env "HAS_TOOLKIT" "$HAS_TOOLKIT"
+emit_env "HAS_DRI" "$HAS_DRI"
+emit_env "HOST_DRI_MOUNT" "$HOST_DRI_MOUNT"
+emit_env "HOST_DXG_MOUNT" "$HOST_DXG_MOUNT"
+emit_env "WSL_LIB_DIR_MOUNT" "$WSL_LIB_DIR_MOUNT"
+emit_env "DISPLAY_TYPE" "$DISPLAY_TYPE"
+emit_env "HOST_DISPLAY" "$HOST_DISPLAY"
+emit_env "HOST_WAYLAND_DISPLAY" "$HOST_WAYLAND_DISPLAY"
+emit_env "HOST_X11_DIR" "$HOST_X11_DIR"
+emit_env "HOST_XAUTHORITY" "$HOST_XAUTHORITY"
+emit_env "HOST_XDG_RUNTIME_DIR" "$HOST_XDG_RUNTIME_DIR"
+emit_env "HOST_SSH_AUTH_SOCK" "$HOST_SSH_AUTH_SOCK"
+emit_env "HOST_GITCONFIG" "$HOST_GITCONFIG"
+emit_env "HOST_CACHE_DIR" "$HOST_CACHE_DIR"
+emit_env "HOST_HOME" "$HOST_HOME"

@@ -1,6 +1,6 @@
 # =============================================================================
-# dependencies/apt.txt
-# User-defined system package extensions for the development environment
+# dependencies/apt.txt — the distro-agnostic package list. One package per line;
+# the trailing tag decides which image stages get it.
 #
 # Filtering Tag System Guide:
 #   - # runtime : Packages required by deployment artifacts
@@ -18,6 +18,17 @@
 # Build & Utilities
 ccache
 ninja-build
+
+# GUI terminal for `make term` (opt-in). terminator pulls GTK/VTE into every
+# dev image, so it is offered, not installed. A matching font is opt-in too:
+# drop D2Coding.zip (github.com/naver/d2codingfont) into dependencies/.
+# terminator # gui
+
+# Quality loop (opt-in). The editor formats C/C++ with the copy bundled in the
+# C/C++ extension, so `mlint`'s CLI half is the only thing that needs this —
+# and clang-format pulls libllvm, which the dev image otherwise avoids.
+# Python needs nothing here: ruff ships in src/pyproject.toml's `dev` group.
+# clang-format # dev
 
 # Runtime graphics (opt-in for deployed apps that need OpenGL/EGL or non-headless OpenCV)
 # libegl1-mesa # runtime

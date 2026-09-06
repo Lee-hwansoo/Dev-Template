@@ -1,6 +1,6 @@
 # =============================================================================
-# dependencies/FetchDependencies.cmake
-# C++ external dependencies management via CMake FetchContent
+# dependencies/FetchDependencies.cmake — C++ dependencies pulled at configure
+# time with FetchContent, for libraries apt and vcstool do not cover.
 #
 # Use this file by including it in your project's main CMakeLists.txt.
 # Example: include(dependencies/FetchDependencies.cmake)

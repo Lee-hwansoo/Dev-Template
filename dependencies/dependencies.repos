@@ -1,6 +1,6 @@
 # =============================================================================
-# dependencies/dependencies.repos
-# External ROS1/ROS2 repository synchronization via vcstool
+# dependencies/dependencies.repos — external sources `sync_deps` imports with
+# vcstool into SYNC_TARGET_DIR (default src/thirdparty).
 #
 # List external repository sources here. To ensure deterministic builds,
 # use specific tags or commit hashes for the 'version' field.

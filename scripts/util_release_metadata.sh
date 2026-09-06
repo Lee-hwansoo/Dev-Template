@@ -1,10 +1,20 @@
 #!/bin/bash
 # =============================================================================
-# scripts/util_release_metadata.sh
-# Generate production release metadata for baked/runtime artifacts.
+# scripts/util_release_metadata.sh — the manifest a baked artifact carries:
+# template revision, reproducibility inputs and the resolved apt/pip sets.
 # =============================================================================
 
 set -euo pipefail
+
+# The path SSOT (WS_VENV_PY, WS_ROOT) and the log verbs, before anything that
+# reports. Sourced explicitly: a `docker build` RUN layer runs before the
+# entrypoint writes the BASH_ENV file, so nothing has exported these yet.
+# Loading the log verbs is best-effort (util_paths.sh stubs them). Writing the
+# manifest is not: a missing interpreter, a malformed SOURCE_DATE_EPOCH or an
+# unwritable output all stop the build rather than ship an unlabelled artifact.
+source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || true
+devkit_require "util_logging.sh" 2>/dev/null || true
+LOG_PREFIX="[Release Meta]"
 
 usage() {
     cat <<'EOF'
@@ -18,25 +28,64 @@ EOF
 
 case "${1:-}" in
     -h|--help) usage; exit 0 ;;
-    --*) echo "[ERROR] Unknown option: $1" >&2; usage >&2; exit 2 ;;
+    --*) log_error "Unknown option: $1"; usage >&2; exit 2 ;;
 esac
 
 OUTPUT_FILE="${1:-${WORKSPACE_PATH:-/workspace}/release/devkit-release.json}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+# Template revision from the committed VERSION file (an explicit DEVKIT_VERSION
+# in the environment wins, e.g. when the file is not in the build context).
+DEVKIT_VERSION="${DEVKIT_VERSION:-$(cat "${WS_ROOT:-.}/VERSION" 2>/dev/null || echo unknown)}"
+export DEVKIT_VERSION
 
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-    echo "[ERROR] Python is required to generate release metadata: $PYTHON_BIN" >&2
+    log_error "Python is required to generate release metadata: $PYTHON_BIN"
     exit 127
 fi
 
 PYTHON_VERSION="$("$PYTHON_BIN" -c 'import platform; print(platform.python_version())' 2>/dev/null || true)"
 
 mkdir -p -- "$(dirname "$OUTPUT_FILE")"
-export OUTPUT_FILE PYTHON_VERSION
+MANIFEST_DIR="$(dirname "$OUTPUT_FILE")"
+
+# =============================================================================
+# Build manifests: record what was ACTUALLY resolved.
+# -----------------------------------------------------------------------------
+# Pinning the inputs (APT_SNAPSHOT_DATE, ROS_SNAPSHOT_DATE, a locked pyproject)
+# still leaves whatever `rosdep` and transitive dependencies resolve at build
+# time. Recording the exact versions that landed makes such a build auditable
+# and re-pinnable after the fact: diff two manifests to see what moved, or paste
+# a line back into dependencies/apt.txt as `package=version` to freeze it.
+# =============================================================================
+APT_MANIFEST="${MANIFEST_DIR}/devkit-apt-manifest.txt"
+PIP_MANIFEST="${MANIFEST_DIR}/devkit-pip-manifest.txt"
+APT_COUNT=0; PIP_COUNT=0
+
+if command -v dpkg-query >/dev/null 2>&1; then
+    dpkg-query -W -f='${Package}=${Version}\n' 2>/dev/null | LC_ALL=C sort > "$APT_MANIFEST" || true
+    APT_COUNT="$(wc -l < "$APT_MANIFEST" 2>/dev/null || echo 0)"
+fi
+
+if command -v uv >/dev/null 2>&1 && [ -x "${WS_VENV_PY:-}" ]; then
+    uv pip freeze --python "$WS_VENV_PY" | LC_ALL=C sort > "$PIP_MANIFEST"
+elif [ -x "${WS_VENV_PY:-}" ]; then
+    "${WS_VENV_PY}" -m pip freeze | LC_ALL=C sort > "$PIP_MANIFEST"
+fi
+[ -f "$PIP_MANIFEST" ] && PIP_COUNT="$(wc -l < "$PIP_MANIFEST" 2>/dev/null || echo 0)"
+
+# One digest over both manifests: a single value that answers "is this the same
+# dependency set as the build we validated?".
+MANIFEST_SHA=""
+if command -v sha256sum >/dev/null 2>&1; then
+    MANIFEST_SHA="$(cat "$APT_MANIFEST" "$PIP_MANIFEST" 2>/dev/null | sha256sum | cut -d' ' -f1 || true)"
+fi
+
+export OUTPUT_FILE PYTHON_VERSION APT_COUNT PIP_COUNT MANIFEST_SHA
 "$PYTHON_BIN" - <<'PY'
 import datetime
 import json
 import os
+import platform
 import sys
 
 
@@ -75,8 +124,34 @@ metadata = {
     "cudnn_version": os.environ.get("CUDNN_VERSION", ""),
     "opencv_cuda": os.environ.get("OPENCV_CUDA", "auto"),
     "git_commit": os.environ.get("GIT_COMMIT", "unknown"),
+    # Which TEMPLATE revision produced this artifact. git_commit above is the
+    # project's commit; after a fork diverges those are two different answers,
+    # and "which DevKit was this built with" is the one that explains a
+    # behaviour change in the environment rather than in the code.
+    "devkit_version": os.environ.get("DEVKIT_VERSION", "unknown"),
     "build_date": resolve_build_date(),
+    # Reproducibility inputs, recorded so a build can be audited or re-pinned.
+    "base_image": os.environ.get("BASE_IMAGE", "unknown"),
+    "apt_snapshot": os.environ.get("APT_SNAPSHOT_DATE", "latest"),
+    "source_date_epoch": os.environ.get("SOURCE_DATE_EPOCH", ""),
+    "build_type": os.environ.get("DEVKIT_BUILD_TYPE", "dev"),
+    "architecture": platform.machine(),
+    "phase": os.environ.get("DEVKIT_MANIFEST_PHASE", "build"),
+    "ros_snapshot": os.environ.get("ROS_SNAPSHOT_DATE", "latest"),
+    "python_extra": os.environ.get("UV_EXTRA", ""),
+    "manifest": {
+        "apt_packages": int(os.environ.get("APT_COUNT") or 0),
+        "pip_packages": int(os.environ.get("PIP_COUNT") or 0),
+        "sha256": os.environ.get("MANIFEST_SHA", ""),
+        "files": ["devkit-apt-manifest.txt", "devkit-pip-manifest.txt"],
+    },
 }
+
+if os.environ.get("DEVKIT_METADATA_BASE"):
+    with open(os.environ["DEVKIT_METADATA_BASE"], encoding="utf-8") as handle:
+        build = json.load(handle)
+    build.update({key: metadata[key] for key in ("python", "architecture", "phase", "manifest")})
+    metadata = build
 
 with open(os.environ["OUTPUT_FILE"], "w", encoding="utf-8") as handle:
     json.dump(metadata, handle, ensure_ascii=False, separators=(",", ":"))

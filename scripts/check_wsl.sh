@@ -1,156 +1,78 @@
 #!/bin/bash
 # =============================================================================
-# scripts/check_wsl.sh
-# Diagnostic tool to verify WSL 2 host configurations (.wslconfig)
+# scripts/check_wsl.sh — WSL2 host audit: systemd, GPU device nodes, WSLg and
+# the mirrored networking DDS multicast needs.
 # =============================================================================
+set -euo pipefail
 
-set -e
-
-source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || source "/tmp/util_paths.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || { echo "  [ERROR] Cannot load config/util_paths.sh (broken checkout?)" >&2; exit 1; }  # host-only: never fall back to world-writable /tmp
 devkit_require "util_logging.sh"
-
-usage() {
-    cat <<'EOF'
-Usage: check_wsl.sh
-
-Audit WSL2-specific systemd, mirrored networking, and GPU acceleration settings.
-
-Options:
-  -h, --help Show this help.
-EOF
-}
+LOG_PREFIX="[WSL Check]"
 
 case "${1:-}" in
-    "" ) ;;
-    -h|--help) usage; exit 0 ;;
-    *) log_error "Unknown option: $1"; usage >&2; exit 2 ;;
+    "") ;;
+    -h|--help)
+        echo "Usage: check_wsl.sh   (no options; audits WSL2 systemd, GPU nodes, WSLg and DDS networking)"
+        exit 0 ;;
+    *) log_error "Unknown option: $1"; exit 2 ;;
 esac
 
-# Section-aware INI value checker
-_ini_has() {
-    local file="$1" section="$2" key="$3" value="$4"
-    [ -f "$file" ] || return 1
-    awk -v s="$section" -v k="$key" -v v="$value" '
-        BEGIN { IGNORECASE = 1 }
-        { sub(/\r$/, "", $0) }
-        /^[ \t]*\[/ {
-            gsub(/[\[\]]/, "", $0)
-            gsub(/^[ \t]+|[ \t]+$/, "", $0)
-            in_sect = ($0 == s)
-            next
-        }
-        in_sect && /^[^#;]/ {
-            split($0, kv, /[ \t]*=[ \t]*/)
-            gsub(/^[ \t]+|[ \t]+$/, "", kv[1])
-            gsub(/^[ \t]+|[ \t]+$/, "", kv[2])
-            if (tolower(kv[1]) == tolower(k) && tolower(kv[2]) == tolower(v)) { found=1; exit }
-        }
-        END { exit !found }
-    ' "$file" 2>/dev/null
-}
+# Strip colour when piped/redirected or NO_COLOR is set (see util_logging.sh).
+declare -F devkit_auto_color >/dev/null 2>&1 && devkit_auto_color
 
-if [ "${IS_WSL}" != "true" ]; then
+if ! grep -qi microsoft /proc/version 2>/dev/null; then
+    log_info "Native Linux host detected (Not running inside WSL2)."
     exit 0
 fi
 
-# 1. Locate .wslconfig on Windows Host
-WIN_USERPROFILE=""
+log_ok "WSL2 environment detected."
 
-if command -v powershell.exe >/dev/null 2>&1; then
-    _raw_profile=$(timeout 3 powershell.exe -NoProfile -Command 'Write-Host $env:USERPROFILE -NoNewline' 2>/dev/null | tr -d '\r') || true
-    if [ -n "${_raw_profile}" ]; then
-        WIN_USERPROFILE=$(wslpath "${_raw_profile}" 2>/dev/null) || true
+# 1. Check systemd & Mirrored Networking
+if [ -f "/etc/wsl.conf" ] && grep -qi "systemd[[:space:]]*=[[:space:]]*true" /etc/wsl.conf; then
+    log_ok "WSL2 systemd enabled (/etc/wsl.conf)."
+else
+    log_warn "WSL2 systemd not enabled in /etc/wsl.conf. (Recommended for Docker service management)"
+fi
+
+# 2. Check GPU & GUI Acceleration
+if [ -e "/dev/dxg" ]; then
+    log_ok "DirectX / D3D12 GPU device node (/dev/dxg) present."
+else
+    log_warn "DirectX device node (/dev/dxg) not found. WSL2 GPU acceleration may be disabled."
+fi
+
+if [ -d "/mnt/wslg" ]; then
+    log_ok "WSLg GUI subsystem available (/mnt/wslg)."
+fi
+
+# 3. Mirrored networking — required for ROS 2 DDS multicast to cross the
+# WSL2/Windows boundary; its absence is a classic silent discovery failure.
+# powershell.exe costs seconds and the Windows home never moves, so the
+# resolved .wslconfig path is cached per-user (this runs on every `make check`).
+# $HOME, not /tmp: a world-writable predictable path invites symlink games on
+# shared machines. Only a SUCCESSFUL resolution is cached (-s guard + [ -n ]):
+# a transient powershell timeout must not disable the audit until reboot.
+WSLCONFIG_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/devkit_wslconfig"
+if [ -s "$WSLCONFIG_CACHE" ]; then
+    WSLCONFIG="$(cat "$WSLCONFIG_CACHE")"
+else
+    WIN_HOME_RAW="$(timeout 10 powershell.exe -NoProfile -Command '$env:USERPROFILE' 2>/dev/null | tr -d '\r' || true)"
+    WSLCONFIG=""
+    if [ -n "$WIN_HOME_RAW" ]; then
+        WIN_HOME="$(wslpath "$WIN_HOME_RAW" 2>/dev/null || true)"
+        [ -n "$WIN_HOME" ] && WSLCONFIG="${WIN_HOME}/.wslconfig"
+    fi
+    if [ -n "$WSLCONFIG" ]; then
+        mkdir -p "$(dirname "$WSLCONFIG_CACHE")" 2>/dev/null || true
+        printf '%s' "$WSLCONFIG" > "$WSLCONFIG_CACHE" 2>/dev/null || true
     fi
 fi
-
-if [ -z "${WIN_USERPROFILE}" ] && command -v cmd.exe >/dev/null 2>&1; then
-    _raw_profile=$(timeout 3 cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r') || true
-    if [ -n "${_raw_profile}" ]; then
-        WIN_USERPROFILE=$(wslpath "${_raw_profile}" 2>/dev/null) || true
-    fi
+if [ -n "$WSLCONFIG" ] && [ -f "$WSLCONFIG" ] && grep -qi 'networkingMode[[:space:]]*=[[:space:]]*mirrored' "$WSLCONFIG"; then
+    log_ok "Mirrored networking enabled (.wslconfig) — DDS multicast reaches the Windows host."
+elif [ -n "$WSLCONFIG" ]; then
+    log_warn "networkingMode=mirrored not set in ${WSLCONFIG} — ROS 2 nodes on the Windows side will not be discovered."
+    log_warn "Fix (Windows 11 22H2+): add '[wsl2]' + 'networkingMode=mirrored' there, then 'wsl --shutdown'."
+    log_warn "On Windows 10 use ROS_LOCALHOST_ONLY=1 or a DDS discovery server instead."
+else
+    log_info "Could not locate Windows .wslconfig — skipping networking audit."
 fi
-
-if [ -z "${WIN_USERPROFILE}" ]; then
-    if command -v cmd.exe >/dev/null 2>&1; then
-        _win_user=$(cmd.exe /c 'echo %USERNAME%' 2>/dev/null | tr -d '\r' || true)
-    fi
-    _win_user="${_win_user:-$(whoami)}"
-    for _drive in /mnt/*; do
-        if [ -d "${_drive}/Users/${_win_user}" ]; then
-            WIN_USERPROFILE="${_drive}/Users/${_win_user}"
-            break
-        fi
-    done
-fi
-
-WSL_CONFIG_PATH="${WIN_USERPROFILE}/.wslconfig"
-LOCAL_WSL_CONF="/etc/wsl.conf"
-
-HAS_SYSTEMD="false"
-HAS_MIRRORED="false"
-
-# 2. Audit Systemd
-if _ini_has "${LOCAL_WSL_CONF}" "boot" "systemd" "true"; then
-    HAS_SYSTEMD="true"
-fi
-
-if [ "${HAS_SYSTEMD}" = "false" ] && _ini_has "${WSL_CONFIG_PATH}" "boot" "systemd" "true"; then
-    HAS_SYSTEMD="true"
-fi
-
-# 3. Audit Mirrored Networking
-if _ini_has "${WSL_CONFIG_PATH}" "wsl2" "networkingMode" "mirrored"; then
-    HAS_MIRRORED="true"
-fi
-
-# 4. Reporting
-if [ "${HAS_SYSTEMD}" = "false" ] || [ "${HAS_MIRRORED}" = "false" ]; then
-    print_section "WSL Environment Audit"
-
-    if [ "${HAS_SYSTEMD}" = "false" ]; then
-        log_warn "Systemd is not enabled in WSL 2."
-        log_detail "Required for: Native Docker Engine and automated service management."
-        log_detail "Fix: Add 'systemd=true' to your /etc/wsl.conf inside WSL."
-    fi
-
-    if [ "${HAS_MIRRORED}" = "false" ]; then
-        log_warn "Mirrored Networking Mode is not enabled in .wslconfig."
-        log_detail "Required for: Stable ROS 2 Multicast communication."
-        log_detail "Path: ${WSL_CONFIG_PATH}"
-        log_detail "Fix: Add 'networkingMode=mirrored' under [wsl2] section."
-    fi
-    echo ""
-fi
-
-# 5. GPU Acceleration Audit
-if ! devkit_require "util_gpu_detect.sh"; then
-    exit 0
-fi
-
-if [ "${IS_WSL}" = "true" ] && command -v glxinfo &>/dev/null; then
-    host_renderer=$(trim_ws "$(glxinfo -B 2>/dev/null | grep -Ei "OpenGL renderer string" | head -n 1 | sed -E 's/.*:[[:space:]]*(.*)/\1/' || true)")
-
-    if [ -n "$host_renderer" ]; then
-        if [[ "$host_renderer" == *"llvmpipe"* ]]; then
-            print_section "WSL GPU Acceleration Audit"
-            log_warn "Host OpenGL is stuck on Software Rendering (llvmpipe)."
-            if has_nvidia; then
-                log_info "Fix (NVIDIA): Add the following to your HOST(WSL) ~/.bashrc:"
-                get_gpu_prescription "nvidia_wsl" "    "
-            elif has_dxg || has_any_dri; then
-                log_info "Fix (iGPU): Add the following to your HOST(WSL) ~/.bashrc:"
-                get_gpu_prescription "igpu_wsl" "    "
-            fi
-            echo ""
-        elif [[ "$host_renderer" == *"D3D12"* ]] && has_nvidia && [[ "$host_renderer" != *"NVIDIA"* ]]; then
-            print_section "WSL GPU Acceleration Audit"
-            log_info "Current Renderer: ${host_renderer} (iGPU)"
-            log_detail "Optimization: High-performance NVIDIA dGPU is available but idle."
-            log_info "Fix: Add the following to your HOST(WSL) ~/.bashrc:"
-            get_gpu_prescription "nvidia_optimize_wsl" "    "
-            echo ""
-        fi
-    fi
-fi
-
-exit 0

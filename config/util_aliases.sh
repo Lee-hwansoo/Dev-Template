@@ -1,878 +1,677 @@
 #!/bin/bash
 # =============================================================================
-# config/util_aliases.sh
-# Comprehensive alias collection for ROS2, C++, Python (uv), and Diagnostics
-#
-# Loaded via ~/.bashrc using: source ${WORKSPACE_PATH:-/workspace}/config/util_aliases.sh
-# Note: ROS-specific aliases are only defined when ROS/colcon tools are available,
-# keeping pure Python/C++ dev targets clean.
-# Note: This file should only be loaded inside the container environment.
+# config/util_aliases.sh — the in-container shortcuts (ROS 1/2, uv, CMake).
+# Sourced into the user's shell, so `h` lists what this file provides and the
+# build entry points are FUNCTIONS: aliases never expand in a docker build.
 # =============================================================================
 
-# =============================================================================
-# Environment
-# =============================================================================
+source "${WORKSPACE_PATH:-/workspace}/config/util_paths.sh" 2>/dev/null || true
+# The shared log verbs, so `mksync | tee build.log` comes out plain.
+# util_paths.sh leaves colourless stubs, so log_* always resolve.
+declare -F devkit_require >/dev/null 2>&1 && devkit_require "util_logging.sh" 2>/dev/null || true
 
-# Container Environment Guard: Prevent loading on the host machine
-if [ ! -f /.dockerenv ] && [ "${FORCE_LOAD_ALIASES:-}" != "true" ]; then
-    return 0
-fi
-
-# Load centralized paths (Single Source of Truth)
-source "${WORKSPACE_PATH:-/workspace}/config/util_paths.sh" 2>/dev/null || source "/tmp/util_paths.sh"
-devkit_require "util_logging.sh"
-if ! declare -f print_banner >/dev/null 2>&1; then
-    print_banner() { :; }
-fi
-if ! declare -f print_env_info >/dev/null 2>&1; then
-    print_env_info() { echo "  Workspace: ${WS_ROOT}"; }
-fi
-
-# Non-interactive shell detection
-[[ $- == *i* ]] && INTERACTIVE=true || INTERACTIVE=false
-
-# Environment Defaults & Paths
-VENV_PATH="${WS_VENV}"
 export SYS_PYTHON_EXE=${SYS_PYTHON_EXE:-/usr/bin/python3}
 
-# =============================================================================
-# Internal Helpers & Core Logic (Implementation)
-# =============================================================================
+# Shared CMake knobs (.env → compose → here): CMAKE_EXTRA_ARGS, the documented
+# C/C++ standard pins and the OPENCV_CUDA policy. Fills DEVKIT_CMAKE_EXTRA.
+__cmake_extra_args() {
+    DEVKIT_CMAKE_EXTRA=()
+    [ -n "${CMAKE_EXTRA_ARGS:-}" ] && read -r -a DEVKIT_CMAKE_EXTRA <<< "${CMAKE_EXTRA_ARGS}"
+    [ -n "${CMAKE_C_STANDARD:-}" ] && DEVKIT_CMAKE_EXTRA+=("-DCMAKE_C_STANDARD=${CMAKE_C_STANDARD}")
+    [ -n "${CMAKE_CXX_STANDARD:-}" ] && DEVKIT_CMAKE_EXTRA+=("-DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD}")
+    # OPENCV_CUDA must reach the compiler at configure time. Probed per call:
+    # 90 ms against a build measured in seconds beats a cache to invalidate.
+    local gpu_args=()
+    read -r -a gpu_args <<< "$(bash "${WS_SCRIPTS}/setup_gpu.sh" opencv_args 2>/dev/null || true)"
+    DEVKIT_CMAKE_EXTRA+=("${gpu_args[@]}")
+    return 0
+}
 
-function __parse_share_flag() {
+# A missing build tool means the wrong image, not a broken workspace.
+__require_cmd() {
+    command -v "$1" >/dev/null 2>&1 && return 0
+    log_error "'$1' not found in this image."
+    log_detail "ROS builds need ENV=ros; plain CMake projects use 'mbuild'." >&2
+    return 1
+}
+
+# Refresh the workspace links after anything that creates their targets,
+# so they do not lag a whole session behind.
+__refresh_links() {
+    # No --skip here: this runs AFTER a build, which is the only moment the
+    # per-package compile_commands.json files exist to be merged. Skipping it
+    # meant the aggregate the IDE reads was never written outside a manual run.
+    [ -x "${WS_SCRIPTS}/util_setup_links.sh" ] && "${WS_SCRIPTS}/util_setup_links.sh"
+    return 0
+}
+
+# The advertised build flags; anything else passes through ('--' forces it).
+# $1 = generation, since the package selector differs: 2 colcon, 1 catkin, cmake.
+# Fills DEVKIT_BUILD_TYPE_ARG / DEVKIT_BUILD_SELECT / DEVKIT_BUILD_PASSTHRU.
+__parse_build_flags() {
+    local gen="${1:-2}"; shift
+    # RelWithDebInfo, not CMake's empty default: an unoptimised robotics build is
+    # a performance bug nobody reads in the log.
+    DEVKIT_BUILD_TYPE_ARG="RelWithDebInfo"
+    DEVKIT_BUILD_SELECT=()
+    DEVKIT_BUILD_PASSTHRU=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --debug)   DEVKIT_BUILD_TYPE_ARG="Debug"; shift ;;
+            --release) DEVKIT_BUILD_TYPE_ARG="Release"; shift ;;
+            --pkg)
+                shift
+                if [ $# -eq 0 ] || [[ "$1" == --* ]]; then
+                    log_error "--pkg requires at least one package name."
+                    return 2
+                fi
+                case "$gen" in
+                    2) DEVKIT_BUILD_SELECT+=(--packages-select) ;;
+                    1) DEVKIT_BUILD_SELECT+=(--only-pkg-with-deps) ;;
+                    *) log_error "--pkg applies to ROS builds only."; return 2 ;;
+                esac
+                while [ $# -gt 0 ] && [[ "$1" != --* ]]; do DEVKIT_BUILD_SELECT+=("$1"); shift; done ;;
+            --meta)
+                if [ "$gen" = "2" ]; then
+                    DEVKIT_BUILD_SELECT+=(--metas "${WS_CONFIG:-${WS_ROOT}/config}/colcon.meta")
+                else
+                    log_warn "--meta is a colcon option; ignored here."
+                fi; shift ;;
+            --) shift; DEVKIT_BUILD_PASSTHRU+=("$@"); break ;;
+            *)  DEVKIT_BUILD_PASSTHRU+=("$1"); shift ;;
+        esac
+    done
+}
+
+# A prod image copies install/ only, so a build that installs nothing ships
+# nothing. $1 names the missing install rule (catkin and CMake spell it apart).
+__require_install_artifacts() {
+    [ -n "$(find "${WS_ROOT}/install" -path '*/.venv' -prune -o -mindepth 2 -type f -print -quit 2>/dev/null)" ] && return 0
+    log_error "Production build installed no artifacts into ${WS_ROOT}/install."
+    log_detail "Add ${1} rules; the production runtime image copies install/ only." >&2
+    return 1
+}
+
+# ROS images share the system interpreter and its Python dependencies.
+__parse_share_flag() {
     DEVKIT_SHARE_MODE=false
     DEVKIT_REMAINING_ARGS=()
-    while [ $# -gt 0 ]; do
-        case "$1" in
+    for arg in "$@"; do
+        case "$arg" in
             --share) DEVKIT_SHARE_MODE=true ;;
-            *) DEVKIT_REMAINING_ARGS+=("$1") ;;
+            *) DEVKIT_REMAINING_ARGS+=("$arg") ;;
         esac
-        shift
     done
+    # Shared iff ROS is installed: the bindings live in the system interpreter.
+    [ ! -d "/opt/ros/${ROS_DISTRO:-}" ] || DEVKIT_SHARE_MODE=true
+}
 
-    # ROS 1 Noetic on Ubuntu 20.04 is tied to the system Python ABI. A shared
-    # venv keeps rospy/catkin visible and avoids creating an incompatible uv
-    # Python environment for production builds.
-    if [ "${ROS_DISTRO:-}" = "noetic" ]; then
-        DEVKIT_SHARE_MODE=true
+# --- General System & Help ----------------------------------------------------
+alias h='__print_container_help'
+alias help='__print_container_help'
+# Functions, not aliases: aliases never expand in a non-interactive shell.
+hwcheck()    { bash "${WS_SCRIPTS}/check_hardware.sh" "$@"; }
+gpus()       { bash "${WS_SCRIPTS}/setup_gpu.sh" status "$@"; }
+check_deps() { bash "${WS_SCRIPTS}/check_deps.sh" "$@"; }
+
+# Pre-streamline spelling: a base kit must not break scripts already calling it.
+hw_check() {
+    log_warn "'hw_check' is deprecated — use 'hwcheck'."
+    bash "${WS_SCRIPTS}/check_hardware.sh" "$@"
+}
+
+__print_container_help() {
+    # Locals, not devkit_auto_color: `exec >` would redirect the user's shell
+    # for good. _log_plain is the same rule the log verbs apply.
+    local T='\033[38;2;45;212;191m' S='\033[0;36m' G='\033[32m' Y='\033[33m' C='\033[36m' P='\033[35m' N='\033[0m'
+    _log_plain && { T=''; S=''; G=''; Y=''; C=''; P=''; N=''; }
+    echo -e "\n${T}DevKit Container Shortcuts & Aliases${N}\n"
+
+    echo -e "${S}[ Quick Start & Build ] =============================${N}"
+    printf "  ${G}%-20s${N} : %s\n" "mksync [--share]" "Initialize workspace; --share for system-site-packages"
+    printf "  ${G}%-20s${N} : %s\n" "cbuild / mbuild" "Build workspace (ROS colcon or Modern CMake)"
+    printf "  ${G}%-20s${N} : %s\n" "mtest / mlint" "Run the project's tests / check style and lint rules"
+    printf "  ${G}%-20s${N} : %s\n" "cbt / cbtr" "Run ROS tests directly / view test results"
+    printf "  ${G}%-20s${N} : %s\n" "s / sb" "Source workspace / Source .bashrc"
+    printf "  ${G}%-20s${N} : %s\n" "mclean" "Clean build, install & log output directories"
+
+    echo -e "\n${S}[ ROS Subsystem ] ===================================${N}"
+    printf "  ${G}%-20s${N} : %s\n" "rt / rte / rth" "Topic list / echo / hz"
+    printf "  ${G}%-20s${N} : %s\n" "rn / rs / rp" "Node list / service list / param list"
+    printf "  ${G}%-20s${N} : %s\n" "rr / rl / ri" "ros2 run / launch / interface show"
+
+    echo -e "\n${S}[ Python & Environment ] ============================${N}"
+    printf "  ${Y}%-20s${N} : %s\n" "mkenv / activate" "Create or activate Python virtualenv (.venv)"
+    printf "  ${Y}%-20s${N} : %s\n" "uvs / uvr / uvp / uvl" "uv sync / run / pip install / pip list"
+    printf "  ${Y}%-20s${N} : %s\n" "uvpython / syspython" "Run Python in venv or system environment"
+    printf "  ${Y}%-20s${N} : %s\n" "pyv" "Show which python/venv/uv is active"
+    printf "  ${Y}%-20s${N} : %s\n" "sync_deps" "Sync external dependencies from .repos file"
+
+    echo -e "\n${S}[ Navigation & Utilities ] ==========================${N}"
+    printf "  ${C}%-20s${N} : %s\n" "cw / cs / cc" "cd to workspace root / src / config"
+    printf "  ${C}%-20s${N} : %s\n" "ll / la / g" "ls -alF / ls -A / git wrapper"
+    printf "  ${C}%-20s${N} : %s\n" "k / k9" "killall / killall -9"
+    printf "  ${C}%-20s${N} : %s\n" "ccs / ccc" "ccache stats / clear ccache"
+
+    echo -e "\n${S}[ Hardware & Diagnostics ] ==========================${N}"
+    printf "  ${P}%-20s${N} : %s\n" "hwcheck" "6-section scan: system, network, GPU, display, identity, toolchain"
+    printf "  ${P}%-20s${N} : %s\n" "gpus" "Full render stack: GL/GLX, EGL, Vulkan, D3D12, loader paths"
+    printf "  ${P}%-20s${N} : %s\n" "gpu <mode>" "Switch GPU mode (auto/nvidia/tegra/intel/amd/igpu/cpu)"
+    printf "  ${P}%-20s${N} : %s\n" "gpu_check / vulkan_check" "One-line OpenGL / Vulkan renderer check"
+    printf "  ${P}%-20s${N} : %s\n" "gpu_test / pyt" "Render a real frame / check the ML stack sees the GPU"
+    printf "  ${P}%-20s${N} : %s\n\n" "check_deps" "Check missing shared libraries in install/"
+}
+
+# --- ROS 1 / ROS 2 Environment & Build --------------------------------------
+__smart_source() {
+    local setup rc=0
+    setup="$(devkit_overlay_setup)" || setup="/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
+    if [ ! -f "$setup" ]; then
+        log_error "No ROS setup.bash found!"
+        return 1
     fi
-}
-
-# Smart Python Detection for Builds
-function __get_build_py_exe() {
-    local script="${WS_SCRIPTS}/util_get_python.sh"
-
-    # 1. Prefer central detection script (Single Source of Truth)
-    if [ -f "$script" ]; then
-        bash "$script"
-    else
-        # 2. Minimal fallback to system python (avoiding logic duplication)
-        echo "${SYS_PYTHON_EXE:-/usr/bin/python3}"
+    # A setup.bash that fails must not be reported as sourced: the shell is then
+    # missing the very packages the log said it had.
+    source "$setup" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        log_error "Failed to source ${setup} (exit ${rc})."
+        return "$rc"
     fi
+    log_ok "Sourced ${setup}"
 }
 
-# Smart GPU-aware CMake Arguments
-function __get_gpu_cmake_args() {
-    local script="${WS_SCRIPTS}/setup_gpu.sh"
+alias s='__smart_source'
+alias sb='source ~/.bashrc'
 
-    if [ -f "$script" ]; then
-        bash "$script" opencv_args 2>/dev/null
-    else
-        echo "-DWITH_CUDA=OFF"
-    fi
-}
-
-function __setup_workspace_links() {
-    local setup_links="${WS_SCRIPTS}/util_setup_links.sh"
-    [ -f "$setup_links" ] || return 0
-    "$setup_links" "$@"
-}
-
-function __setup_workspace_links_fast() {
-    __setup_workspace_links --skip-compile-commands "$@"
-}
-
-# Internal helper to purge virtual environment traces (PATH, PS1)
-function __venv_purge_state() {
-    local v_root="$1"
-    [ -z "$v_root" ] && return
-
-    # 1. PATH Cleanup: Safely remove duplicate paths from start/middle/end
-    export PATH=":${PATH}:"
-    export PATH="${PATH//:${v_root}\/bin:/:}"
-    export PATH="${PATH#:}"
-    export PATH="${PATH%:}"
-
-    # 2. PS1 Cleanup: strip ONLY our own venv prompt token, never an arbitrary
-    #    leading "(...)". The previous regex ate conda's "(base)" and any custom
-    #    prompt beginning with parentheses. venv records the token it injected in
-    #    VIRTUAL_ENV_PROMPT, so we remove exactly that and nothing else. When no
-    #    venv is active the standard _OLD_VIRTUAL_PS1 machinery has already restored PS1.
-    if [ -n "${VIRTUAL_ENV_PROMPT:-}" ] && [ -n "${PS1:-}" ]; then
-        PS1="${PS1#"(${VIRTUAL_ENV_PROMPT}) "}"
-        PS1="${PS1#"(${VIRTUAL_ENV_PROMPT})"}"
-        export PS1
-    fi
-}
-
-# Internal helper to detect venv mode from pyvenv.cfg
-function __get_venv_mode() {
-    local v_path="$1"
-    if grep -q "include-system-site-packages = true" "${v_path}/pyvenv.cfg" 2>/dev/null; then
-        echo "SHARED"
-    else
-        echo "PURE"
-    fi
-}
-
-# Python environment verification
-function __pyv_impl() {
-    local sys_py="${SYS_PYTHON_EXE}"
-    local venv_path="${VENV_PATH}"
-    local venv_py="${venv_path}/bin/python3"
-
-    # 1. System Python Status
-    local sys_ver="$($sys_py --version 2>&1 | cut -d' ' -f2)"
-    printf "  %-18s %s [%s]\n" "System Python:" "$sys_ver" "$sys_py"
-
-    # 2. Virtual Environment Status
-    if [ -d "$venv_path" ] && [ -f "$venv_py" ]; then
-        local venv_ver="$($venv_py --version 2>&1 | cut -d' ' -f2)"
-        local current_mode="${ENVIRONMENT_TYPE:-$(__get_venv_mode "$venv_path")}"
-        local mode_color="${NC}"
-        [ "$current_mode" == "SHARED" ] && mode_color="${YELLOW}"
-        [ "$current_mode" == "PURE" ] && mode_color="${BLUE}"
-
-        if [[ "$VIRTUAL_ENV" == "$venv_path" ]]; then
-            printf "  ${GREEN}%-18s${NC} %s (Activated: ${mode_color}%s${NC}) [%s]\n" "uv Virtual Env:" "$venv_ver" "$current_mode" "$venv_path"
+# cbuild [--debug|--release] [--pkg <name>…] [--meta] [-- <extra args>]
+#   ROS build: colcon (ROS 2) or catkin_make (ROS 1). Default RelWithDebInfo.
+#   --pkg selects packages, --meta applies config/colcon.meta, '--' forces
+#   passthrough. Unknown flags reach the build tool untouched.
+#
+# A FUNCTION, not an alias: aliases do not expand inside functions in a
+# non-interactive shell, and mksync() calls this during `docker build`.
+# --symlink-install is dev-only — a prod image copies install/ but never src/,
+# so those links would dangle; DEVKIT_BUILD_TYPE=prod forces a real copy.
+if [ "${ROS_DISTRO:-}" != "noetic" ] && [ "${ROS_VERSION:-2}" = "2" ]; then
+    cbuild() {
+        __require_cmd colcon || return 1
+        local link_flag=(--symlink-install) extra=()
+        [ "${DEVKIT_BUILD_TYPE:-dev}" = "prod" ] && link_flag=()
+        [ -n "${COLCON_EXTRA_FLAGS:-}" ] && read -r -a extra <<< "${COLCON_EXTRA_FLAGS}"
+        __parse_build_flags 2 "$@" || return 2
+        __cmake_extra_args
+        # Run from WS_ROOT so build/, install/, log/ and the colcon.meta link
+        # land at the workspace root regardless of the caller's cwd.
+        ( cd "${WS_ROOT}" && colcon build "${link_flag[@]}" "${extra[@]}" "${DEVKIT_BUILD_SELECT[@]}" \
+            --cmake-args -Wno-dev --no-warn-unused-cli \
+            -DCMAKE_BUILD_TYPE="${DEVKIT_BUILD_TYPE_ARG}" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            "${DEVKIT_CMAKE_EXTRA[@]}" "${DEVKIT_BUILD_PASSTHRU[@]}" ) || return 1
+        __refresh_links
+    }
+    cbt() { (cd "${WS_ROOT}" && colcon test "$@"); }
+    cbtr() { (cd "${WS_ROOT}" && colcon test-result --all "$@"); }
+    alias rt='ros2 topic list'
+    alias rte='ros2 topic echo'
+    alias rth='ros2 topic hz'
+    alias rn='ros2 node list'
+    alias rs='ros2 service list'
+    alias rp='ros2 param list'
+    alias rr='ros2 run'
+    alias rl='ros2 launch'
+    alias ri='ros2 interface show'
+else
+    # catkin_make fills devel/, never install/ — a prod build must run the
+    # install target explicitly or the image ships no ROS artifacts.
+    cbuild() {
+        __require_cmd catkin_make || return 1
+        local extra=()
+        [ -n "${COLCON_EXTRA_FLAGS:-}" ] && read -r -a extra <<< "${COLCON_EXTRA_FLAGS}"
+        __parse_build_flags 1 "$@" || return 2
+        __cmake_extra_args
+        set -- "${DEVKIT_BUILD_PASSTHRU[@]}"
+        DEVKIT_CMAKE_EXTRA+=("-DCMAKE_BUILD_TYPE=${DEVKIT_BUILD_TYPE_ARG}")
+        if [ "${DEVKIT_BUILD_TYPE:-dev}" = "prod" ]; then
+            ( cd "${WS_ROOT}" && catkin_make install "${DEVKIT_BUILD_SELECT[@]}" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+                -DCMAKE_INSTALL_PREFIX="${WS_ROOT}/install" "${DEVKIT_CMAKE_EXTRA[@]}" "${extra[@]}" "$@" ) || return 1
+            __require_install_artifacts "install() (catkin CMakeLists.txt)" || return 1
         else
-            printf "  ${CYAN}%-18s${NC} %s (Inactive: ${mode_color}%s${NC}) [%s]\n" "uv Virtual Env:" "$venv_ver" "$current_mode" "$venv_path"
+            ( cd "${WS_ROOT}" && catkin_make "${DEVKIT_BUILD_SELECT[@]}" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+                "${DEVKIT_CMAKE_EXTRA[@]}" "${extra[@]}" "$@" ) || return 1
         fi
-    else
-        printf "  ${YELLOW}%-18s${NC} %s\n" "uv Virtual Env:" "None (Run 'mkenv' to create)"
-    fi
+        __refresh_links
+    }
+    cbt() { (cd "${WS_ROOT}" && catkin_make run_tests "$@"); }
+    cbtr() { (cd "${WS_ROOT}" && catkin_test_results "$@"); }
+    alias rt='rostopic list'
+    alias rte='rostopic echo'
+    alias rth='rostopic hz'
+    alias rn='rosnode list'
+    alias rs='rosservice list'
+    alias rp='rosparam list'
+    alias rr='rosrun'
+    alias rl='roslaunch'
+    alias ri='rosmsg show'
+fi
 
-    # 3. Path & uv Summary
-    printf "  %-18s %s\n" "Active Binary:" "$(command -v python3)"
-    printf "  %-18s %s\n" "uv Version:" "$(uv --version 2>/dev/null | cut -d' ' -f2)"
-}
+# --- Python & Virtualenv (uv) ------------------------------------------------
+uvr() { uv run "$@"; }
+uvp() { uv pip install "$@"; }
+uvl() { uv pip list; }
 
-# PyTorch & CUDA Intelligence Diagnostic
-function torch_check() {
-    if ! python3 -c "import torch" 2>/dev/null; then
-        echo -e "  ${YELLOW}PyTorch not found in the current environment.${NC}"
-        return 1
-    fi
-    python3 -c "
-import torch
-B, G, Y, N = '\033[0;34m', '\033[0;32m', '\033[1;33m', '\033[0m'
-print(f'  {B}PyTorch Version:{N}  {torch.__version__}')
-print(f'  {B}CUDA Build:{N}      {torch.version.cuda}')
-print(f'  {B}cuDNN Version:{N}   {torch.backends.cudnn.version()}')
-print(f'  {B}CUDA Available:{N}   ' + (f'{G}True{N}' if torch.cuda.is_available() else f'{Y}False{N}'))
-
-if torch.cuda.is_available():
-    prop = torch.cuda.get_device_properties(0)
-    free, total = torch.cuda.mem_get_info(0)
-    print(f'  {B}Device Name:{N}      {prop.name}')
-    print(f'  {B}VRAM Usage:{N}       {(total-free)/1024**3:.2f} / {total/1024**3:.2f} GB ({(total-free)/total*100:.1f}%)')
-    print(f'  {B}Compute Cap:{N}      {prop.major}.{prop.minor}')
-"
-}
-
-# Internal helper to categorize the current workspace for intelligent automation
-function __detect_project_type() {
-    [ -d "${WS_SRC}" ] || { echo "PYTHON"; return; }
-
-    if [ -n "${ROS_DISTRO}" ] && command -v colcon &>/dev/null; then
-        # Check for ROS-specific markers
-        if [ -f "${WS_SRC}/CMakeLists.txt" ] || [ -n "$(find "${WS_SRC}" -maxdepth 2 -name "package.xml" -print -quit 2>/dev/null)" ]; then
-            echo "ROS"
-            return
-        fi
-    fi
-
-    if [ -n "$(find "${WS_SRC}" -maxdepth 2 -name "CMakeLists.txt" -print -quit 2>/dev/null)" ]; then
-        echo "CPP"
-    else
-        echo "PYTHON"
-    fi
-}
-
-function __has_ros_tools() {
-    command -v colcon &>/dev/null || command -v ros2 &>/dev/null || command -v roscore &>/dev/null
-}
-
-# --- Core Build & Sync Implementations ---------------------------------------
-
-# Modern CMake build implementation
-function __mbuild_impl() {
-    local build_type="RelWithDebInfo"
-    local build_args=()
-    local cmake_extra=()
-    local gpu_cmake_args=()
-
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --debug) build_type="Debug"; shift ;;
-            --release) build_type="Release"; shift ;;
-            *) build_args+=("$1"); shift ;;
-        esac
-    done
-
-    if [ -n "${CMAKE_EXTRA_ARGS:-}" ]; then
-        read -r -a cmake_extra <<< "${CMAKE_EXTRA_ARGS}"
-    fi
-    read -r -a gpu_cmake_args <<< "$(__get_gpu_cmake_args)"
-
-    cmake -S "${WS_SRC}" -B "${WS_BUILD}" -Wno-dev --no-warn-unused-cli -DCMAKE_BUILD_TYPE="${build_type}" -DCMAKE_INSTALL_PREFIX="${WS_INSTALL}" -DCMAKE_C_STANDARD="${CMAKE_C_STANDARD:-11}" -DCMAKE_CXX_STANDARD="${CMAKE_CXX_STANDARD:-17}" -DPYTHON_EXECUTABLE="$(__get_build_py_exe)" "${gpu_cmake_args[@]}" "${cmake_extra[@]}" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && \
-    cmake --build "${WS_BUILD}" -j"$(nproc)" --target install "${build_args[@]}" && \
-    __setup_workspace_links
-}
-
-# Dependency synchronization implementation
-function __sync_deps_impl() {
-    bash "${WS_SCRIPTS}/setup_sync_deps.sh" "$@"
-}
-
-function __remove_workspace_path() {
-    local path="$1"
-    local root_real path_real
-
-    if [ -z "$path" ]; then
-        log_error "Refusing to remove an empty workspace path."
-        return 1
-    fi
-
-    root_real="$(realpath -m "${WS_ROOT}")"
-    path_real="$(realpath -m "${path:-}")"
-    case "$path_real" in
-        "${root_real}"/*) rm -rf "$path_real" ;;
-        *) log_error "Refusing to remove non-workspace path: ${path:-<empty>}"; return 1 ;;
-    esac
-}
-
-# uv-based Python synchronization implementation
-function __pyproject_has_extra() {
-    local pyproject="$1"
-    local extra="$2"
-    [ -f "$pyproject" ] || return 1
-    awk -v extra="$extra" '
-        /^\[project\.optional-dependencies\]/ { in_optional=1; next }
-        /^\[/ { in_optional=0 }
-        in_optional && $0 ~ "^[[:space:]]*" extra "[[:space:]]*=" { found=1 }
-        END { exit found ? 0 : 1 }
-    ' "$pyproject"
-}
-
-function __requirements_has_packages() {
-    local req_file="$1"
-    [ -f "$req_file" ] || return 1
-    grep -Eq '^[[:space:]]*[^#[:space:]]' "$req_file"
-}
-
-function __uvs_impl() {
+# uvs [<uv sync args>…]
+#   Install the project's Python dependencies from src/pyproject.toml (or
+#   dependencies/requirements.txt). Honours UV_EXTRA (cpu/gpu) and
+#   UV_SYNC_FLAGS; the `dev` group comes along except in prod builds.
+uvs() {
+    local venv="${WS_VENV:-${WS_ROOT}/install/.venv}"
+    local pyproject="${WS_SRC:-${WS_ROOT}/src}/pyproject.toml"
+    local req_file="${WS_ROOT}/dependencies/requirements.txt"
     local sync_flags=()
-    if [ -n "${UV_SYNC_FLAGS:-}" ]; then
-        read -r -a sync_flags <<< "${UV_SYNC_FLAGS}"
+    [ -n "${UV_SYNC_FLAGS:-}" ] && read -r -a sync_flags <<< "${UV_SYNC_FLAGS}"
+    # uv installs the `dev` group by default; a prod venv must not carry
+    # ruff and pytest. Dev builds keep them — mtest/mlint need them.
+    if [ "${DEVKIT_BUILD_TYPE:-dev}" = "prod" ]; then
+        sync_flags+=(--no-default-groups --no-editable --locked)
+        if [ -f "$pyproject" ] && [ ! -f "${WS_SRC}/uv.lock" ]; then
+            log_error "Production requires src/uv.lock. Run 'mksync' and commit the lockfile."
+            return 1
+        fi
     fi
-
-    local pyproject="${WS_SRC}/pyproject.toml"
-    local req_file="${WS_DEPS}/requirements.txt"
+    [ -x "${WS_VENV_PY:-}" ] || mkenv || return 1
 
     if [ -f "$pyproject" ]; then
-        local extra="${UV_EXTRA:-}"
         local extra_args=()
-        if [ -n "$extra" ] && __pyproject_has_extra "$pyproject" "$extra"; then
-            extra_args=(--extra "$extra")
-        elif [ -n "$extra" ]; then
-            log_info "Python extra '${extra}' is not defined in ${pyproject}; running uv sync without extras."
+        if [ -n "${UV_EXTRA:-}" ]; then
+            extra_args=(--extra "${UV_EXTRA}")
         fi
-        UV_PROJECT_ENVIRONMENT="${VENV_PATH}" uv sync --project "${WS_SRC}" "${extra_args[@]}" "${sync_flags[@]}" "$@"
-    elif __requirements_has_packages "$req_file"; then
-        [ -x "${VENV_PATH}/bin/python" ] || mkenv
-        uv pip install --python "${VENV_PATH}/bin/python" -r "$req_file" "$@"
+        # --python pins the interpreter the venv already has; without it uv
+        # REPLACES a mismatching venv, turning `mksync --share` pure and
+        # losing rospy. UV_PROJECT_ENVIRONMENT is needed too: during
+        # `docker build` nothing has exported it yet.
+        UV_PROJECT_ENVIRONMENT="$venv" \
+            uv sync --project "${WS_SRC:-${WS_ROOT}/src}" --python "${WS_VENV_PY}" \
+                "${extra_args[@]}" "${sync_flags[@]}" "$@"
+    elif [ -f "$req_file" ] && grep -qv '^[[:space:]]*#' "$req_file" 2>/dev/null; then
+        uv pip install --python "${WS_VENV_PY}" -r "$req_file" "$@"
     else
         log_info "No Python dependency manifest found. Skipping uv sync."
     fi
 }
 
-# Hide the ROS section when no ROS tooling is present (pure Python/C++ images).
-function __help_skip_section() { [ "$1" = "ROS & Simulation" ] && ! __has_ros_tools; }
-
-function __print_help() {
-    [ "$INTERACTIVE" = false ] && return
-    print_banner GUIDE
-    print_env_info
-    # Same shared renderer as the host `make help`, so the guide is identical
-    # inside and outside the container; only the source file, entry marker and
-    # default color differ.
-    devkit_render_guide "$BASH_SOURCE" alias "" "$PURPLE" __help_skip_section
-    devkit_guide_footer "to see this guide again."
+# Project type: ROS | CPP | PYTHON.
+# `-print -quit`: bare -quit suppresses find's implicit -print and yields "".
+# __cmake_entry — the directory whose CMakeLists.txt a build would configure,
+# or nothing. ONE answer for the detector and for mbuild: they used to search
+# different places, so a repository-root project was reported PYTHON (and never
+# built) while a thirdparty-only tree was reported CPP (and then failed).
+__cmake_entry() {
+    local src="${WS_SRC:-${WS_ROOT}/src}"
+    if   [ -f "${WS_ROOT}/CMakeLists.txt" ]; then printf '%s' "${WS_ROOT}"
+    elif [ -f "${src}/CMakeLists.txt" ];     then printf '%s' "${src}"
+    else return 1; fi
 }
 
-# Helper function to fetch ROS package list for completion
-function __ros_package_completion() {
-    local cur="${COMP_WORDS[COMP_CWORD]}"
-    # Fetch package names using colcon list (silencing errors if not in a workspace)
-    local pkgs
-    pkgs="$(colcon list -n 2>/dev/null)"
-    COMPREPLY=( $(compgen -W "${pkgs}" -- "$cur") )
-}
-
-function __devkit_has_word() {
-    local needle="$1"
-    local word
-    for word in "${COMP_WORDS[@]:1:COMP_CWORD-1}"; do
-        [ "$word" = "$needle" ] && return 0
-    done
-    return 1
-}
-
-function __devkit_complete_unused_words() {
-    local cur="${COMP_WORDS[COMP_CWORD]}"
-    local word
-    local candidates=()
-    for word in "$@"; do
-        __devkit_has_word "$word" || candidates+=("$word")
-    done
-    COMPREPLY=( $(compgen -W "${candidates[*]}" -- "$cur") )
-}
-
-function __devkit_file_completion() {
-    local cur="${COMP_WORDS[COMP_CWORD]}"
-    COMPREPLY=( $(compgen -f -- "$cur") )
-}
-
-function __devkit_dir_completion() {
-    local cur="${COMP_WORDS[COMP_CWORD]}"
-    COMPREPLY=( $(compgen -d -- "$cur") )
-}
-
-function __share_completion() {
-    __devkit_complete_unused_words --share
-}
-
-function __uv_sync_option_completion() {
-    local cur="${COMP_WORDS[COMP_CWORD]}"
-    local prev="${COMP_WORDS[COMP_CWORD-1]}"
-    local extras
-    local prefix_options=("$@")
-
-    case "$prev" in
-        --extra)
-            extras="$(__uv_extra_candidates)"
-            COMPREPLY=( $(compgen -W "${extras:-cpu gpu}" -- "$cur") )
-            return
-            ;;
-        --group|--no-group)
-            COMPREPLY=()
-            return
-            ;;
-    esac
-
-    case "$cur" in
-        --extra=*)
-            extras="$(__uv_extra_candidates)"
-            COMPREPLY=( $(compgen -W "$(printf -- '--extra=%s ' ${extras:-cpu gpu})" -- "$cur") )
-            ;;
-        --group=*|--no-group=*)
-            COMPREPLY=()
-            ;;
-        *)
-            __devkit_complete_unused_words "${prefix_options[@]}" --extra --all-extras --no-dev --dev --group --no-group --locked --frozen
-            ;;
-    esac
-}
-
-function __mksync_completion() {
-    __uv_sync_option_completion --share
-}
-
-function __sync_deps_completion() {
-    __devkit_complete_unused_words --force --rosdep
-}
-
-function __uv_extra_candidates() {
-    local pyproject="${WS_SRC}/pyproject.toml"
-    if [ -f "$pyproject" ]; then
-        awk '
-            /^\[project\.optional-dependencies\]/ { in_optional=1; next }
-            /^\[/ { in_optional=0 }
-            in_optional && /^[[:space:]]*[A-Za-z0-9_.-]+[[:space:]]*=/ {
-                key=$1
-                sub(/[[:space:]]*=.*/, "", key)
-                print key
-            }
-        ' "$pyproject"
-    else
-        printf '%s\n' cpu gpu
+__detect_project_type() {
+    local src="${WS_SRC:-${WS_ROOT}/src}"
+    if [ -n "${ROS_DISTRO:-}" ] && [ -d "$src" ]; then
+        if [ -n "$(find "$src" -name thirdparty -prune -o -name package.xml -print -quit 2>/dev/null)" ]; then
+            echo "ROS"; return
+        fi
     fi
+    if __cmake_entry >/dev/null 2>&1; then echo "CPP"; else echo "PYTHON"; fi
 }
 
-function __uvs_completion() {
-    __uv_sync_option_completion
-}
-
-function __mbuild_completion() {
-    local cur="${COMP_WORDS[COMP_CWORD]}"
-    local prev="${COMP_WORDS[COMP_CWORD-1]}"
-
-    case "$prev" in
-        --target)
-            COMPREPLY=( $(compgen -W "install all clean" -- "$cur") )
-            ;;
-        *)
-            __devkit_complete_unused_words --debug --release --target --clean-first --verbose
-            ;;
-    esac
-}
-
-function __cbuild_completion() {
-    local cur="${COMP_WORDS[COMP_CWORD]}"
-    local prev="${COMP_WORDS[COMP_CWORD-1]}"
-
-    if [ "$prev" = "--pkg" ] || { __devkit_has_word "--pkg" && [[ "$cur" != --* ]]; }; then
-        __ros_package_completion
-    else
-        __devkit_complete_unused_words --debug --release --pkg --meta
-    fi
-}
-
-function __cbt_completion() {
-    local cur="${COMP_WORDS[COMP_CWORD]}"
-    local prev="${COMP_WORDS[COMP_CWORD-1]}"
-
-    if [ "$prev" = "--pkg" ] || { __devkit_has_word "--pkg" && [[ "$cur" != --* ]]; }; then
-        __ros_package_completion
-    else
-        COMPREPLY=( $(compgen -W "--pkg" -- "$cur") )
-    fi
-}
-
-function __cbtr_completion() {
-    __devkit_complete_unused_words --all --verbose
-}
-
-function __hw_check_completion() {
-    __devkit_complete_unused_words --brief
-}
-
-function __gpu_completion() {
-    local cur="${COMP_WORDS[COMP_CWORD]}"
-    COMPREPLY=( $(compgen -W "status auto nvidia intel amd igpu cpu" -- "$cur") )
-}
-
-# =============================================================================
-# Build & Development Utilities
-# =============================================================================
-
-## @section 🚀 | Essential Workflow | PURPLE
-# One-step Workspace Initialization (mkenv + uvs + sync_deps + build)
-# Automatically selects between cbuild (ROS), mbuild (C++), or no-build (Python)
-## @alias mksync [--share] : One-step workspace initialization
-function mksync() {
-    local target_py="${UV_PYTHON:-3.10}"
-    local mkenv_args=()
+# mkenv [--share] [<uv venv args>…]
+#   Create install/.venv with a project-named prompt. ROS images force --share
+#   to use the system interpreter and its dependencies.
+mkenv() {
+    local venv_dir="${WS_VENV:-${WS_ROOT}/install/.venv}"
+    local prompt="${COMPOSE_PROJECT_NAME:-.venv}"
+    local share=() py="${UV_PYTHON:-3.10}" label="Pure"
     __parse_share_flag "$@"
     if [ "$DEVKIT_SHARE_MODE" = true ]; then
-        target_py="${SYS_PYTHON_EXE}"
-        mkenv_args=(--share)
+        share=(--system-site-packages); py="${SYS_PYTHON_EXE}"; label="Shared"
     fi
+    if command -v uv >/dev/null 2>&1; then
+        uv venv "$venv_dir" --python "$py" "${share[@]}" --seed \
+            --prompt "$prompt" "${DEVKIT_REMAINING_ARGS[@]}" || return 1
+    else
+        # The fallback must honour --share too, or a noetic workspace (where it
+        # is forced) silently ends up without rospy.
+        python3 -m venv "${share[@]}" --prompt "$prompt" "$venv_dir" || return 1
+    fi
+    __refresh_links   # ${WS_ROOT}/.venv should point at the new environment now
+    log_ok "${label} venv '${prompt}' created: ${venv_dir}"
+    source "${venv_dir}/bin/activate"
+}
 
-    # 1. Core Environment Setup
-    mkenv "${mkenv_args[@]}" && \
+activate() {
+    local venv_dir="${WS_VENV:-${WS_ROOT}/install/.venv}"
+    if [ -f "${venv_dir}/bin/activate" ]; then
+        source "${venv_dir}/bin/activate"
+        # Re-entrant already: activate calls `deactivate nondestructive` first.
+        # Same paren normalisation as config/init_bash.sh.
+        VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT#\(}"; VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT%\) }"
+        log_ok "Activated virtualenv: ${venv_dir}"
+    else
+        log_warn "Virtualenv not found at ${venv_dir}. Run 'mkenv' first."
+    fi
+}
+
+alias sync_deps='bash ${WS_SCRIPTS}/setup_sync_deps.sh'
+
+# mksync [--share] [<uv sync args>…]
+#   One-shot workspace init: venv → Python deps → rosdep/vcs → build → source.
+mksync() {
+    __parse_share_flag "$@"
+    local mkenv_args=()
+    [ "$DEVKIT_SHARE_MODE" = true ] && mkenv_args=(--share)
+    # Snapshot now: mkenv() re-runs __parse_share_flag and overwrites the globals.
+    local uvs_args=("${DEVKIT_REMAINING_ARGS[@]}")
+
+    # 1. venv → activate → Python packages → system/ROS dependencies
+    if [ -x "$WS_VENV_PY" ] && [ "$DEVKIT_SHARE_MODE" = true ] && \
+       ! grep -q '^include-system-site-packages = true' "$WS_VENV/pyvenv.cfg"; then
+        log_error "Existing venv is isolated. Run 'mkenv --share' once, then retry mksync."
+        return 1
+    fi
+    { [ -x "${WS_VENV_PY}" ] || mkenv "${mkenv_args[@]}"; } && \
     activate && \
-    UV_PYTHON="$target_py" __uvs_impl "${DEVKIT_REMAINING_ARGS[@]}" && \
-    __sync_deps_impl --rosdep || return 1
+    uvs "${uvs_args[@]}" && \
+    bash "${WS_SCRIPTS}/setup_sync_deps.sh" --rosdep || return 1
 
-    # 2. Intelligent Build Strategy
-    local project_type=$(__detect_project_type)
+    # 2. Build with whatever the project layout calls for
+    local project_type
+    project_type=$(__detect_project_type)
     case "$project_type" in
         "ROS")
-            log_info "ROS environment detected. Executing colcon build (cbuild)..."
+            log_info "ROS workspace detected — building..."
             cbuild && __smart_source ;;
         "CPP")
-            log_info "Pure C++ project detected. Executing mbuild..."
-            __mbuild_impl ;;
+            log_info "Pure C++ project detected — running mbuild..."
+            mbuild ;;
         *)
-            log_ok "Pure Python or minimal project detected. Skipping build step." ;;
+            log_ok "Pure Python project — no build step needed." ;;
     esac
 }
 
-## @alias mbuild / mclean : C++ build / clean (Modern CMake)
-alias mbuild='__mbuild_impl'
-function mclean() {
-    local purge_venv=false
-    [ "${1:-}" = "--all" ] && purge_venv=true
-
-    __remove_workspace_path "${WS_BUILD}" || return 1
-
-    if [ "$purge_venv" = true ]; then
-        __remove_workspace_path "${WS_INSTALL}" && \
-            log_ok "Build, install, and virtualenv cleared."
-    elif [ -d "${WS_INSTALL}" ]; then
-        # Preserve the uv virtualenv (install/.venv) so a routine clean does not
-        # destroy the Python environment and force a full re-sync. The venv is not
-        # relocatable, so we remove install/ contents in place, keeping .venv.
-        find "${WS_INSTALL}" -mindepth 1 -maxdepth 1 ! -name ".venv" -exec rm -rf {} + 2>/dev/null || true
-        log_ok "Build and install artifacts cleared (virtualenv preserved; use 'mclean --all' to remove it)."
-    else
-        log_ok "Build directory cleared."
-    fi
-}
-
-## @alias sync_deps / check_deps : Sync / Check dependencies
-alias sync_deps='__sync_deps_impl'
-alias check_deps='bash ${WS_SCRIPTS}/check_deps.sh'
-
-# =============================================================================
-# ROS (ROS1 & ROS2 Common)
-# =============================================================================
-
-function __require_colcon() {
-    command -v colcon &>/dev/null && return 0
-    echo -e "${RED}Error:${NC} colcon is not available in this environment."
-    return 127
-}
-
-function cbuild() {
-    __require_colcon || return $?
-
-    local build_type="RelWithDebInfo"
-    local colcon_args=()
-    local colcon_extra=()
-    local cmake_extra=()
-    local gpu_cmake_args=()
-    if [ -n "${COLCON_EXTRA_FLAGS:-}" ]; then
-        read -r -a colcon_extra <<< "${COLCON_EXTRA_FLAGS}"
-    fi
-    if [ -n "${CMAKE_EXTRA_ARGS:-}" ]; then
-        read -r -a cmake_extra <<< "${CMAKE_EXTRA_ARGS}"
-    fi
-    read -r -a gpu_cmake_args <<< "$(__get_gpu_cmake_args)"
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --debug) build_type="Debug"; shift ;;
-            --release) build_type="Release"; shift ;;
-            --pkg)
-                shift
-                if [ $# -eq 0 ] || [[ "$1" == --* ]]; then
-                    echo -e "${RED}Error:${NC} --pkg requires at least one package name."
-                    return 2
-                fi
-                colcon_args+=(--packages-select)
-                while [ $# -gt 0 ] && [[ "$1" != --* ]]; do colcon_args+=("$1"); shift; done
-                ;;
-            --meta) colcon_args+=(--metas "${WS_CONFIG}/colcon.meta"); shift ;;
-            --) shift; colcon_args+=("$@"); break ;;
-            *) colcon_args+=("$1"); shift ;;
-        esac
-    done
-    colcon --log-base "${WS_ROOT}/log" build "${colcon_extra[@]}" "${colcon_args[@]}" --symlink-install --build-base "${WS_BUILD}" --install-base "${WS_INSTALL}" \
-        --cmake-args -Wno-dev --no-warn-unused-cli -DCMAKE_BUILD_TYPE="${build_type}" -DCMAKE_C_STANDARD="${CMAKE_C_STANDARD:-11}" -DCMAKE_CXX_STANDARD="${CMAKE_CXX_STANDARD:-17}" \
-        -DPYTHON_EXECUTABLE="$(__get_build_py_exe)" "${gpu_cmake_args[@]}" "${cmake_extra[@]}" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && \
-        __setup_workspace_links
-}
-
-function cbt() {
-    __require_colcon || return $?
-    local colcon_args=()
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --pkg)
-                shift
-                if [ $# -eq 0 ] || [[ "$1" == --* ]]; then
-                    echo -e "${RED}Error:${NC} --pkg requires at least one package name."
-                    return 2
-                fi
-                colcon_args+=(--packages-select)
-                while [ $# -gt 0 ] && [[ "$1" != --* ]]; do colcon_args+=("$1"); shift; done
-                ;;
-            *) colcon_args+=("$1"); shift ;;
-        esac
-    done
-    colcon --log-base "${WS_ROOT}/log" test "${colcon_args[@]}" --build-base "${WS_BUILD}" --install-base "${WS_INSTALL}" --event-handlers console_direct+
-}
-
-function cbtr() {
-    __require_colcon || return $?
-    colcon test-result --build-base "${WS_BUILD}" "$@"
-}
-
-if __has_ros_tools; then
-## @section 🤖 | ROS & Simulation | BLUE
-    # --- Build  --------------------------------------------------------------
-    ## @alias cbuild [--debug|--release] [--pkg ...] [--meta] : colcon build
-    ## @alias cbt / cbtr : colcon test / test-result (--pkg to select packages)
-
-    ## @alias s / sb : Source setup.bash / .bashrc
-    function __smart_source() {
-        if [ -f "${WS_INSTALL}/setup.bash" ]; then
-            source "${WS_INSTALL}/setup.bash"
-            echo -e "${GREEN}✓${NC} Sourced install/"
-        elif [ -f "${WS_ROOT}/devel/setup.bash" ]; then
-            source "${WS_ROOT}/devel/setup.bash"
-            echo -e "${GREEN}✓${NC} Sourced devel/"
-        else
-            echo -e "${YELLOW}⚠${NC} No setup.bash found in install/ or devel/"
-        fi
-    }
-    alias s='__smart_source'
-    alias sb='source ~/.bashrc'
-
-    # --- ROS Commands --------------------------------------------------------
-    ## @alias rt / rte : Topic list / Echo topic
-    alias rt='ros2 topic list'
-    alias rte='ros2 topic echo'
-    ## @alias rth / rn : Topic Hz / Node list
-    alias rth='ros2 topic hz'
-    alias rn='ros2 node list'
-    ## @alias rs / rp : Service list / Param list
-    alias rs='ros2 service list'
-    alias rp='ros2 param list'
-    ## @alias rr / rl : ros run / ros launch
-    alias rr='ros2 run'
-    alias rl='ros2 launch'
-    ## @alias ri : Show message/interface
-    alias ri='ros2 interface show'
-    ## @alias gz / gzs : Gazebo / Gazebo Start
-    alias gz='gazebo'
-    alias gzs='ros2 launch gazebo_ros gazebo.launch.py'
-    ## @alias rqt : rqt
-    alias rqt='rqt'
-
-    if [ "${ROS_DISTRO}" = "noetic" ]; then
-        alias rt='rostopic list'
-        alias rte='rostopic echo'
-        alias rth='rostopic hz'
-        alias rn='rosnode list'
-        alias rs='rosservice list'
-        alias rp='rosparam list'
-        alias rr='rosrun'
-        alias rl='roslaunch'
-        alias ri='rosmsg show'
-        alias gzs='roslaunch gazebo_ros empty_world.launch'
-    fi
-
-fi
-
-# =============================================================================
-# Python / uv
-# =============================================================================
-
-## @section 🐍 | Python & Dev Tools | BLUE
-## @alias uvs / uvr : uv sync / uv run
-alias uvs='__uvs_impl'
-alias uvr='uv run'
-## @alias uvp / uvl : uv pip install / list
-alias uvp='uv pip install'
-alias uvl='uv pip list'
-
-# Project-specific venv creation
-## @alias mkenv [--share] : Create pure or system shared python venv
-function mkenv() {
-    local share_args=()
-    local py_exe="${UV_PYTHON:-3.10}"
-    local msg="pure .venv"
-    __parse_share_flag "$@"
-    if [ "$DEVKIT_SHARE_MODE" = true ]; then
-        share_args=(--system-site-packages)
-        py_exe="${SYS_PYTHON_EXE}"
-        msg="shared .venv (with system packages)"
-    fi
-    mkdir -p "$(dirname "$VENV_PATH")" && \
-    uv venv "$VENV_PATH" --python "$py_exe" "${share_args[@]}" --seed --prompt "${COMPOSE_PROJECT_NAME:-.venv}" "${DEVKIT_REMAINING_ARGS[@]}" && \
-    __setup_workspace_links_fast && \
-    echo -e "Created ${GREEN}${msg}${NC} in $(dirname "$VENV_PATH") and linked to ${WS_ROOT}/.venv. Run: ${CYAN}activate${NC}"
-}
-
-# Smart activation function that handles Shared (Integrated) vs Pure (Isolated) environments
-## @alias activate : Activate the virtual environment
-function activate() {
-    local target_venv="${VENV_PATH:-${WS_INSTALL}/.venv}"
-    local act_script="${target_venv}/bin/activate"
-    [ ! -f "$act_script" ] && { echo -e "${RED}Error:${NC} Virtual environment not found at ${target_venv}, Run ${CYAN}mkenv${NC} or ${CYAN}mksync${NC} first."; return 1; }
-
-    # 1. Surgical Reset: Purge existing traces
-    __venv_purge_state "$target_venv"
-    unset VIRTUAL_ENV ENVIRONMENT_TYPE DEVKIT_ACTIVE_VENV _OLD_UV_PYTHON _OLD_UV_PYTHON_SET
-
-    # 2. Source & State Locking
-    source "$act_script"
-    export DEVKIT_ACTIVE_VENV="$target_venv"
-    if [ "${UV_PYTHON+x}" ]; then
-        export _OLD_UV_PYTHON_SET=1
-        export _OLD_UV_PYTHON="$UV_PYTHON"
-    fi
-    export ENVIRONMENT_TYPE="$(__get_venv_mode "$target_venv")"
-    if [ "$ENVIRONMENT_TYPE" == "SHARED" ]; then
-        export UV_PYTHON="$(command -v python3)"
-    fi
-
-    # Ensure workspace symlinks exist in development for IDE integration
-    __setup_workspace_links_fast 2>/dev/null
-
-    [ "$INTERACTIVE" = true ] && echo -e "${GREEN}✓${NC} Activated (${ENVIRONMENT_TYPE})"
-
-    # 3. Deactivate Override: restore virtualenv state plus DevKit-specific state.
-    function deactivate() {
-        local v_root="${VIRTUAL_ENV:-${DEVKIT_ACTIVE_VENV:-}}"
-
-        if [ -n "${_OLD_VIRTUAL_PATH:-}" ]; then
-            PATH="${_OLD_VIRTUAL_PATH}"
-            export PATH
-            unset _OLD_VIRTUAL_PATH
-        fi
-
-        if [ -n "${_OLD_VIRTUAL_PYTHONHOME:-}" ]; then
-            PYTHONHOME="${_OLD_VIRTUAL_PYTHONHOME}"
-            export PYTHONHOME
-            unset _OLD_VIRTUAL_PYTHONHOME
-        else
-            unset PYTHONHOME
-        fi
-
-        if [ -n "${_OLD_VIRTUAL_PS1:-}" ]; then
-            PS1="${_OLD_VIRTUAL_PS1}"
-            export PS1
-            unset _OLD_VIRTUAL_PS1
-        fi
-
-        unset VIRTUAL_ENV VIRTUAL_ENV_PROMPT
-        hash -r 2>/dev/null || true
-
-        # Custom restoration cleanup
-        if [ "${_OLD_UV_PYTHON_SET:-}" = "1" ]; then
-            export UV_PYTHON="$_OLD_UV_PYTHON"
-        else
-            unset UV_PYTHON
-        fi
-        __venv_purge_state "$v_root"
-
-        unset -f deactivate
-        unset ENVIRONMENT_TYPE DEVKIT_ACTIVE_VENV _OLD_UV_PYTHON _OLD_UV_PYTHON_SET
-        echo -e "${BLUE}ℹ${NC} Environment deactivated."
-    }
-}
-
-## @alias pyv / pyt : Python & PyTorch diagnostics
-alias pyv='__pyv_impl'
-alias pyt='torch_check'
-
-## @alias uvpython / syspython : Manage interpreters via uv or system
-function uvpython() {
-    local venv_path="${VENV_PATH}"
-    local venv_py="${venv_path}/bin/python3"
-
-    if [ -d "$venv_path" ] && [ -f "$venv_py" ]; then
-        if [ $# -eq 0 ]; then
-            echo -e "  ${GREEN}uv Virtual Env:${NC} $($venv_py --version 2>&1 | cut -d' ' -f2) (${CYAN}$venv_path${NC})"
-        else
-            "$venv_py" "$@"
-        fi
-    else
-        echo -e "  ${YELLOW}uv Virtual Env not found.${NC} Listing available base interpreters:"
-        uv python list
-    fi
-}
-function syspython() {
-    if [ $# -eq 0 ]; then
-        echo -e "  ${BLUE}System Python:${NC} $(${SYS_PYTHON_EXE} --version 2>&1) (${CYAN}${SYS_PYTHON_EXE}${NC})"
-    else
-        "${SYS_PYTHON_EXE}" "$@"
-    fi
-}
-
-# =============================================================================
-# Hardware Diagnostics
-# =============================================================================
-
-## @section 🔍 | Hardware & Rendering | BLUE
-## @alias hw_check : Full hardware/env diagnostics
-alias hw_check='bash ${WS_SCRIPTS}/check_hardware.sh'
-
-## @alias gpu_check / vulkan_check : GPU/Vulkan availability check
-alias gpu_check='glxinfo 2>&1 | grep -E "OpenGL (vendor|renderer|version)" || echo "Error: glxinfo failed (no display?)"'
-alias vulkan_check='vulkaninfo --summary 2>/dev/null | head -20 || echo "Vulkan not available"'
-
-## @alias gpu_test : GPU performance test
-alias gpu_test='timeout 5 glxgears -info 2>&1 | head -10 || echo "GPU test failed (no display?)"'
-
-## @alias gpu status|auto|nvidia|intel|amd|igpu|cpu : GPU setup and diagnostics
-function gpu() {
-    local mode="${1:-status}"
-    case "$mode" in
-        status)
-            source "${WS_SCRIPTS}/setup_gpu.sh" status
-            ;;
-        auto|nvidia|intel|amd|igpu|cpu)
-            source "${WS_SCRIPTS}/setup_gpu.sh" "$mode" && source "${WS_SCRIPTS}/setup_gpu.sh" status
-            ;;
-        *)
-            echo "Usage: gpu {status|auto|nvidia|intel|amd|igpu|cpu}"
-            return 1
-            ;;
+# --- Quality loop (test / lint) -----------------------------------------------
+# mtest [<runner args>…]
+#   ROS → colcon test + test-result, CMake → ctest, Python → pytest. The runner
+#   comes from the same project-type detection mksync uses.
+mtest() {
+    local project_type
+    project_type=$(__detect_project_type)
+    case "$project_type" in
+        ROS) cbt "$@" && cbtr ;;
+        CPP)
+            if [ ! -d "${WS_ROOT}/build" ]; then
+                log_error "No build directory — run 'mbuild' first."
+                return 1
+            fi
+            # --test-dir keeps this working from any cwd; ctest is a no-op with a
+            # clear message when the project registers no tests.
+            __require_cmd ctest || return 1
+            ctest --test-dir "${WS_ROOT}/build" --output-on-failure "$@" ;;
+        *)  __pytest "$@" ;;
     esac
 }
 
-## @alias ccc / ccs : ccache clear / ccache stat
-alias ccs='ccache -s'
-alias ccc='ccache -C'
+# The venv's pytest (from the dev group). "No tests ran" and "no runner
+# installed" are different answers — say which.
+__pytest() {
+    local tests_dir="${WS_SRC:-${WS_ROOT}/src}"
+    if [ ! -x "${WS_VENV_PY:-}" ]; then
+        log_error "No virtualenv — run 'mksync' first."
+        return 1
+    fi
+    if ! "${WS_VENV_PY}" -m pytest --version >/dev/null 2>&1; then
+        log_error "pytest is not installed in ${WS_VENV_PY}."
+        log_detail "It ships in the 'dev' dependency-group of src/pyproject.toml; run 'uvs' to install it." >&2
+        return 1
+    fi
+    local rc=0
+    "${WS_VENV_PY}" -m pytest "$tests_dir" "$@" || rc=$?
+    # Exit 5 = nothing collected. A project without tests yet is not failing,
+    # and a template that goes red on a fresh clone teaches people to ignore it.
+    if [ "$rc" -eq 5 ]; then
+        log_info "No tests collected under ${tests_dir} — add test_*.py files there."
+        return 0
+    fi
+    return "$rc"
+}
 
-# =============================================================================
-# System Utilities
-# =============================================================================
+# mlint [--fix]
+#   ruff (Python) and clang-format (C/C++ when installed) in check mode; --fix
+#   applies what can be applied. Same rules the editor uses on save
+#   (.editorconfig → [tool.ruff] and .clang-format).
+mlint() {
+    local fix=false src="${WS_SRC:-${WS_ROOT}/src}" rc=0 checked=0
+    case "${1:-}" in
+        --fix)  fix=true; shift ;;
+        -h|--help) echo "Usage: mlint [--fix]   (ruff for Python, clang-format for C/C++)"; return 0 ;;
+        "") ;;
+        *) log_error "mlint: unknown option: $1"; return 2 ;;
+    esac
 
-## @section 🔧 | System Utilities | BLUE
+    if [ -x "${WS_VENV_PY:-}" ] && "${WS_VENV_PY}" -m ruff --version >/dev/null 2>&1; then
+        checked=1
+        if [ "$fix" = true ]; then
+            "${WS_VENV_PY}" -m ruff check --fix "$src" || rc=1
+            "${WS_VENV_PY}" -m ruff format "$src" || rc=1
+        else
+            "${WS_VENV_PY}" -m ruff check "$src" || rc=1
+            "${WS_VENV_PY}" -m ruff format --check "$src" || rc=1
+        fi
+    else
+        log_warn "ruff is not installed — skipping the Python half."
+        log_detail "It ships in the 'dev' dependency-group of src/pyproject.toml; run 'mksync' or 'uvs'." >&2
+    fi
 
-# --- Navigation ----------------------------------------------------------
-## @alias cw / cs / cc : cd to root / src / config
+    # clang-format is opt-in (it pulls libllvm); the editor uses the copy
+    # bundled with the C/C++ extension.
+    local cpp_files=()
+    while IFS= read -r cpp_file; do cpp_files+=("$cpp_file"); done < <(
+        find "$src" -path '*/thirdparty' -prune -o -type f \
+            \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \) \
+            -print 2>/dev/null)
+    if [ "${#cpp_files[@]}" -gt 0 ]; then
+        if command -v clang-format >/dev/null 2>&1; then
+            checked=1
+            if [ "$fix" = true ]; then
+                clang-format -i "${cpp_files[@]}" || rc=1
+            else
+                clang-format --dry-run --Werror "${cpp_files[@]}" || rc=1
+            fi
+        else
+            log_warn "clang-format is not installed — skipping the C/C++ half."
+            log_detail "Uncomment 'clang-format # dev' in dependencies/apt.txt, then 'make build'." >&2
+        fi
+    fi
+
+    # "Clean" must mean something ran: reporting success with no checker present
+    # is the worst possible answer for a CI gate.
+    if [ "$checked" -eq 0 ]; then
+        log_error "Nothing was checked — no linter is available for this workspace."
+        log_detail "Run 'mksync' (installs ruff from the dev dependency-group), or add sources under ${src}." >&2
+        return 1
+    fi
+    [ "$rc" -eq 0 ] && log_ok "Lint clean." || log_error "Lint reported findings."
+    return "$rc"
+}
+
+# pyv: one-glance answer to "which python am I actually running?"
+pyv() {
+    printf '  %-11s: %s (%s)\n' "python3" "$(command -v python3)" "$(python3 -V 2>&1 | cut -d' ' -f2)"
+    printf '  %-11s: %s\n' "venv" "${VIRTUAL_ENV:-inactive}"
+    command -v uv >/dev/null 2>&1 && printf '  %-11s: %s\n' "uv" "$(uv --version 2>/dev/null | cut -d' ' -f2)"
+    python3 -c 'import sys; print("  {:<11}: {}".format("sys.prefix", sys.prefix))' 2>/dev/null
+}
+
+uvpython() {
+    if [ -x "${WS_VENV_PY:-}" ]; then
+        "${WS_VENV_PY}" "$@"
+    else
+        python3 "$@"
+    fi
+}
+
+syspython() {
+    /usr/bin/python3 "$@"
+}
+
+# --- Navigation & Utilities --------------------------------------------------
 alias cw='cd "${WS_ROOT}"'
 alias cs='cd "${WS_SRC}"'
 alias cc='cd "${WS_CONFIG}"'
 
-# --- Shell & Editing ---------------------------------------------------------
-## @alias g : git wrapper (status, pull, etc)
-## @alias ll / la : Detailed directory listing
-## @alias k / k9 : killall / killall -9
-alias k='killall'
-alias k9='killall -9'
-alias g='git'
 alias ll='ls -alF'
 alias la='ls -A'
+alias g='git'
+alias k='killall'
+alias k9='killall -9'
 
-# =============================================================================
-# Help / Documentation
-# =============================================================================
+alias ccs='ccache -s'
+alias ccc='ccache -C'
 
-alias h='__print_help'
-alias help='__print_help'
+# --- Hardware & GPU Diagnostics ---------------------------------------------
+# gpu [mode]
+#   status (default) | opencv_args | auto | nvidia | tegra | intel | amd | igpu | cpu
+#   Sourced, so a mode switch applies to the current shell. setup_gpu.sh owns
+#   the vocabulary and answers --help; a second copy of the list here drifted.
+# A mode change must reach the CALLER's environment, so those stay sourced.
+# The read-only views must not: setup_gpu.sh strips colour by rewiring stdout,
+# and sourced into the caller that rewiring stayed after `gpu status` returned.
+gpu() {
+    case "${1:-status}" in
+        status|-h|--help) ( source "${WS_SCRIPTS}/setup_gpu.sh" "${1:-status}" ) ;;
+        *)                source "${WS_SCRIPTS}/setup_gpu.sh" "$1" ;;
+    esac
+}
 
-# =============================================================================
-# Bash Completions
-# =============================================================================
+alias gpu_check='glxinfo 2>&1 | grep -E "OpenGL (vendor|renderer|version)" || echo "No display / glxinfo unavailable"'
+alias vulkan_check='vulkaninfo --summary 2>/dev/null | head -20 || echo "Vulkan not available"'
 
-if [ "$INTERACTIVE" = true ]; then
-    # Custom Workspace Functions
-    complete -F __mksync_completion mksync
-    complete -F __share_completion mkenv
-    complete -F __mbuild_completion mbuild
-    complete -F __devkit_dir_completion check_deps
-
-    # Python & Dev Tools
-    complete -F __uvs_completion uvs
-    complete -F __devkit_file_completion uvpython syspython
-    complete -F __sync_deps_completion sync_deps
-
-    # Hardware & GPU Setup
-    complete -F __hw_check_completion hw_check
-    complete -F __gpu_completion gpu
-
-    # ROS Specific (Package completion for select builds)
-    if command -v colcon &>/dev/null; then
-        complete -F __cbuild_completion cbuild
-        complete -F __cbt_completion cbt
-        complete -F __cbtr_completion cbtr
+# gpu_test — actually RENDER a frame for 5 s. `gpus` reports what the stack
+# claims; this proves frames come out.
+gpu_test() {
+    if ! command -v glxgears >/dev/null 2>&1; then
+        log_warn "glxgears not installed (apt: mesa-utils)."; return 1
     fi
-fi
+    if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+        log_warn "No DISPLAY/WAYLAND_DISPLAY — cannot render."; return 1
+    fi
+    log_info "Rendering for 5s..."
+    local out
+    out="$(timeout 6 glxgears -info 2>&1 | grep -E "GL_RENDERER|frames in" | head -3 || true)"
+    if [ -z "$out" ]; then
+        log_error "No frames rendered — check 'gpus' and 'make xauth'."; return 1
+    fi
+    echo "$out" | sed 's/^/    /'
+}
+
+# The first question after a GPU setup: does the ML stack see the device?
+torch_check() {
+    local py="${WS_VENV_PY:-}"
+    [ -x "$py" ] || py=python3
+    "$py" - <<'PY' 2>/dev/null || log_warn "PyTorch not installed — add it to src/pyproject.toml (the commented cpu/gpu example) and run uvs."
+import torch
+print(f"    torch      {torch.__version__}")
+print(f"    CUDA build {torch.version.cuda or 'cpu-only'}")
+avail = torch.cuda.is_available()
+print(f"    CUDA avail {avail}")
+if avail:
+    print(f"    device     {torch.cuda.get_device_name(0)}")
+elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+    print("    device     Apple MPS")
+PY
+}
+alias pyt='torch_check'
+
+# --- Modern CMake & C++ Shortcuts --------------------------------------------
+# mbuild [--debug|--release] [-- <cmake args>]
+#   Plain CMake build of the repository root (or src/ when the root has no
+#   CMakeLists.txt): configure, build with all cores, and install for a prod
+#   build. Default RelWithDebInfo; --pkg is refused (ROS builds only).
+mbuild() {
+    local src_dir
+    if ! src_dir="$(__cmake_entry)"; then
+        log_error "No CMakeLists.txt in ${WS_ROOT} or ${WS_SRC:-${WS_ROOT}/src}."
+        return 1
+    fi
+    __require_cmd cmake || return 1
+    __parse_build_flags cmake "$@" || return 2
+    __cmake_extra_args
+    cmake -B "${WS_ROOT}/build" -S "$src_dir" -Wno-dev --no-warn-unused-cli \
+          -DCMAKE_BUILD_TYPE="${DEVKIT_BUILD_TYPE_ARG}" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+          -DCMAKE_INSTALL_PREFIX="${WS_ROOT}/install" "${DEVKIT_CMAKE_EXTRA[@]}" "${DEVKIT_BUILD_PASSTHRU[@]}" \
+        && cmake --build "${WS_ROOT}/build" -j"$(nproc 2>/dev/null || echo 4)" || return 1
+    __refresh_links
+
+    if [ "${DEVKIT_BUILD_TYPE:-dev}" = "prod" ]; then
+        cmake --install "${WS_ROOT}/build" || return 1
+        __require_install_artifacts "install(TARGETS ... DESTINATION bin/lib)" || return 1
+    fi
+    __refresh_links
+}
+
+# mclean [--all]
+#   Empty build/, log/ and the install output. --all also removes install/
+#   itself and the virtualenv (re-run mksync afterwards).
+#
+# ${WS_ROOT:?}: an unset root would make this `rm -rf /build /log`.
+# These are volume mount points, so rm empties them but cannot remove them
+# (EBUSY) — hence the suppressed stderr; leftover CONTENT is the real failure.
+mclean() {
+    # Same scope as the host's `make clean`: build/, devel/, log/ and everything
+    # in install/ except the venv. Naming install/bin and install/lib alone left
+    # colcon's per-package trees (install/<pkg>/…), install/share and a ROS 1
+    # devel/ behind while reporting success.
+    local keep_venv=true
+    local what="build, devel, log and install output (the virtualenv is kept)"
+    # A destructive command must not swallow an unknown argument — falling
+    # through to the default clean would delete the build output.
+    case "${1:-}" in
+        "") ;;
+        --all)
+            keep_venv=false
+            what="ALL build output including install/ and the virtualenv (re-run mksync)" ;;
+        -h|--help) echo "Usage: mclean [--all]   (--all also removes install/ and the venv)"; return 0 ;;
+        *) log_error "mclean: unknown option: $1"; return 2 ;;
+    esac
+    # Empty the directories rather than removing them: build/ and install/ are
+    # compose volume mount points, and unlinking those fails with EBUSY.
+    local dir
+    for dir in build devel log; do
+        [ -d "${WS_ROOT:?}/${dir}" ] || continue
+        find "${WS_ROOT:?}/${dir}" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+    done
+    if [ -d "${WS_ROOT:?}/install" ]; then
+        if [ "$keep_venv" = true ]; then
+            find "${WS_ROOT:?}/install" -mindepth 1 -maxdepth 1 ! -name '.venv' \
+                -exec rm -rf {} + 2>/dev/null || true
+        else
+            find "${WS_ROOT:?}/install" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+        fi
+    fi
+    # What is LEFT decides the exit status, and the venv is left on purpose.
+    local leftover
+    leftover="$(find "${WS_ROOT:?}/build" "${WS_ROOT:?}/devel" "${WS_ROOT:?}/log" "${WS_ROOT:?}/install" \
+        -mindepth 1 -maxdepth 1 $([ "$keep_venv" = true ] && printf '%s' "! -name .venv") \
+        -print -quit 2>/dev/null || true)"
+    if [ -n "$leftover" ]; then
+        log_error "Some entries could not be removed (root-owned? permissions?): ${leftover}"
+        return 1
+    fi
+    log_ok "Emptied ${what}."
+}
+
+# --- Tab Completions ---------------------------------------------------------
+complete -W "status opencv_args auto nvidia tegra intel amd igpu cpu" gpu 2>/dev/null || true
+complete -W "--debug --release --pkg --meta" cbuild 2>/dev/null || true
+complete -W "--debug --release" mbuild 2>/dev/null || true
+complete -W "--rosdep --force" sync_deps 2>/dev/null || true
+complete -W "--all" mclean 2>/dev/null || true
+complete -W "--fix" mlint 2>/dev/null || true
+complete -W "--brief" hwcheck hw_check 2>/dev/null || true
+complete -W "--share" mksync mkenv 2>/dev/null || true

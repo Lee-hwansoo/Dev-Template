@@ -1,28 +1,24 @@
 # =============================================================================
-# .gitignore
-# Universal ignore template for ROS / C++ / Python / Docker
+# .gitignore — build output, third-party imports, per-user tooling state.
+# .vscode/ is tracked on purpose: it is the shared IDE contract.
 # =============================================================================
 
 # --- Build Artifacts ---------------------------------
 build/
+devel/
 install/
 log/
 logs/
--logs/
-.ccache/
 
 # --- Thirdparty (vcs import) -------------------------
 src/thirdparty/*
 !src/thirdparty/.gitkeep
-/thirdparty/
-third party deps/
 !dependencies/overlay/**/COLCON_IGNORE
 !dependencies/overlay/**/CATKIN_IGNORE
 
 # --- Python ------------------------------------------
 __pycache__/
 *.py[cod]
-*$py.class
 *.egg-info/
 dist/
 .eggs/
@@ -30,12 +26,14 @@ dist/
 .venv/
 venv/
 env/
-.Python
-pip-log.txt
-pip-delete-this-directory.txt
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Per-user agent/editor state
+.claude/
+.codex/
+.agents/
 
 # --- C++ Build ---------------------------------------
 *.o
@@ -45,7 +43,6 @@ pip-delete-this-directory.txt
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
-Makefile.cmake
 _build/
 colcon.meta
 compile_commands.json
@@ -55,6 +52,10 @@ compile_commands.json
 .env.local
 .env.*.local
 .docker_cache/
+*.oci.tar
+*.sif.sha256
+*.sif.provenance
+*.oci.tar.provenance
 *.sif
 
 # --- IDE ---------------------------------------------
@@ -73,3 +74,4 @@ Thumbs.db
 *.zip
 *.tar.gz
 *.tar.xz
+.env.tmp

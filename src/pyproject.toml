@@ -1,41 +1,74 @@
 [project]
-name = "DevKit"
+# `make adopt NAME=… DESC=…` rewrites the two lines below; the shipped default
+# already satisfies the [a-z0-9][a-z0-9_-]* rule adopt enforces. `version` is
+# YOUR project's — the template's revision lives in the top-level VERSION file.
+name = "devkit"
 version = "0.1.0"
-description = "Add your description here"
+description = "Your project. Run: make adopt NAME=my-robot DESC='One line about it'"
+# The floor, not the target: noetic ships Python 3.8 on 20.04, humble 3.10 on
+# 22.04, jazzy 3.12 on 24.04. UV_PYTHON picks which one the venv uses; ruff
+# derives its target syntax from this line, so keep it at the oldest supported.
 requires-python = ">=3.8"
 dependencies = []
 
-[project.optional-dependencies]
-cpu = [
-    "torch==2.11.0; python_version >= '3.10'",
-    "torchvision; python_version >= '3.10'",
-]
-gpu = [
-    "torch==2.11.0; python_version >= '3.10'",
-    "torchvision; python_version >= '3.10'",
+# The quality loop's tools, not runtime dependencies. `uv sync` installs the
+# `dev` group by DEFAULT, so `mksync` gives you `mtest`/`mlint` with no extra
+# flag, and your uv.lock pins the exact versions — DevKit does not guess one.
+# Production builds pass --no-default-groups (see uvs in config/util_aliases.sh),
+# so none of this reaches a shipped image.
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "pytest>=7,<9; python_version < '3.9'",
+    "pytest>=8; python_version >= '3.9'",
 ]
 
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
+# Example: a cpu/gpu split for PyTorch, selected with UV_EXTRA=cpu|gpu (.env).
+# Kept as a comment so the template's lock stays small and no fork pays for a
+# torch resolution it did not ask for. To use it, drop the leading "# " from
+# every line between the two markers (the `conflicts` line lives under the
+# existing [tool.uv] table below — a second [tool.uv] header would not parse),
+# then run mksync and commit src/uv.lock. check [adopt] parses the uncommented
+# form, so the example cannot rot. docs/DEPENDENCIES.md walks through it.
+# --- opt-in example: begin ---
+# [project.optional-dependencies]
+# cpu = ["torch==2.11.0; python_version >= '3.10'", "torchvision; python_version >= '3.10'"]
+# gpu = ["torch==2.11.0; python_version >= '3.10'", "torchvision; python_version >= '3.10'"]
+#
+# [[tool.uv.index]]
+# name = "pytorch-cpu"
+# url = "https://download.pytorch.org/whl/cpu"
+# explicit = true
+#
+# [[tool.uv.index]]
+# name = "pytorch-cu128"
+# url = "https://download.pytorch.org/whl/cu128"
+# explicit = true
+#
+# [tool.uv.sources]
+# torch = [{ index = "pytorch-cpu", extra = "cpu" }, { index = "pytorch-cu128", extra = "gpu" }]
+# torchvision = [{ index = "pytorch-cpu", extra = "cpu" }, { index = "pytorch-cu128", extra = "gpu" }]
+# --- opt-in example: end ---
 
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
+[tool.ruff]
+# .editorconfig is the style SSOT (python: max_line_length = 100) and
+# .vscode/settings.json draws a ruler there, but ruff reads neither — VS Code's
+# format-on-save was wrapping at ruff's default 88. Kept here rather than in a
+# ruff.toml so a derived project inherits it with the dependency manifest.
+line-length = 100
+
+[tool.ruff.lint]
+# Declared, not inherited: ruff's default rule set changes between releases, so
+# a fresh clone could go red on an upgrade that touched nothing here. E/F/I is
+# the conservative floor — pycodestyle errors, pyflakes, import order. Add rule
+# families (e.g. "B", "UP", "PL") as your project decides to enforce them.
+select = ["E", "F", "I"]
 
 [tool.uv]
-conflicts = [
-    [ { extra = "cpu" }, { extra = "gpu" } ]
-]
-
-[tool.uv.sources]
-torch = [
-    { index = "pytorch-cpu", extra = "cpu" },
-    { index = "pytorch-cu128", extra = "gpu" },
-]
-torchvision = [
-    { index = "pytorch-cpu", extra = "cpu" },
-    { index = "pytorch-cu128", extra = "gpu" },
-]
+# src/ is a colcon workspace source directory, not a distributable package: it
+# holds ROS packages that colcon builds into install/, plus thirdparty/. Adding
+# a [build-system] here makes `uv sync` try to build a wheel from it and fail,
+# so the policy is declared rather than left to uv's inference.
+package = false
+# Part of the opt-in PyTorch example above: uncomment together with it.
+# conflicts = [[{ extra = "cpu" }, { extra = "gpu" }]]

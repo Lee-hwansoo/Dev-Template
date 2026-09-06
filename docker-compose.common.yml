@@ -1,10 +1,11 @@
 # =============================================================================
-# docker-compose.common.yml
-# Common Service Template and Configuration (SSOT: Single Source of Truth)
+# docker-compose.common.yml — the runtime environment and one abstract service
+# template per acceleration profile. The ENV split (ros vs dev) lives in
+# docker-compose.dev.yml; check [compose-env-split] keeps the two halves joined.
 # =============================================================================
 
-# ── Runtime Environment Definitions (Single Source of Truth) ──────────────────
-# Path sync required with internal logic in docker/entrypoint.sh
+# ── Runtime Environment ──────────────────────────────────────────────────────
+# The container paths below are also spelled in docker/entrypoint.sh.
 x-common-env: &common-env
   COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-myproject}
   CONTAINER_USER: ${CONTAINER_USER:-user}
@@ -19,7 +20,9 @@ x-common-env: &common-env
   HAS_DRI: ${HAS_DRI:-false}
   GPU_MODE: ${GPU_MODE:-auto}
   OPENCV_CUDA: ${OPENCV_CUDA:-auto}
-  DISPLAY: ${DISPLAY:-:0}
+  # HOST_DISPLAY comes from check_env.sh: on macOS it rewrites the launchd
+  # socket path to host.docker.internal:0 (XQuartz); elsewhere it equals DISPLAY.
+  DISPLAY: ${HOST_DISPLAY:-${DISPLAY:-:0}}
   DISPLAY_TYPE: ${DISPLAY_TYPE:-X11}
   WAYLAND_DISPLAY: ${HOST_WAYLAND_DISPLAY:-}
   QT_X11_NO_MITSHM: "1"
@@ -27,6 +30,7 @@ x-common-env: &common-env
   XDG_RUNTIME_DIR: /tmp/.container_xdg
   SYS_PYTHON_EXE: ${SYS_PYTHON_EXE:-/usr/bin/python3}
   UV_PYTHON: ${UV_PYTHON:-3.10}
+  UV_EXTRA: ${UV_EXTRA:-}
   UV_SYNC_FLAGS: ${UV_SYNC_FLAGS:-}
   ROS_DISTRO: ${ROS_DISTRO:-humble}
   SYNC_TARGET_DIR: ${SYNC_TARGET_DIR:-src/thirdparty}
@@ -57,36 +61,34 @@ x-nvidia-deploy: &nvidia-deploy
           count: ${NVIDIA_GPU_COUNT:-all}
           capabilities: [gpu, compute, utility, graphics, video]
 
-# ── GPU Device Mounts (Intel/AMD) ──────────────────────────────────────────
-# (Anchors must be defined locally in each file to be compatible)
-
-# ── ROS Healthcheck Configuration ───────────────────────────────────────────
-x-ros-healthcheck: &ros-healthcheck
-  test:
-    [
-      "CMD",
-      "bash",
-      "-c",
-      ". /opt/ros/$${ROS_DISTRO}/setup.bash 2>/dev/null && (ros2 --help >/dev/null 2>&1 || roscore -h >/dev/null 2>&1)",
-    ]
-  interval: 30s
-  timeout: 10s
-  retries: 3
-  start_period: 30s
-
-# ── Dev Healthcheck Configuration (Lightweight Shell Liveness) ──────────────
-# Verify shell is alive via pid 1 liveness (not just 'echo alive')
-x-dev-healthcheck: &dev-healthcheck
-  test: ["CMD-SHELL", "kill -0 1 2>/dev/null || exit 1"]
-  interval: 30s
-  timeout: 5s
-  retries: 3
-  start_period: 10s
+# The healthchecks live in docker-compose.dev.yml, next to the services that
+# select one: a YAML anchor cannot cross files, and the ENV split (ros vs dev)
+# is already expressed there.
 
 # ── Service Templates (Abstract Bases) ───────────────────────────────────────
+# THREE templates, one per acceleration profile. There is no separate ROS
+# template: the ROS and non-ROS services differ only by build target, command
+# and healthcheck, all of which docker-compose.dev.yml already sets per ENV —
+# six near-identical blocks here drifted instead (an env knob added to the dev
+# five and missed on the ROS one is invisible until a container misbehaves).
 services:
-  # Core Configuration Base (Shared across all services)
+  # Core Configuration Base (also the plain-CPU profile)
   base-common:
+    environment:
+      <<: *common-env
+    # The host wiring, once: check_env.sh resolves each source and substitutes a
+    # .docker_cache placeholder where the host has none. `extends` APPENDS a
+    # service's own volumes to these, so the ENV files add only their build
+    # output — check [compose-env-split].
+    volumes:
+      - ${HOST_WORKSPACE_PATH:-.}:${WORKSPACE_PATH:-/workspace}:rw
+      - ${HOST_X11_DIR:-/tmp/.X11-unix}:/tmp/.X11-unix:rw
+      - ${HOST_XAUTHORITY:-/tmp/.container_xauth}:/tmp/.container_xauth:ro
+      - ${HOST_XDG_RUNTIME_DIR:-/tmp/.container_xdg}:/tmp/.container_xdg:rw
+      - ${GIT_CONFIG_PATH:-${HOST_GITCONFIG:-/dev/null}}:/home/${CONTAINER_USER:-user}/.gitconfig:ro
+      - ${HOST_SSH_AUTH_SOCK:-/dev/null}:/tmp/ssh-auth.sock:ro
+      - ${HOST_CACHE_DIR:-${HOST_WORKSPACE_PATH:-.}/.docker_cache}:/cache:rw
+      - ${WSL_LIB_DIR_MOUNT:-/tmp}:/usr/lib/wsl:ro
     working_dir: ${WORKSPACE_PATH:-/workspace}
     platform: linux/${TARGETARCH:-amd64}
     profiles: [abstract]
@@ -95,7 +97,7 @@ services:
     stdin_open: true
     network_mode: ${NETWORK_MODE:-host}
     ipc: ${IPC_MODE:-host}
-    privileged: ${PRIVILEGED:-true}
+    privileged: ${PRIVILEGED:-false}
     ulimits:
       nofile:
         soft: ${ULIMIT_NOFILE:-65535}
@@ -115,10 +117,12 @@ services:
         TZ: ${TZ:-UTC}
         SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-}
         APT_SNAPSHOT_DATE: ${APT_SNAPSHOT_DATE:-latest}
-        STRICT_GPG_CHECK: ${STRICT_GPG_CHECK:-false}
+        ROS_SNAPSHOT_DATE: ${ROS_SNAPSHOT_DATE:-latest}
+        STRICT_GPG_CHECK: ${STRICT_GPG_CHECK:-true}
         WORKSPACE_PATH: ${WORKSPACE_PATH:-/workspace}
         UV_VERSION: ${UV_VERSION:-0.10.10}
         UV_PYTHON: ${UV_PYTHON:-3.10}
+        UV_EXTRA: ${UV_EXTRA:-}
         CMAKE_C_STANDARD: ${CMAKE_C_STANDARD:-11}
         CMAKE_CXX_STANDARD: ${CMAKE_CXX_STANDARD:-17}
         BASE_IMAGE: ${BASE_IMAGE:-ubuntu:22.04}
@@ -127,20 +131,10 @@ services:
         UV_SYNC_FLAGS: ${UV_SYNC_FLAGS:-}
         CMAKE_EXTRA_ARGS: ${CMAKE_EXTRA_ARGS:-}
         COLCON_EXTRA_FLAGS: ${COLCON_EXTRA_FLAGS:-}
-        HAS_NVIDIA: ${HAS_NVIDIA:-false}
         FULL_CUDA: ${FULL_CUDA:-false}
-        OPENCV_CUDA: ${OPENCV_CUDA:-auto}
         CUDA_VERSION: ${CUDA_VERSION:-}
         CUDNN_VERSION: ${CUDNN_VERSION:-}
         INSTALL_INTEL_GPU_TOOLS: ${INSTALL_INTEL_GPU_TOOLS:-false}
-
-  # Pure Development Template
-  base-dev:
-    profiles: [abstract]
-    extends: base-common
-    environment:
-      <<: *common-env
-    healthcheck: *dev-healthcheck
 
   # Integrated GPU (iGPU) Acceleration (Intel/AMD)
   base-igpu:
@@ -149,9 +143,6 @@ services:
     build:
       args:
         INSTALL_INTEL_GPU_TOOLS: "true"
-    environment:
-      <<: *common-env
-    healthcheck: *dev-healthcheck
 
   # NVIDIA Acceleration Template
   base-nvidia:
@@ -162,34 +153,3 @@ services:
     runtime: nvidia
     deploy:
       <<: *nvidia-deploy
-    healthcheck: *dev-healthcheck
-
-  # ROS Specific Template
-  base-ros:
-    profiles: [abstract]
-    extends: base-common
-    environment:
-      <<: *common-env
-    healthcheck: *ros-healthcheck
-
-  # ROS + iGPU Acceleration Template
-  base-ros-igpu:
-    profiles: [abstract]
-    extends: base-common
-    build:
-      args:
-        INSTALL_INTEL_GPU_TOOLS: "true"
-    environment:
-      <<: *common-env
-    healthcheck: *ros-healthcheck
-
-  # Hybrid Container: ROS + NVIDIA Acceleration
-  base-ros-nvidia:
-    profiles: [abstract]
-    extends: base-common
-    environment:
-      <<: *nvidia-env
-    runtime: nvidia
-    deploy:
-      <<: *nvidia-deploy
-    healthcheck: *ros-healthcheck

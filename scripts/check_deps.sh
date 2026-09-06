@@ -1,145 +1,172 @@
 #!/bin/bash
 # =============================================================================
-# scripts/check_deps.sh
-# Verifies build artifacts for missing runtime shared library dependencies
-#
-# This script is a development/build-time tool for validating install artifacts.
-#
-# Scans the target directory for ELF files and shared objects, using ldd to
-# identify missing dependencies.
+# scripts/check_deps.sh — pre-ship inspection of an install tree: missing shared
+# libraries (ldd), the ROS Python bindings, and plaintext source exposure.
+# `check_deps.sh --help` carries the arguments and the knobs.
 # =============================================================================
+set -euo pipefail
 
-set -eo pipefail
-
-source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || source "/tmp/util_paths.sh"
-devkit_require "util_logging.sh"
-LOG_PREFIX="[Sanity Check]"
+# WS_ROOT / WS_VENV_PY from the path SSOT (it ignores a WORKSPACE_PATH that is
+# not a tree here). Before the flag parse, so the log verbs exist.
+source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || { echo "  [ERROR] Cannot load config/util_paths.sh (broken checkout?)" >&2; exit 1; }
+devkit_require "util_logging.sh" 2>/dev/null || true
+LOG_PREFIX="[Check Deps]"
+# Colour boundary: this script's ldd/sed passthrough is not routed through the
+# log verbs, so the escapes those lines carry are stripped here when redirected.
+declare -F devkit_auto_color >/dev/null 2>&1 && devkit_auto_color
 
 usage() {
     cat <<'EOF'
 Usage: check_deps.sh [target_dir]
 
-Scan build/install artifacts for missing shared-library dependencies and verify
-the active Python/ROS binding setup.
+Scan an install tree for missing shared libraries, verify the ROS Python
+bindings, and report (or strip) plaintext source shipped in the artifact.
 
 Options:
-  -h, --help Show this help.
+  -h, --help  Show this help.
+  --runtime  Audit the final image and record its installed package manifests.
+
+Environment:
+  DEVKIT_STRIP_SOURCE=1    Byte-compile .py to .pyc and delete the .py source
+  DEVKIT_FAIL_ON_SOURCE=1  Exit non-zero if plaintext project source remains
 EOF
 }
 
+# An unknown flag must not become a directory name: `check_deps --help` once
+# failed with "Target directory '--help' does not exist".
 case "${1:-}" in
     -h|--help) usage; exit 0 ;;
+    --runtime) RUNTIME_AUDIT=1; shift ;;
     --*) log_error "Unknown option: $1"; usage >&2; exit 2 ;;
 esac
 
-TARGET_DIR=${1:-${WS_INSTALL}}
-MISSING_COUNT=0
+TARGET_DIR="${1:-${WS_ROOT}/install}"
 
-log_info "Scanning for missing dependencies in $TARGET_DIR..."
-
+# A missing install tree must fail: this gates the prod builder stages.
 if [ ! -d "$TARGET_DIR" ]; then
     log_error "Target directory '$TARGET_DIR' does not exist."
-    log_info "Make sure you have built your project (e.g., 'cbuild' or 'make install') before checking dependencies."
+    log_detail "Build your workspace first (e.g. 'cbuild' or 'mksync')." >&2
     exit 1
 fi
 
-for required_tool in file ldd; do
-    if ! command -v "$required_tool" >/dev/null 2>&1; then
-        log_error "Required tool '$required_tool' is not available. Cannot validate runtime dependencies."
-        exit 127
+log_info "Scanning ELF binaries in ${TARGET_DIR}..."
+
+missing=0
+# Filter to executables and .so first: the `file` probe is per-file.
+while IFS= read -r -d '' binary; do
+    if file "$binary" 2>/dev/null | grep -qE "ELF.*(executable|shared object)"; then
+        # Driver libraries are injected by --nv / NVIDIA Container Toolkit.
+        unresolved="$(ldd "$binary" 2>/dev/null | awk '/not found/ && $1 !~ /^(libcuda\.so|libnvidia-)/ {print}' || true)"
+        if [ -n "$unresolved" ]; then
+            log_error "Missing libraries in ${binary}:"
+            printf '    %s\n' "$unresolved"
+            missing=$((missing + 1))
+        fi
     fi
-done
+done < <(find "$TARGET_DIR" -type f \( -perm -u+x -o -name '*.so*' \) \
+              ! -name '*.py' ! -name '*.pyc' -print0)
 
+while IFS= read -r -d '' link; do
+    [ -e "$link" ] || { log_error "Dangling installed symlink: $link"; missing=$((missing + 1)); }
+done < <(find "$TARGET_DIR" -type l -print0)
 
-# Find executable files and shared libraries (.so) safely, including paths with ':' or spaces.
-# Uses `file -N` to identify ELF binaries before invoking ldd, avoiding false positives
-# on non-ELF executables (e.g. shell scripts) and correctly handling paths with colons.
-while IFS= read -r ELF_FILE; do
-    MISSING=$(ldd "$ELF_FILE" 2>/dev/null | grep "not found" || true)
-    if [ -n "$MISSING" ]; then
-        log_error "Missing dependencies for: $ELF_FILE\n$(echo "$MISSING" | sed 's/^/  /')"
-        MISSING_COUNT=$((MISSING_COUNT + 1))
+# Check ROS Python bindings
+if [ -d "/opt/ros/${ROS_DISTRO:-}" ]; then
+    log_info "Verifying ROS (${ROS_DISTRO}) Python bindings..."
+    # Plain RUN layers (prod builders) have no ROS environment, so the import
+    # below would fail spuriously. setup.bash is neither `set -u`- nor
+    # `set -e`-clean (its chain can end on a false test), so relax both.
+    if [ -z "${AMENT_PREFIX_PATH:-}${ROS_PACKAGE_PATH:-}" ] && [ -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]; then
+        set +eu; source "/opt/ros/${ROS_DISTRO}/setup.bash" || true; set -eu
     fi
-done < <(find "$TARGET_DIR" -type f \( -executable -o -name "*.so*" \) ! -name "*.py" ! -path "*/.venv/*" -exec file -N {} + 2>/dev/null | grep -E 'ELF.*(executable|shared object)' | cut -d: -f1)
+    py_bin="python3"
+    [ -x "${WS_VENV_PY:-}" ] && py_bin="${WS_VENV_PY}"
 
-# --- Python Integrity Check (SSOT Integration) -------------------------------
-function verify_package() {
-    local interpreter=$1
-    local pkg=$2
-    local msg=$3
-    if ! "$interpreter" -c "import $pkg" &>/dev/null; then
-        log_error "$msg"
-        return 1
-    fi
-    return 0
-}
-
-function check_python_integrity() {
-    local get_py_script="${WS_SCRIPTS}/util_get_python.sh"
-    [ ! -f "$get_py_script" ] && get_py_script="$(dirname "${BASH_SOURCE[0]}")/util_get_python.sh"
-
-    if [ ! -f "$get_py_script" ]; then
-        log_warn "Python detector script not found. Skipping Python integrity check."
-        return 0
-    fi
-
-    local active_py
-    active_py="$(bash "$get_py_script")"
-    if [ -z "$active_py" ]; then
-        log_warn "Python detector returned an empty interpreter path. Skipping Python integrity check."
-        return 0
-    fi
-    log_info "Verifying Python integrity for: $active_py"
-
-    # 1. Basic Interpreter execution test
-    if ! "$active_py" --version &>/dev/null; then
-        log_error "Python interpreter is not executable: $active_py"
-        return 1
-    fi
-
-    # 2. ROS Distro-specific binding test
-    if [ -z "${ROS_DISTRO:-}" ] || [ ! -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]; then
-        log_info "ROS runtime not installed in this image. Skipping ROS binding check."
-        return 0
-    fi
-    # ROS Python bindings live on PYTHONPATH from setup.bash, not plain system site-packages.
-    source "/opt/ros/${ROS_DISTRO}/setup.bash"
-
-    case "${ROS_DISTRO}" in
+    case "$ROS_DISTRO" in
         noetic)
-            verify_package "$active_py" "rospy" "ROS 1 (Noetic) bindings not found in $active_py." || {
-                log_info "💡 Recommendation: If using venv, ensure 'include-system-site-packages = true' in pyvenv.cfg."
-                log_info "   Otherwise, install missing system packages: sudo apt-get install python3-rospy"
-                return 1
-            }
-            ;;
-        humble)
-            verify_package "$active_py" "rclpy" "ROS 2 (${ROS_DISTRO}) rclpy bindings not found in $active_py." || {
-                log_info "💡 Recommendation: If using venv, ensure 'include-system-site-packages = true' in pyvenv.cfg."
-                log_info "   Otherwise, ensure ROS 2 is correctly installed: sudo apt-get install python3-rclpy"
-                return 1
-            }
-            verify_package "$active_py" "tf2_ros" "ROS 2 (${ROS_DISTRO}) tf2_ros bindings not usable in $active_py." || {
-                log_info "💡 Recommendation: ROS 2 production venvs should use system site packages so apt-provided Python modules such as numpy remain visible."
-                log_info "   Otherwise, add the missing Python package to src/pyproject.toml or dependencies/requirements.txt."
-                return 1
-            }
+            if ! "$py_bin" -c "import rospy" 2>/dev/null; then
+                log_error "ROS 1 (noetic) 'rospy' module not found in $py_bin"
+                log_detail "Run 'mksync --share' to enable system site-packages." >&2
+                missing=$((missing + 1))
+            else
+                log_ok "ROS 1 'rospy' module verified."
+            fi
             ;;
         *)
-            log_warn "Unknown ROS_DISTRO '${ROS_DISTRO}'. Skipping specific binding check."
+            if ! "$py_bin" -c "import rclpy" 2>/dev/null; then
+                log_error "ROS 2 (${ROS_DISTRO}) 'rclpy' module not found in $py_bin"
+                missing=$((missing + 1))
+            else
+                log_ok "ROS 2 'rclpy' module verified."
+            fi
             ;;
     esac
+fi
 
-    log_ok "Python ROS bindings verified successfully."
+# =============================================================================
+# Source exposure. A prod image copies install/ and never src/, but colcon
+# copies ament_python modules verbatim into install/ — so Python source ships
+# in plaintext unless removed here.
+#
+# Byte-compilation is OBFUSCATION, NOT ENCRYPTION: .pyc decompiles. For real
+# protection compile to native code (C++, Nuitka/Cython).
+# =============================================================================
+# .venv is third-party, not project source. Launch files are read AS SOURCE by
+# ros2 launch and cannot be compiled, so they are counted separately.
+project_py() {
+    find "$TARGET_DIR" -path "*/.venv" -prune -o -type f -name '*.py' \
+        ! -path "*/launch/*" -print 2>/dev/null || true
 }
 
-check_python_integrity || MISSING_COUNT=$((MISSING_COUNT + 1))
+py_files=()
+while IFS= read -r py_file; do py_files+=("$py_file"); done < <(project_py)
+launch_count="$(find "$TARGET_DIR" -path "*/.venv" -prune -o -type f -name '*.py' -path "*/launch/*" -print 2>/dev/null | wc -l)"
 
-if [ $MISSING_COUNT -gt 0 ]; then
-    log_error "$MISSING_COUNT files have missing dependencies."
-    log_info "Please add missing packages to dependencies/apt.txt or dependencies/apt_ros.txt (with # runtime if needed for deployment)."
-    exit 1
+log_info "Source exposure: ${#py_files[@]} python module(s), ${launch_count} launch script(s)."
+
+case "${DEVKIT_STRIP_SOURCE:-}" in
+    1|true|yes|on)
+        if [ "${#py_files[@]}" -gt 0 ]; then
+            # -b writes foo.pyc beside foo.py (legacy layout), so deleting the
+            # source still leaves an importable module.
+            if python3 -m compileall -b -q "${py_files[@]}" >/dev/null 2>&1; then
+                stripped=0
+                for f in "${py_files[@]}"; do
+                    [ -f "${f%.py}.pyc" ] && { rm -f "$f"; stripped=$((stripped + 1)); }
+                done
+                find "$TARGET_DIR" -path "*/.venv" -prune -o -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
+                log_ok "Stripped ${stripped}/${#py_files[@]} module(s) to bytecode (obfuscation, not encryption)."
+            else
+                log_error "Byte-compilation failed; refusing to delete source."
+                missing=$((missing + 1))
+            fi
+        fi
+        ;;
+    *)
+        [ "${#py_files[@]}" -gt 0 ] && \
+            log_detail "Set DEVKIT_STRIP_SOURCE=1 to ship bytecode instead of .py source."
+        ;;
+esac
+
+remaining="$(project_py | wc -l)"
+if [ "$remaining" -gt 0 ]; then
+    log_warn "${remaining} plaintext python file(s) will ship in this artifact."
+    case "${DEVKIT_FAIL_ON_SOURCE:-}" in
+        1|true|yes|on)
+            log_error "DEVKIT_FAIL_ON_SOURCE is set — failing the build."
+            missing=$((missing + 1)) ;;
+    esac
+fi
+
+if [ "$missing" -eq 0 ]; then
+    log_ok "All shared library and binding dependencies satisfied!"
 else
-    log_ok "All runtime dependencies are satisfied."
-    exit 0
+    log_error "Found $missing issue(s)."
+    exit 1
+fi
+
+if [ "${RUNTIME_AUDIT:-0}" = 1 ]; then
+    "$WS_VENV_PY" -c 'import sys; assert sys.prefix.endswith("install/.venv"), sys.prefix'
+    DEVKIT_METADATA_BASE=/etc/devkit/build/devkit-release.json DEVKIT_MANIFEST_PHASE=runtime \
+        bash "$WS_SCRIPTS/util_release_metadata.sh" /etc/devkit/devkit-release.json
 fi

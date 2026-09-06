@@ -1,6 +1,6 @@
 # =============================================================================
-# dependencies/apt_ros.txt
-# Core ROS and Desktop utilities (Single Source of Truth)
+# dependencies/apt_ros.txt — the ROS half of the package list, read only when a
+# distro is passed (so non-ROS stages never request ros-*).
 #
 # Filtering Tag System Guide:
 #   - # runtime : Packages required by deployment artifacts

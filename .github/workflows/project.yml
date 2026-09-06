@@ -1,0 +1,57 @@
+# =============================================================================
+# .github/workflows/project.yml — the loop for the code in src/. verify.yml and
+# images.yml validate the KIT; this one runs YOUR tests and style checks.
+# Gated on src/** because it builds a real image; ENV=dev keeps that to a few
+# minutes — a ROS project switches ENV below and raises the timeout.
+# =============================================================================
+name: project
+
+# The token can read the checkout and nothing else.
+permissions:
+  contents: read
+
+on:
+  push:
+    paths:
+      - 'src/**'
+      - 'dependencies/**'
+      - '.github/workflows/project.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'dependencies/**'
+      - '.github/workflows/project.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: test + lint (ENV=dev)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ENV: dev
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/gate
+        with:
+          reclaim-disk: 'true'
+      # `make setup` writes .env from .env.example; every target below reads it.
+      - run: make setup
+      - name: build and start
+        run: |
+          make build
+          make start
+      # mksync installs the project's dependencies and the `dev` group that
+      # carries the runners. UV_EXTRA comes from .env.example/.env, so a heavy
+      # extra (torch) is paid for here whenever the project declares one.
+      - name: sync the workspace
+        run: make exec CMD='mksync'
+      - run: make lint
+      - run: make test
+      - name: teardown
+        if: always()
+        run: make down

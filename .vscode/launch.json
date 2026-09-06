@@ -1,20 +1,11 @@
 {
     // =========================================================================
-    // .vscode/launch.json
-    // Multi-layer debugging configurations for DevKit
+    // .vscode/launch.json — C++ via GDB (launch & attach), Python via debugpy
+    // (local & remote), ROS 1/2 launch and node debugging, and compounds for
+    // multi-process sessions. ROS paths follow /opt/ros/${env:ROS_DISTRO}.
     //
-    // Supports:
-    //   - C++ node debugging via GDB (launch & attach)
-    //   - Python debugging via debugpy (local & remote attach)
-    //   - ROS 2 (Humble) and ROS 1 (Noetic) launch & node debugging
-    //   - Compound configurations for simultaneous multi-process debugging
-    //
-    // ROS version is auto-detected via the ROS_DISTRO environment variable.
-    // All paths use /opt/ros/${env:ROS_DISTRO} for seamless ROS 1/2 switching.
-    //
-    // Prerequisites:
-    //   - Build with Debug symbols: Ctrl+Shift+B → "🔨 colcon: Build (Debug)"
-    //   - For Python remote debug: pip install debugpy (inside container)
+    // Prerequisites: build with Debug symbols (Ctrl+Shift+B → "🔨 colcon:
+    // Build (Debug)"), and debugpy in the container for remote Python.
     // =========================================================================
     "version": "0.2.0",
     "inputs": [
@@ -27,8 +18,8 @@
         {
             "id": "executablePath",
             "type": "promptString",
-            "description": "Absolute path to executable (e.g., ${env:WS_INSTALL}/pkg_name/lib/pkg_name/my_node)",
-            "default": "${env:WS_INSTALL}/pkg_name/lib/pkg_name/my_node"
+            "description": "Absolute path to executable (e.g., ${workspaceFolder}/install/pkg_name/lib/pkg_name/my_node)",
+            "default": "${workspaceFolder}/install/pkg_name/lib/pkg_name/my_node"
         },
         {
             "id": "launchFile",
@@ -72,11 +63,11 @@
             "program": "${input:executablePath}",
             "args": [],
             "stopAtEntry": false,
-            "cwd": "${env:WS_ROOT}",
+            "cwd": "${workspaceFolder}",
             "environment": [
-                { "name": "LD_LIBRARY_PATH", "value": "${env:WS_INSTALL}/lib:/opt/ros/${env:ROS_DISTRO}/lib:${env:LD_LIBRARY_PATH}" },
-                { "name": "AMENT_PREFIX_PATH", "value": "${env:WS_INSTALL}:/opt/ros/${env:ROS_DISTRO}" },
-                { "name": "CMAKE_PREFIX_PATH", "value": "${env:WS_INSTALL}:/opt/ros/${env:ROS_DISTRO}" },
+                { "name": "LD_LIBRARY_PATH", "value": "${workspaceFolder}/install/lib:/opt/ros/${env:ROS_DISTRO}/lib:${env:LD_LIBRARY_PATH}" },
+                { "name": "AMENT_PREFIX_PATH", "value": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}" },
+                { "name": "CMAKE_PREFIX_PATH", "value": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}" },
                 { "name": "ROS_DISTRO", "value": "${env:ROS_DISTRO}" }
             ],
             "externalConsole": false,
@@ -88,7 +79,7 @@
             ],
             "preLaunchTask": "⚙️ Source & Build (Debug, pre-launch)",
             "sourceFileMap": {
-                "${env:WS_SRC}": "${workspaceFolder}/src"
+                "${env:WORKSPACE_PATH}/src": "${workspaceFolder}/src"
             },
             "logging": { "engineLogging": false }
         },
@@ -99,11 +90,11 @@
             "program": "${input:executablePath}",
             "args": [],
             "stopAtEntry": false,
-            "cwd": "${env:WS_ROOT}",
+            "cwd": "${workspaceFolder}",
             "environment": [
-                { "name": "LD_LIBRARY_PATH", "value": "${env:WS_INSTALL}/lib:/opt/ros/${env:ROS_DISTRO}/lib:${env:LD_LIBRARY_PATH}" },
-                { "name": "AMENT_PREFIX_PATH", "value": "${env:WS_INSTALL}:/opt/ros/${env:ROS_DISTRO}" },
-                { "name": "CMAKE_PREFIX_PATH", "value": "${env:WS_INSTALL}:/opt/ros/${env:ROS_DISTRO}" },
+                { "name": "LD_LIBRARY_PATH", "value": "${workspaceFolder}/install/lib:/opt/ros/${env:ROS_DISTRO}/lib:${env:LD_LIBRARY_PATH}" },
+                { "name": "AMENT_PREFIX_PATH", "value": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}" },
+                { "name": "CMAKE_PREFIX_PATH", "value": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}" },
                 { "name": "ROS_DISTRO", "value": "${env:ROS_DISTRO}" }
             ],
             "externalConsole": false,
@@ -114,7 +105,7 @@
                 { "text": "set pagination off", "ignoreFailures": true }
             ],
             "sourceFileMap": {
-                "${env:WS_SRC}": "${workspaceFolder}/src"
+                "${env:WORKSPACE_PATH}/src": "${workspaceFolder}/src"
             },
             "logging": { "engineLogging": false }
         },
@@ -131,7 +122,7 @@
                 { "text": "set pagination off", "ignoreFailures": true }
             ],
             "sourceFileMap": {
-                "${env:WS_SRC}": "${workspaceFolder}/src"
+                "${env:WORKSPACE_PATH}/src": "${workspaceFolder}/src"
             },
             "logging": { "engineLogging": false }
         },
@@ -145,9 +136,9 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "cwd": "${env:WS_ROOT}",
+            "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "${env:WS_SRC}:${env:WS_INSTALL}/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}"
+                "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}/install/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}"
             },
             "justMyCode": false
         },
@@ -158,9 +149,9 @@
             "program": "${input:pythonFile}",
             "args": [],
             "console": "integratedTerminal",
-            "cwd": "${env:WS_ROOT}",
+            "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "${env:WS_SRC}:${env:WS_INSTALL}/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}"
+                "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}/install/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}"
             },
             "justMyCode": false
         },
@@ -175,7 +166,7 @@
             "pathMappings": [
                 {
                     "localRoot": "${workspaceFolder}",
-                    "remoteRoot": "${env:WS_ROOT}"
+                    "remoteRoot": "${env:WORKSPACE_PATH}"
                 }
             ],
             "justMyCode": false
@@ -191,11 +182,11 @@
             "program": "/opt/ros/${env:ROS_DISTRO}/bin/ros2",
             "args": ["launch", "${input:launchFile}"],
             "console": "integratedTerminal",
-            "cwd": "${env:WS_ROOT}",
+            "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "${env:WS_INSTALL}/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}",
-                "AMENT_PREFIX_PATH": "${env:WS_INSTALL}:/opt/ros/${env:ROS_DISTRO}",
-                "LD_LIBRARY_PATH": "${env:WS_INSTALL}/lib:/opt/ros/${env:ROS_DISTRO}/lib",
+                "PYTHONPATH": "${workspaceFolder}/install/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}",
+                "AMENT_PREFIX_PATH": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}",
+                "LD_LIBRARY_PATH": "${workspaceFolder}/install/lib:/opt/ros/${env:ROS_DISTRO}/lib",
                 "ROS_DISTRO": "${env:ROS_DISTRO}",
                 "RMW_IMPLEMENTATION": "${env:RMW_IMPLEMENTATION}"
             },
@@ -209,11 +200,11 @@
             "program": "/opt/ros/${env:ROS_DISTRO}/bin/ros2",
             "args": ["launch", "${input:launchFile}"],
             "console": "integratedTerminal",
-            "cwd": "${env:WS_ROOT}",
+            "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "${env:WS_INSTALL}/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}",
-                "AMENT_PREFIX_PATH": "${env:WS_INSTALL}:/opt/ros/${env:ROS_DISTRO}",
-                "LD_LIBRARY_PATH": "${env:WS_INSTALL}/lib:/opt/ros/${env:ROS_DISTRO}/lib",
+                "PYTHONPATH": "${workspaceFolder}/install/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}",
+                "AMENT_PREFIX_PATH": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}",
+                "LD_LIBRARY_PATH": "${workspaceFolder}/install/lib:/opt/ros/${env:ROS_DISTRO}/lib",
                 "ROS_DISTRO": "${env:ROS_DISTRO}",
                 "RMW_IMPLEMENTATION": "${env:RMW_IMPLEMENTATION}"
             },
@@ -226,11 +217,11 @@
             "program": "/opt/ros/${env:ROS_DISTRO}/bin/ros2",
             "args": ["run", "${input:rosPackage}", "${input:rosExecutable}"],
             "console": "integratedTerminal",
-            "cwd": "${env:WS_ROOT}",
+            "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "${env:WS_INSTALL}/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}",
-                "AMENT_PREFIX_PATH": "${env:WS_INSTALL}:/opt/ros/${env:ROS_DISTRO}",
-                "LD_LIBRARY_PATH": "${env:WS_INSTALL}/lib:/opt/ros/${env:ROS_DISTRO}/lib",
+                "PYTHONPATH": "${workspaceFolder}/install/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}",
+                "AMENT_PREFIX_PATH": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}",
+                "LD_LIBRARY_PATH": "${workspaceFolder}/install/lib:/opt/ros/${env:ROS_DISTRO}/lib",
                 "ROS_DISTRO": "${env:ROS_DISTRO}"
             },
             "justMyCode": false
@@ -246,15 +237,15 @@
             "program": "/opt/ros/${env:ROS_DISTRO}/bin/roslaunch",
             "args": ["${input:rosPackage}", "${input:launchFile}"],
             "console": "integratedTerminal",
-            "cwd": "${env:WS_ROOT}",
+            "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "${env:WS_INSTALL}/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}",
-                "CMAKE_PREFIX_PATH": "${env:WS_INSTALL}:/opt/ros/${env:ROS_DISTRO}",
-                "LD_LIBRARY_PATH": "${env:WS_INSTALL}/lib:/opt/ros/${env:ROS_DISTRO}/lib",
+                "PYTHONPATH": "${workspaceFolder}/install/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}",
+                "CMAKE_PREFIX_PATH": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}",
+                "LD_LIBRARY_PATH": "${workspaceFolder}/install/lib:/opt/ros/${env:ROS_DISTRO}/lib",
                 "ROS_DISTRO": "${env:ROS_DISTRO}",
                 "ROS_MASTER_URI": "${env:ROS_MASTER_URI}",
                 "ROS_HOSTNAME": "${env:ROS_HOSTNAME}",
-                "ROS_PACKAGE_PATH": "${env:WS_SRC}:/opt/ros/${env:ROS_DISTRO}/share"
+                "ROS_PACKAGE_PATH": "${workspaceFolder}/src:/opt/ros/${env:ROS_DISTRO}/share"
             },
             "justMyCode": false,
             "preLaunchTask": "⚙️ Source & Build (Debug, pre-launch)"
@@ -266,15 +257,15 @@
             "program": "/opt/ros/${env:ROS_DISTRO}/bin/rosrun",
             "args": ["${input:rosPackage}", "${input:rosExecutable}"],
             "console": "integratedTerminal",
-            "cwd": "${env:WS_ROOT}",
+            "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "${env:WS_INSTALL}/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}",
-                "CMAKE_PREFIX_PATH": "${env:WS_INSTALL}:/opt/ros/${env:ROS_DISTRO}",
-                "LD_LIBRARY_PATH": "${env:WS_INSTALL}/lib:/opt/ros/${env:ROS_DISTRO}/lib",
+                "PYTHONPATH": "${workspaceFolder}/install/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}",
+                "CMAKE_PREFIX_PATH": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}",
+                "LD_LIBRARY_PATH": "${workspaceFolder}/install/lib:/opt/ros/${env:ROS_DISTRO}/lib",
                 "ROS_DISTRO": "${env:ROS_DISTRO}",
                 "ROS_MASTER_URI": "${env:ROS_MASTER_URI}",
                 "ROS_HOSTNAME": "${env:ROS_HOSTNAME}",
-                "ROS_PACKAGE_PATH": "${env:WS_SRC}:/opt/ros/${env:ROS_DISTRO}/share"
+                "ROS_PACKAGE_PATH": "${workspaceFolder}/src:/opt/ros/${env:ROS_DISTRO}/share"
             },
             "justMyCode": false
         },
@@ -289,10 +280,10 @@
             "program": "${input:executablePath}",
             "args": ["--ros-args", "-r", "__node:=${input:rosExecutable}"],
             "stopAtEntry": false,
-            "cwd": "${env:WS_ROOT}",
+            "cwd": "${workspaceFolder}",
             "environment": [
-                { "name": "LD_LIBRARY_PATH", "value": "${env:WS_INSTALL}/lib:/opt/ros/${env:ROS_DISTRO}/lib:${env:LD_LIBRARY_PATH}" },
-                { "name": "AMENT_PREFIX_PATH", "value": "${env:WS_INSTALL}:/opt/ros/${env:ROS_DISTRO}" },
+                { "name": "LD_LIBRARY_PATH", "value": "${workspaceFolder}/install/lib:/opt/ros/${env:ROS_DISTRO}/lib:${env:LD_LIBRARY_PATH}" },
+                { "name": "AMENT_PREFIX_PATH", "value": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}" },
                 { "name": "ROS_DISTRO", "value": "${env:ROS_DISTRO}" },
                 { "name": "RMW_IMPLEMENTATION", "value": "${env:RMW_IMPLEMENTATION}" }
             ],
@@ -303,7 +294,7 @@
                 { "text": "set print thread-events off", "ignoreFailures": true }
             ],
             "sourceFileMap": {
-                "${env:WS_SRC}": "${workspaceFolder}/src"
+                "${env:WORKSPACE_PATH}/src": "${workspaceFolder}/src"
             },
             "preLaunchTask": "⚙️ Source & Build (Debug, pre-launch)"
         },
@@ -314,14 +305,14 @@
             "program": "${input:executablePath}",
             "args": ["__name:=${input:rosExecutable}"],
             "stopAtEntry": false,
-            "cwd": "${env:WS_ROOT}",
+            "cwd": "${workspaceFolder}",
             "environment": [
-                { "name": "LD_LIBRARY_PATH", "value": "${env:WS_INSTALL}/lib:/opt/ros/${env:ROS_DISTRO}/lib:${env:LD_LIBRARY_PATH}" },
-                { "name": "CMAKE_PREFIX_PATH", "value": "${env:WS_INSTALL}:/opt/ros/${env:ROS_DISTRO}" },
+                { "name": "LD_LIBRARY_PATH", "value": "${workspaceFolder}/install/lib:/opt/ros/${env:ROS_DISTRO}/lib:${env:LD_LIBRARY_PATH}" },
+                { "name": "CMAKE_PREFIX_PATH", "value": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}" },
                 { "name": "ROS_DISTRO", "value": "${env:ROS_DISTRO}" },
                 { "name": "ROS_MASTER_URI", "value": "${env:ROS_MASTER_URI}" },
                 { "name": "ROS_HOSTNAME", "value": "${env:ROS_HOSTNAME}" },
-                { "name": "ROS_PACKAGE_PATH", "value": "${env:WS_SRC}:/opt/ros/${env:ROS_DISTRO}/share" }
+                { "name": "ROS_PACKAGE_PATH", "value": "${workspaceFolder}/src:/opt/ros/${env:ROS_DISTRO}/share" }
             ],
             "externalConsole": false,
             "MIMode": "gdb",
@@ -330,7 +321,7 @@
                 { "text": "set print thread-events off", "ignoreFailures": true }
             ],
             "sourceFileMap": {
-                "${env:WS_SRC}": "${workspaceFolder}/src"
+                "${env:WORKSPACE_PATH}/src": "${workspaceFolder}/src"
             },
             "preLaunchTask": "⚙️ Source & Build (Debug, pre-launch)"
         }

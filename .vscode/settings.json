@@ -1,11 +1,8 @@
 {
     // =========================================================================
-    // .vscode/settings.json
-    // Project-level IDE configuration for DevKit
-    //
-    // These settings are optimized for Docker container-based development
-    // with ROS 1/2, C++, and Python. Paths reference /workspace (container root).
-    // ROS version is auto-detected via the ROS_DISTRO environment variable.
+    // .vscode/settings.json — workspace settings for container-based ROS/C++/
+    // Python development. Paths are ${workspaceFolder}-relative and the ROS
+    // version follows ${env:ROS_DISTRO}.
     // =========================================================================
 
     // ── Editor Defaults ──────────────────────────────────────────────────────
@@ -70,10 +67,10 @@
     "cmake.configureOnOpen": false,
 
     // ── Python ───────────────────────────────────────────────────────────────
-    "python.defaultInterpreterPath": "${env:WS_VENV}/bin/python",
+    "python.defaultInterpreterPath": "${workspaceFolder}/install/.venv/bin/python",
     "python.analysis.extraPaths": [
-        "${env:WS_SRC}",
-        "${env:WS_INSTALL}/lib/python3/dist-packages",
+        "${workspaceFolder}/src",
+        "${workspaceFolder}/install/lib/python3/dist-packages",
         "/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages"
     ],
     "python.analysis.typeCheckingMode": "basic",
@@ -106,9 +103,6 @@
     // ── ROS Extension ────────────────────────────────────────────────────────
     // Auto-detected from ROS_DISTRO env var; override here if needed
     // "ros.distro": "humble",
-
-    // ── Docker ───────────────────────────────────────────────────────────────
-    "docker.defaultRegistryPath": "",
 
     // ── Terminal ──────────────────────────────────────────────────────────────
     "terminal.integrated.defaultProfile.linux": "bash",
