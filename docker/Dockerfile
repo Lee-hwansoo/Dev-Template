@@ -195,11 +195,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get autoremove -y && \
     rm -rf /tmp/* /var/tmp/*
 
-# Create a non-root user with UID/GID and passwordless sudo
+# Passwordless sudo for the container user (created in `base`).
 ARG CONTAINER_USER=user
-ARG USER_UID=1000
-ARG USER_GID=$USER_UID
-
 RUN echo $CONTAINER_USER ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$CONTAINER_USER \
     && chmod 0440 /etc/sudoers.d/$CONTAINER_USER
 
@@ -268,7 +265,7 @@ ARG DEVKIT_REQUIRE_PINNED=0
 ENV COLCON_HOME=${WORKSPACE_PATH}
 WORKDIR ${WORKSPACE_PATH}
 
-RUN mkdir -p src && ${WORKSPACE_PATH}/scripts/util_setup_links.sh
+RUN mkdir -p src
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     SYNC_TARGET_DIR=/tmp/staging DEVKIT_REQUIRE_PINNED=${DEVKIT_REQUIRE_PINNED} \
@@ -368,7 +365,7 @@ COPY scripts ${WORKSPACE_PATH}/scripts
 # release manifest; without it here the shipped artifact says "unknown".
 COPY VERSION ${WORKSPACE_PATH}/VERSION
 WORKDIR ${WORKSPACE_PATH}
-RUN DEVKIT_BUILD_TYPE=prod DEVKIT_REQUIRE_PINNED=${DEVKIT_REQUIRE_PINNED} OPENCV_CUDA=${OPENCV_CUDA} bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync --share" && \
+RUN DEVKIT_BUILD_TYPE=prod DEVKIT_REQUIRE_PINNED=${DEVKIT_REQUIRE_PINNED} OPENCV_CUDA=${OPENCV_CUDA} bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync" && \
     DEVKIT_STRIP_SOURCE=${DEVKIT_STRIP_SOURCE} DEVKIT_FAIL_ON_SOURCE=${DEVKIT_FAIL_ON_SOURCE} \
     bash ${WORKSPACE_PATH}/scripts/check_deps.sh ${WORKSPACE_PATH}/install && \
     DEVKIT_BUILD_TYPE=prod bash ${WORKSPACE_PATH}/scripts/util_release_metadata.sh ${WORKSPACE_PATH}/release/devkit-release.json

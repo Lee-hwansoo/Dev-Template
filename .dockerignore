@@ -17,13 +17,10 @@ build/
 install/
 log/
 logs/
-.ccache/
 .docker_cache/
 *.sif
 
 # Thirdparty (Cloned inside the container via vcs import)
-thirdparty/
-third party deps/
 src/thirdparty/*
 !src/thirdparty/.gitkeep
 
@@ -74,7 +71,6 @@ _build/
 *.bak
 *.swp
 *.patch
-.history/
 
 # Markdown is NOT excluded: `make bake-dev` copies the whole tree into the
 # snapshot image, and a workspace without its README is a worse artifact.

@@ -995,16 +995,6 @@ while IFS='|' read -r hostdep_tool hostdep_block _; do
         || { log_err "check_preflight.sh exits 0 without '${hostdep_tool}', which it calls blocking."; hostdep_errors=1; }
 done <<< "$hostdep_table"
 rm -rf "$hostdep_probe"
-# vcstool lives in the IMAGE; claiming it as a host prerequisite sends people
-# installing it in the wrong place.
-grep -q 'python3-vcstool' dependencies/apt_ros.txt \
-    || { log_err "python3-vcstool is no longer installed in the image, but docs/DEPENDENCIES.md says sync_deps runs there."; hostdep_errors=1; }
-grep -qE '^[^#]*vcstool' scripts/check_preflight.sh \
-    && { log_err "check_preflight.sh requires vcstool on the host; it runs inside the container."; hostdep_errors=1; }
-[ "$hostdep_errors" -eq 0 ] \
-    && log_ok "Every blocking host prerequisite is both enforced by preflight and documented ($(wc -w <<< "$hostdep_tools") tools)."
-
-# =============================================================================
 # The NVIDIA runtime notice, ONE place: an explicit GPU_MODE=nvidia without the
 # runtime must block, a detected GPU under auto must only warn (auto falls back
 # to iGPU/CPU). A stub docker with no nvidia runtime answers every probe.
@@ -1028,6 +1018,16 @@ hostdep_gpu_out="$(hostdep_gpu_run GPU_MODE=auto HAS_NVIDIA=false)"
 rm -rf "$hostdep_gpu"
 grep -q 'CHECK_GPU_RUNTIME' Makefile \
     && { log_err "the Makefile carries its own NVIDIA-runtime notice again; check_preflight.sh owns it."; hostdep_errors=1; }
+# vcstool lives in the IMAGE; claiming it as a host prerequisite sends people
+# installing it in the wrong place.
+grep -q 'python3-vcstool' dependencies/apt_ros.txt \
+    || { log_err "python3-vcstool is no longer installed in the image, but docs/DEPENDENCIES.md says sync_deps runs there."; hostdep_errors=1; }
+grep -qE '^[^#]*vcstool' scripts/check_preflight.sh \
+    && { log_err "check_preflight.sh requires vcstool on the host; it runs inside the container."; hostdep_errors=1; }
+[ "$hostdep_errors" -eq 0 ] \
+    && log_ok "Every blocking host prerequisite is both enforced by preflight and documented ($(wc -w <<< "$hostdep_tools") tools)."
+
+# =============================================================================
 # [macos-fallback] macOS has no CUDA and no DRI passthrough — Docker Desktop
 #      runs a Linux VM. Every macOS host must resolve to cpu even when the
 #      machine has a GPU and nvidia-smi happens to be on PATH, or compose picks
@@ -1591,6 +1591,10 @@ grep -q 'compile_commands.json .venv colcon.meta' Makefile \
     || log_err "'make clean' must remove the generated workspace symlinks (they dangle once build/install are gone)."
 grep -q 'rmdir install' Makefile \
     || log_err "'make clean' must drop install/ once it is empty; the entrypoint recreates it as root, making a leftover un-removable."
+# A root-owned build/ (Docker creates a bind-mount source as root) must get the
+# same way out install/ gets; a raw rm failure stopped make with no hint.
+awk '/rm -rf build devel log/ {seen=1} seen && /HINT_ROOT_OWNED,build/ {ok=1} END {exit ok ? 0 : 1}' Makefile \
+    || log_err "'make clean' fails on a root-owned build/ without the HINT_ROOT_OWNED remediation install/ gets."
 # Match the compose invocation, not the phrase: the explanatory comment above
 # it would satisfy a bare grep for '--rmi local'.
 grep -qE '\$\(COMPOSE\).*down .*--rmi local' Makefile \
@@ -1608,10 +1612,6 @@ stray_attach="$(grep -nE "docker ps --filter \"label=com\.docker\.compose\.proje
     || log_err "attach targets pick the first project container instead of the ENV's: $(cut -d: -f1,2 <<< "$stray_attach" | tr '\n' ' ')"
 # Per-recipe, not a global count: a helper that stopped being called would keep
 # the count up while the target it was meant to guard attached to anything.
-# A root-owned build/ (Docker creates a bind-mount source as root) must get the
-# same way out install/ gets; a raw rm failure stopped make with no hint.
-awk '/rm -rf build devel log/ {seen=1} seen && /HINT_ROOT_OWNED,build/ {ok=1} END {exit ok ? 0 : 1}' Makefile \
-    || log_err "'make clean' fails on a root-owned build/ without the HINT_ROOT_OWNED remediation install/ gets."
 for attach_target in shell exec term stats logs top; do
     awk -v t="$attach_target" '$0 ~ "^"t":" {inside=1; next} inside && /^[^\t]/ {inside=0} inside' Makefile \
         | grep -qE '\$\((FIND|REQUIRE)_CONTAINER\)' \
@@ -2106,9 +2106,11 @@ grep -q '\[project\]' <<< "$adopt_recipe" \
     || { log_err "'make adopt' does not scope its pyproject edit to the [project] table."; adopt_errors=1; }
 grep -q 'origin NAME' Makefile \
     || { log_err "'make adopt' trusts an inherited NAME; the environment carries one (WSL exports NAME=<hostname>)."; adopt_errors=1; }
-rc=0; make adopt >/dev/null 2>&1 || rc=$?
-[ "$rc" -eq 2 ] \
-    || { log_err "'make adopt' without NAME must exit 2 (got ${rc})."; adopt_errors=1; }
+# By message, not by code: make turns EVERY recipe failure into exit 2, so an
+# exit-code assertion here passed whatever the recipe did.
+adopt_usage="$(make adopt 2>&1 || true)"
+grep -q 'Usage: make adopt NAME=' <<< "$adopt_usage" \
+    || { log_err "'make adopt' without NAME does not print its usage line (got: ${adopt_usage%%$'\n'*})."; adopt_errors=1; }
 # Every index [tool.uv.sources] names must exist — this is what a sloppy rename
 # breaks, and uv fails only later, at sync time.
 # …and the shipped default must already satisfy the rule adopt enforces: a fork
@@ -2436,6 +2438,11 @@ grep -Eq '^[^#]*for E in.*"local:' Makefile \
 # sanitize, LDAP/AD names (John.Doe, LAB\user) break every compose invocation.
 grep -Eq "^[^#]*tr -c 'a-z0-9_-'" Makefile \
     || { log_err "make setup lost the username sanitize — non-[a-z0-9_-] usernames would break compose project naming."; sec_errors=1; }
+# No script may fall back to sourcing a world-writable path: two did, with a
+# /tmp/util_paths.sh that no image ever holds.
+tmp_source="$(grep -nE '^[^#]*source +"?/tmp/' scripts/*.sh config/*.sh docker/*.sh 2>/dev/null | grep -v verify_repo.sh || true)"
+[ -z "$tmp_source" ] \
+    || { log_err "a script sources a file under /tmp (world-writable, and absent from every image): $(cut -d: -f1,2 <<< "$tmp_source" | tr '\n' ' ')"; sec_errors=1; }
 # mclean rm -rf roots must use ${WS_ROOT:?}: with util_paths sourced '|| true',
 # a plain ${WS_ROOT} expands empty and deletes /build /log /install.
 awk '/^mclean\(\)/,/^}/' config/util_aliases.sh | grep -E '\$\{WS_ROOT\}/' -q \
@@ -2715,6 +2722,12 @@ grep -qE '^[[:space:]]*--share\)' config/util_aliases.sh \
 for flag in $(grep -oE 'cbuild [^"'"'"']*' .vscode/tasks.json | grep -oE '\-\-[a-z-]+' | sort -u); do
     grep -qE "^[[:space:]]*${flag}\)" config/util_aliases.sh \
         || { log_err ".vscode/tasks.json runs 'cbuild ${flag}' but __parse_build_flags does not handle it."; flag_errors=1; }
+done
+# …and tab completion offers those same flags, not raw colcon/CMake ones.
+cbuild_completion="$(sed -n 's/^complete -W "\([^"]*\)" cbuild.*/\1/p' config/util_aliases.sh)"
+for flag in $adv_flags; do
+    grep -qE "(^| )${flag}( |$)" <<< "$cbuild_completion" \
+        || { log_err "tab completion for cbuild does not offer '${flag}' (offers: ${cbuild_completion:-nothing})."; flag_errors=1; }
 done
 flag_probe="$(probe_dir)"
 mkdir -p "$flag_probe/bin" "$flag_probe/config"

@@ -668,8 +668,8 @@ mclean() {
 
 # --- Tab Completions ---------------------------------------------------------
 complete -W "status opencv_args auto nvidia tegra intel amd igpu cpu" gpu 2>/dev/null || true
-complete -W "--packages-select --packages-up-to --cmake-args --event-handlers" cbuild 2>/dev/null || true
-complete -W "-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_TYPE=Debug" mbuild 2>/dev/null || true
+complete -W "--debug --release --pkg --meta" cbuild 2>/dev/null || true
+complete -W "--debug --release" mbuild 2>/dev/null || true
 complete -W "--rosdep --force" sync_deps 2>/dev/null || true
 complete -W "--all" mclean 2>/dev/null || true
 complete -W "--fix" mlint 2>/dev/null || true

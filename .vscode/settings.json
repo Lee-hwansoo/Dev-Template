@@ -104,9 +104,6 @@
     // Auto-detected from ROS_DISTRO env var; override here if needed
     // "ros.distro": "humble",
 
-    // ── Docker ───────────────────────────────────────────────────────────────
-    "docker.defaultRegistryPath": "",
-
     // ── Terminal ──────────────────────────────────────────────────────────────
     "terminal.integrated.defaultProfile.linux": "bash",
     "terminal.integrated.scrollback": 10000,

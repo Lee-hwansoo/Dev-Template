@@ -5,7 +5,7 @@
 # interactive shell recreates them.
 # =============================================================================
 
-source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || source "/tmp/util_paths.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../config/util_paths.sh" 2>/dev/null || { echo "  [ERROR] Cannot load config/util_paths.sh (broken checkout?)" >&2; exit 1; }
 devkit_require "util_logging.sh"
 LOG_PREFIX="[Links]"
 

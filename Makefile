@@ -10,7 +10,6 @@ SHELL := /bin/bash
 # (or NO_COLOR=1) comes out plain.
 DEVKIT_COLOR := $(if $(MAKE_TERMOUT),$(if $(NO_COLOR),,yes),)
 ifeq ($(DEVKIT_COLOR),)
-BLUE   :=
 GREEN  :=
 RED    :=
 YELLOW :=
@@ -19,7 +18,6 @@ BCYAN  :=
 TEAL   :=
 NC     :=
 else
-BLUE   := \033[0;34m
 GREEN  := \033[0;32m
 RED    := \033[0;31m
 YELLOW := \033[1;33m
@@ -353,10 +351,10 @@ check:
 	@MISSING=$$(awk -F= 'FNR==NR { if ($$0 ~ /^[^#][^=]*=/) want[$$1]=1; next } $$0 ~ /^[^#][^=]*=/ { delete want[$$1] } END { for (k in want) print "    - " k }' .env.example .env); \
 	if [ -n "$$MISSING" ]; then \
 		echo -e "  $(WARN) .env is missing keys present in .env.example:"; echo "$$MISSING"; \
-	@# HAS_NVIDIA reaches preflight through make's export: the "GPU but no
-	@# NVIDIA runtime" notice lives there, next to the GPU_MODE=nvidia refusal.
 		echo -e "  $(INFO) They fall back to built-in defaults; copy them over if you need to override."; \
 	fi
+	@# HAS_NVIDIA reaches preflight through make's export: the "GPU but no
+	@# NVIDIA runtime" notice lives there, next to the GPU_MODE=nvidia refusal.
 	@bash scripts/check_preflight.sh
 	@if [ "$(IS_WSL)" = "true" ]; then bash scripts/check_wsl.sh; fi
 

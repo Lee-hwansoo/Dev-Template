@@ -9,20 +9,16 @@ devel/
 install/
 log/
 logs/
-.ccache/
 
 # --- Thirdparty (vcs import) -------------------------
 src/thirdparty/*
 !src/thirdparty/.gitkeep
-/thirdparty/
-third party deps/
 !dependencies/overlay/**/COLCON_IGNORE
 !dependencies/overlay/**/CATKIN_IGNORE
 
 # --- Python ------------------------------------------
 __pycache__/
 *.py[cod]
-*$py.class
 *.egg-info/
 dist/
 .eggs/
@@ -30,9 +26,6 @@ dist/
 .venv/
 venv/
 env/
-.Python
-pip-log.txt
-pip-delete-this-directory.txt
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -50,7 +43,6 @@ pip-delete-this-directory.txt
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
-Makefile.cmake
 _build/
 colcon.meta
 compile_commands.json

@@ -305,29 +305,11 @@ fi
 # =============================================================================
 if [ "$(id -u)" = "0" ] && [ -n "${CONTAINER_USER:-}" ] && [ "${CONTAINER_USER}" != "root" ]; then
     log_ok "Dropping privileges → '${CONTAINER_USER}'"
-    user_uid="$(id -u "${CONTAINER_USER}")"
-    user_gid="$(id -g "${CONTAINER_USER}")"
-    runtime_env=(
-        "HOME=$(getent passwd "${CONTAINER_USER}" 2>/dev/null | cut -d: -f6)"
-        "USER=${CONTAINER_USER}" "LOGNAME=${CONTAINER_USER}"
-        "PATH=$PATH" "WORKSPACE_PATH=$WS_ROOT"
-        "LANG=$LANG" "LC_ALL=$LC_ALL" "LANGUAGE=$LANGUAGE"
-        "VIRTUAL_ENV=${VIRTUAL_ENV:-}" "DISPLAY=${DISPLAY:-}"
-        "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}" "XAUTHORITY=${XAUTHORITY:-}"
-        "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}" "QT_QPA_PLATFORM=${QT_QPA_PLATFORM:-}"
-        "GDK_BACKEND=${GDK_BACKEND:-}" "QT_X11_NO_MITSHM=${QT_X11_NO_MITSHM:-}"
-        "SSH_AUTH_SOCK=${SSH_AUTH_SOCK:-}"
-        "ROS_DISTRO=${ROS_DISTRO:-}" "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-}"
-        "RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-}" "ROS_MASTER_URI=${ROS_MASTER_URI:-}"
-        "ROS_HOSTNAME=${ROS_HOSTNAME:-}" "ROS_IP=${ROS_IP:-}"
-        "GPU_MODE=${GPU_MODE:-}" "NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-}"
-        "NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-}"
-        "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}" "PYTHONPATH=${PYTHONPATH:-}"
-    )
-    if command -v setpriv >/dev/null 2>&1; then
-        exec setpriv --reuid "$user_uid" --regid "$user_gid" --init-groups env "${runtime_env[@]}" "$@"
-    fi
-    exec sudo -E -u "${CONTAINER_USER}" env "${runtime_env[@]}" "$@"
+    # setpriv keeps the environment this script exported (`env` merges, it does
+    # not reset), so only the identity itself changes hands. setpriv ships in
+    # util-linux, Essential on every Ubuntu base since 20.04.
+    exec setpriv --reuid "$(id -u "${CONTAINER_USER}")" --regid "$(id -g "${CONTAINER_USER}")" --init-groups \
+        env "HOME=$(getent passwd "${CONTAINER_USER}" | cut -d: -f6)" "USER=${CONTAINER_USER}" "LOGNAME=${CONTAINER_USER}" "$@"
 else
     exec "$@"
 fi

@@ -29,11 +29,6 @@ case "$TARGET_DIR" in /*) ;; *) TARGET_DIR="${WS_ROOT}/${TARGET_DIR}" ;; esac
 # against the workspace, and 'src/thirdparty/../../../outside' passed a string
 # prefix test while pointing at another tree entirely.
 TARGET_DIR="$(devkit_resolve_path "$TARGET_DIR")"
-# bash 3.2 (macOS) has no ${var,,}.
-_devkit_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
-
-_truthy() { case "$(_devkit_lower "$1")" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac; }
-
 # --- Argument parsing ---------------------------------------------------------
 FORCE_MODE=false
 DO_ROSDEP=false
@@ -58,7 +53,7 @@ if [ "$FORCE_MODE" = true ]; then
     # explicit opt-in, and a wildcard for one directory made the fence advisory.
     case "${TARGET_DIR}/" in
         "$(devkit_resolve_path "$WS_ROOT")"/*) ;;
-        *)  if ! _truthy "${DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET:-false}"; then
+        *)  if ! devkit_is_true "${DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET:-false}"; then
                 log_error "--force would 'git clean -ffdx' outside the workspace: ${TARGET_DIR}"
                 log_error "Set DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET=1 to allow."
                 exit 2
@@ -166,7 +161,7 @@ elif [ ! -f "$REPOS_FILE" ]; then
 else
     log_info "Running vcs import → ${TARGET_DIR} ..."
     if ! vcs import "$TARGET_DIR" < "$REPOS_FILE"; then
-        if _truthy "${DEVKIT_VCS_ALLOW_FAILURE:-false}"; then
+        if devkit_is_true "${DEVKIT_VCS_ALLOW_FAILURE:-false}"; then
             log_warn "vcs import failed. Continuing (DEVKIT_VCS_ALLOW_FAILURE=1)."
         else
             log_error "vcs import failed. Fix dependencies/dependencies.repos or set DEVKIT_VCS_ALLOW_FAILURE=1."
@@ -193,7 +188,7 @@ else
         repo_name="$(basename "$repo_dir")"
         if (cd "$repo_dir" && git symbolic-ref -q HEAD >/dev/null 2>&1); then
             if ! vcs pull "$repo_dir"; then
-                if _truthy "${DEVKIT_VCS_ALLOW_FAILURE:-false}"; then
+                if devkit_is_true "${DEVKIT_VCS_ALLOW_FAILURE:-false}"; then
                     log_warn "vcs pull failed for ${repo_name}. Continuing."
                 else
                     log_error "vcs pull failed for ${repo_name}. Set DEVKIT_VCS_ALLOW_FAILURE=1 to continue."
@@ -211,7 +206,7 @@ else
         [ -d "$repo_dir/.git" ] || [ -f "$repo_dir/.git" ] || continue
         repo_name="$(basename "$repo_dir")"
         if ! (cd "$repo_dir" && git submodule update --init --recursive); then
-            if _truthy "${DEVKIT_VCS_ALLOW_FAILURE:-false}"; then
+            if devkit_is_true "${DEVKIT_VCS_ALLOW_FAILURE:-false}"; then
                 log_warn "Submodule update failed for ${repo_name}. Continuing."
             else
                 log_error "Submodule update failed for ${repo_name}. Set DEVKIT_VCS_ALLOW_FAILURE=1 to continue."
@@ -256,7 +251,7 @@ if [ "$DO_ROSDEP" = true ] && command -v rosdep >/dev/null 2>&1 && [ -n "${ROS_D
 
     SCAN_PATHS=("${WS_ROOT}/src" "$TARGET_DIR")
     if ! rosdep install --from-paths "${SCAN_PATHS[@]}" --ignore-src -r -y --rosdistro "$ROS_DISTRO"; then
-        if _truthy "${DEVKIT_ROSDEP_ALLOW_FAILURE:-false}"; then
+        if devkit_is_true "${DEVKIT_ROSDEP_ALLOW_FAILURE:-false}"; then
             log_warn "rosdep install failed. Continuing (DEVKIT_ROSDEP_ALLOW_FAILURE=1)."
         else
             log_error "rosdep install failed. Set DEVKIT_ROSDEP_ALLOW_FAILURE=1 to continue."

@@ -150,7 +150,7 @@ display_reachable() {
 }
 
 # probe_gl → gl_vendor, gl_renderer, gl_version, gl_mesa, gl_accelerated,
-#            gl_direct, gl_vram, gl_max_core  (from a single `glxinfo -B` call)
+#            gl_direct, gl_vram  (from a single `glxinfo -B` call)
 probe_gl() {
     local out
     display_reachable || return 1
@@ -166,7 +166,6 @@ probe_gl() {
         /^ *Accelerated:/                 { print "gl_accelerated=" $2 }
         /^ *Video memory:/                { print "gl_vram="     $2 }
         /^ *Version:/                     { print "gl_mesa="     $2 }
-        /^ *Max core profile version:/    { print "gl_max_core=" $2 }
     ' <<< "$out"
 }
 
