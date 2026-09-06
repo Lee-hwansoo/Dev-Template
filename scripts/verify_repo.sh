@@ -595,6 +595,16 @@ for ide_prefix in basic ros; do
             || { log_err "RESOLVE_SVC_MODE can select '${ide_prefix}-${ide_mode}', which docker-compose.dev.yml does not define."; ide_errors=1; }
     done
 done
+# A host without compose (a SLURM submit node) has nothing to attach to:
+# ide-config skips there, so `make setup` still finishes its other work.
+ide_skip="$(probe_dir scripts config docker dependencies)"
+cp Makefile "${ROOT_DIR}/.env.example" "$ide_skip/"; mkdir -p "$ide_skip/bin"
+printf '#!/bin/sh\nexit 1\n' > "$ide_skip/bin/docker"; chmod +x "$ide_skip/bin/docker"
+ide_skip_rc=0
+ide_skip_out="$(cd "$ide_skip" && PATH="$ide_skip/bin:$probe_min_path" make ide-config 2>&1)" || ide_skip_rc=$?
+{ [ "$ide_skip_rc" -eq 0 ] && grep -qi 'skipped' <<< "$ide_skip_out"; } \
+    || { log_err "make ide-config fails (rc ${ide_skip_rc}) where docker compose is unavailable, so 'make setup' dies on a submit node after doing its useful work."; ide_errors=1; }
+rm -rf "$ide_skip"
 ide_committed="$(sed -n 's/.*"service"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' .devcontainer/devcontainer.json)"
 grep -qE "^  ${ide_committed}:" docker-compose.dev.yml 2>/dev/null \
     || { log_err ".devcontainer/devcontainer.json points at '${ide_committed}', which is not a service in docker-compose.dev.yml."; ide_errors=1; }

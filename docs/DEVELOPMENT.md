@@ -364,3 +364,4 @@ DevKit은 베이스 키트이므로 진입점 이름을 바꾸면 그 위에 올
    ```
 
 VS Code는 `make setup`에서 생성한 Compose 설정을 사용합니다. `ENV`, `GPU_MODE`, 컨테이너 사용자 또는 마운트 설정을 바꾸면 `make ide-config`를 다시 실행하고 컨테이너를 다시 여세요.
+`ide-config`는 추적 파일인 `.devcontainer/devcontainer.json`의 `service`/`remoteUser`를 **이 호스트**에 맞춰 고쳐 씁니다 — 그 diff 는 커밋하지 마세요(다른 호스트에는 없는 서비스일 수 있습니다). docker compose 가 없는 호스트(SLURM 제출 노드)에서는 건너뜁니다.

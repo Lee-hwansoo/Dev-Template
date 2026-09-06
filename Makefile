@@ -422,10 +422,14 @@ start: check
 # Rewrites one key — which service — because no devcontainer variable can
 # express a profile chosen from detected hardware. A line edit, not a JSON
 # round-trip: this file is JSONC like every other IDE config here.
-# Run by `make setup`; re-run after changing ENV or GPU_MODE.
+# Run by `make setup`; re-run after changing ENV or GPU_MODE. A host without
+# compose (a SLURM submit node) has no container to attach to: skip, so that
+# `make setup` still finishes its .env / completion / xauth work there.
 ide-config:
 	$(call GUARD_HOST_ONLY)
-	@$(RESOLVE_SVC_MODE); \
+	@if ! docker compose version >/dev/null 2>&1; then \
+		echo -e "  $(INFO) docker compose is not available here — VS Code attach config skipped."; exit 0; fi; \
+	$(RESOLVE_SVC_MODE); \
 	DC=.devcontainer/devcontainer.json; \
 	mkdir -p .docker_cache && \
 	TMP=$$(mktemp .docker_cache/ide.XXXXXX) && \
