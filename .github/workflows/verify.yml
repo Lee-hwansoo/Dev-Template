@@ -41,6 +41,25 @@ jobs:
             log_warn probe 2>&1 | cat -v | grep -q "\^\[" && { echo "ANSI escape in a build log"; exit 1; }
             mkdir -p /tmp/w/install/x && : > /tmp/w/install/x/f
             bash /w/scripts/check_deps.sh /tmp/w/install'
+      # ubuntu-latest IS a native Linux host, so the detector's non-WSL branch
+      # needs no simulation here — only on a WSL2 developer machine, where
+      # /proc/version cannot be replaced, is this unreachable.
+      - name: host detection resolves on a native Linux host
+        run: |
+          bash scripts/check_env.sh --makefile > env.mk
+          grep -q '^IS_WSL := false'   env.mk || { echo "IS_WSL should be false here"; cat env.mk; exit 1; }
+          grep -q '^IS_MACOS := false' env.mk || { echo "IS_MACOS should be false here"; exit 1; }
+          # No GPU on a hosted runner: the three flags must all say so, and the
+          # Makefile must then resolve the profile to cpu rather than guessing.
+          for flag in 'HAS_NVIDIA := false' 'HAS_TOOLKIT := false' 'HAS_DRI := false'; do
+            grep -qF "$flag" env.mk || { echo "expected '$flag' on this runner"; cat env.mk; exit 1; }
+          done
+          make -n start ENV=ros >/dev/null
+          # The WSL-only mounts must be inert, or compose would bind a device
+          # that exists on no native host.
+          grep -q '^HOST_DXG_MOUNT := /dev/null:/dev/null' env.mk \
+            || { echo "the WSL DirectX mount is not neutralised on native Linux"; grep DXG env.mk; exit 1; }
+
       # --check lints and resolves every stage; nothing is built.
       - name: docker build --check
         run: |
