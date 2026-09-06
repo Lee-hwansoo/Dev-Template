@@ -2745,6 +2745,77 @@ rm -rf "$mclean_probe"
     && log_ok "mclean empties build/, devel/, log/ and install/ (keeping the venv), and fails on what it could not remove."
 
 # =============================================================================
+# [dependency-presence] "Are there external repositories?" must have ONE answer.
+#      A regex anchored to a line starting with url: saw nothing in flow-style
+#      YAML, so a populated .repos reported "nothing to import" and exited 0
+#      with vcstool absent; the first-run check counted the shipped .gitkeep as
+#      content and skipped the sync entirely.
+# =============================================================================
+deps_errors=0
+deps_probe="$(probe_dir config scripts)"
+mkdir -p "$deps_probe/dependencies" "$deps_probe/src/thirdparty" "$deps_probe/bin"
+deps_hash="0123456789abcdef0123456789abcdef01234567"
+deps_repos() { printf '%s\n' "$1" > "$deps_probe/dependencies/dependencies.repos"; }
+# Without vcstool a declared repository must FAIL, in either YAML style.
+deps_missing_tool() {
+    ( PATH="$probe_min_path" WORKSPACE_PATH="$deps_probe" \
+      bash scripts/setup_sync_deps.sh 2>&1 || true )
+}
+deps_repos "repositories:
+  a: {type: git, url: https://example.invalid/a.git, version: ${deps_hash}}"
+grep -qi 'vcstool is missing' <<< "$(deps_missing_tool)" \
+    || { log_err "a flow-style .repos reads as empty; a populated file would report 'nothing to import' and exit 0."; deps_errors=1; }
+deps_repos "repositories:
+  a:
+    type: git
+    url: https://example.invalid/a.git
+    version: ${deps_hash}"
+grep -qi 'vcstool is missing' <<< "$(deps_missing_tool)" \
+    || { log_err "a block-style .repos no longer counts as declaring a repository."; deps_errors=1; }
+deps_repos "repositories:"
+grep -qi 'No external repositories' <<< "$(deps_missing_tool)" \
+    || { log_err "an empty .repos no longer reads as empty; every container start would fail on a missing vcstool."; deps_errors=1; }
+# The shipped template, verbatim: its example is commented out, so a stock
+# workspace declares nothing. Counting those lines made every `make exec` demand
+# python3-vcstool and fired the first-run sync on every container start.
+cp dependencies/dependencies.repos "$deps_probe/dependencies/dependencies.repos"
+grep -qi 'No external repositories' <<< "$(deps_missing_tool)" \
+    || { log_err "the shipped dependencies.repos reads as populated; a stock workspace would fail on a missing vcstool."; deps_errors=1; }
+
+# The entrypoint's first-run condition, extracted and evaluated: the shipped
+# .gitkeep must not count as "already synced", and SYNC_TARGET_DIR must be used.
+# The whole block, not just the `if`: the paths it tests are computed on the
+# lines above it, and evaluating the condition alone tested empty variables.
+deps_cond="$(awk '/^SYNC_DEPS=/,/then$/' docker/entrypoint.sh \
+    | sed -e 's/^if /DEVKIT_FIRSTRUN=; if /' -e 's/; *then$/; then DEVKIT_FIRSTRUN=1; fi/' \
+    | grep -v '^#')"
+[ -n "$deps_cond" ] \
+    || { log_err "verify_repo.sh can no longer find the first-run sync condition in docker/entrypoint.sh."; deps_errors=1; }
+deps_firstrun() {   # deps_firstrun [SYNC_TARGET_DIR]
+    ( WS_ROOT="$deps_probe"; SYNC_TARGET_DIR="${1:-}"
+      eval "$deps_cond"
+      [ -n "${DEVKIT_FIRSTRUN:-}" ] ) >/dev/null 2>&1
+}
+: > "$deps_probe/src/thirdparty/.gitkeep"
+cp dependencies/dependencies.repos "$deps_probe/dependencies/dependencies.repos"
+deps_firstrun \
+    && { log_err "the first-run sync fires on the shipped .repos, whose only example is commented out."; deps_errors=1; }
+deps_repos "repositories:
+  a: {type: git, url: https://example.invalid/a.git, version: ${deps_hash}}"
+deps_firstrun \
+    || { log_err "the first-run sync is skipped when only the shipped .gitkeep is present; a filled .repos would never import."; deps_errors=1; }
+mkdir -p "$deps_probe/src/thirdparty/already"
+deps_firstrun \
+    && { log_err "the first-run sync fires on a populated target; every container start would pay for a network import."; deps_errors=1; }
+# …and it must look at the configured target, not a hardcoded src/thirdparty.
+mkdir -p "$deps_probe/elsewhere"
+deps_firstrun "$deps_probe/elsewhere" \
+    || { log_err "the first-run check ignores SYNC_TARGET_DIR and inspects src/thirdparty instead."; deps_errors=1; }
+rm -rf "$deps_probe"
+[ "$deps_errors" -eq 0 ] \
+    && log_ok "One answer for 'are there external repositories': both YAML styles, an empty file, .gitkeep and a custom target."
+
+# =============================================================================
 # Result
 # =============================================================================
 echo ""

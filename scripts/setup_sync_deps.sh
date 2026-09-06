@@ -145,8 +145,18 @@ PYLINT
     fi
 fi
 
+# One answer for "does this .repos declare anything", used by every branch
+# below. Matching only a line that STARTS with url: missed flow style; matching
+# any url: counted the commented-out example in the shipped template, which made
+# every stock workspace demand vcstool. Drop comment lines, then look for a url.
+repos_declared() {
+    [ -f "$REPOS_FILE" ] \
+        && grep -vE '^[[:space:]]*#' "$REPOS_FILE" \
+        | grep -qE '(^|[[:space:],{])url:[[:space:]]*[^[:space:]]'
+}
+
 if ! command -v vcs >/dev/null 2>&1; then
-    if [ -f "$REPOS_FILE" ] && grep -qE '^[[:space:]]+url:' "$REPOS_FILE"; then
+    if repos_declared; then
         log_error "dependencies.repos is populated but vcstool is missing. Add python3-vcstool to dependencies/apt.txt."
         exit 1
     fi

@@ -276,15 +276,23 @@ seed_rosdep_cache
 # [6] Auto Dependency Sync (first-run only)
 # =============================================================================
 SYNC_DEPS="${WS_ROOT}/scripts/setup_sync_deps.sh"
-THIRD_PARTY="${WS_ROOT}/src/thirdparty"
+# The same target the sync itself uses; a hardcoded src/thirdparty looked at the
+# wrong directory whenever SYNC_TARGET_DIR was set.
+THIRD_PARTY="${SYNC_TARGET_DIR:-${WS_ROOT}/src/thirdparty}"
+case "$THIRD_PARTY" in /*) ;; *) THIRD_PARTY="${WS_ROOT}/${THIRD_PARTY}" ;; esac
 REPOS_FILE="${WS_ROOT}/dependencies/dependencies.repos"
 # Grouping matters: the sync runs only when both inputs exist AND the target is
 # still unpopulated. Without the parentheses the `||` binds the whole chain and
 # the (slow, network-bound) sync fires on every container start.
+# '.gitkeep' is the shipped placeholder, not content: counting it meant a user
+# who filled .repos never got the first-run sync. The url test matches flow
+# style too, where the key is not at the start of the line, and skips comment
+# lines so the commented example in the shipped template does not trigger a sync.
 if [ -f "$REPOS_FILE" ] && [ -f "$SYNC_DEPS" ] && \
    { [ ! -d "$THIRD_PARTY" ] || \
-     [ -z "$(find "$THIRD_PARTY" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; } && \
-   grep -qE '^[[:space:]]{2,}[^[:space:]#]' "$REPOS_FILE" 2>/dev/null; then
+     [ -z "$(find "$THIRD_PARTY" -mindepth 1 -maxdepth 1 ! -name '.gitkeep' -print -quit 2>/dev/null)" ]; } && \
+   grep -vE '^[[:space:]]*#' "$REPOS_FILE" 2>/dev/null \
+     | grep -qE '(^|[[:space:],{])url:[[:space:]]*[^[:space:]]'; then
     log_info "First-run: syncing dependencies..."
     bash "$SYNC_DEPS" || log_warn "Dependency sync failed. Re-run with: sync_deps"
 fi
