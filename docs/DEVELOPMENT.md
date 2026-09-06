@@ -67,7 +67,7 @@ mksync
 >   프롬프트에 `(myproject-lee)` 로 보이므로 여러 워크스페이스를 오갈 때 어느 셸인지 한눈에 구분됩니다.
 > - `uv sync` 는 venv 가 이미 가진 인터프리터에 고정됩니다(`--python`). 이게 없으면 uv 가 `UV_PYTHON` 과
 >   불일치를 이유로 환경을 **재생성**해, `mksync --share`(noetic)가 만든 shared venv 가 pure 로 바뀌며 `rospy` 가 사라집니다.
-> - **프로젝트 타입 판별**: `ROS_DISTRO`가 있으면 `src/thirdparty`를 제외한 `src/`에서 `package.xml`을 찾아 **ROS**(`cbuild`)로 판별합니다. 없으면 하위 3단계의 `CMakeLists.txt`로 **CPP**(`mbuild`), 둘 다 없으면 **PYTHON**(빌드 생략)입니다.
+> - **프로젝트 타입 판별**: `ROS_DISTRO`가 있으면 `src/thirdparty`를 제외한 `src/`에서 `package.xml`을 찾아 **ROS**(`cbuild`)로 판별합니다. 없으면 저장소 루트 또는 `src/`의 `CMakeLists.txt`로 **CPP**(`mbuild`; 같은 `__cmake_entry`가 빌드 진입점을 정합니다), 둘 다 없으면 **PYTHON**(빌드 생략)입니다.
 > - **`mksync --share`**: `--system-site-packages` 옵션으로 venv를 생성하여 `rospy`·`catkin`(ROS 1) 또는 `rclpy`(ROS 2) 등 시스템 파이썬 패키지를 venv 내부에서 그대로 접근 가능하게 합니다.
 > - **ROS 이미지에서는 자동 적용**: `/opt/ros/<distro>`가 있으면 `--share` 없이도 shared 모드가 켜집니다 — ROS 파이썬 바인딩은 시스템 dist-packages에 있어 격리된 venv 에서는 import 되지 않기 때문입니다. 순수 venv 는 비-ROS 이미지에서만 의미가 있습니다.
 > - 이미 격리된 venv 가 있는데 shared 가 필요하면 `mksync`가 조용히 진행하지 않고 `mkenv --share`를 한 번 실행하라고 멈춥니다.
@@ -334,7 +334,7 @@ DevKit은 베이스 키트이므로 진입점 이름을 바꾸면 그 위에 올
 
 ## 📝 모범 사례 (Best Practices)
 
-1. **환경 소싱 (`s`)**: 빌드 후 또는 새 터미널을 열었을 때 `s` 알리애스 (`source install/setup.bash`) 실행.
+1. **환경 소싱 (`s`)**: 빌드 후 또는 새 터미널을 열었을 때 `s` 실행 — ROS 2 는 `install/setup.bash`, ROS 1 은 `devel/setup.bash` 를 고릅니다.
 2. **파이썬 가상환경 진입**: `activate` 알리애스를 통해 isolated venv 진입.
 3. **스마트 빌드**: ROS 패키지는 `cbuild`, Pure C++ 프로젝트는 `mbuild` 사용.
 4. **커밋 규약**: [Conventional Commits](https://www.conventionalcommits.org/) —

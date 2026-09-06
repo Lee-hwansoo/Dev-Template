@@ -165,8 +165,8 @@ make run-sif SIF_MODE=slurm ENV=ros
 # 현재 제출한 SLURM 작업 목록 조회 (squeue 연동)
 make slurm-status
 
-# 실행 중이거나 대기 중인 SLURM 작업 전체 취소 (scancel 연동)
-make slurm-cancel
+# 작업 하나를 ID 로 취소 (scancel 연동; ID 를 생략하면 물어봅니다)
+make slurm-cancel JOB=12345
 ```
 
 #### 2) 💡 SLURM 로그 출력 경로 및 실시간 모니터링 팁
@@ -248,7 +248,7 @@ make run-sif SIF_MODE=prod ENV=ros RUN_ARGS='ros2 run myproject train'
 
 ## 4. 트러블슈팅 (Troubleshooting)
 
-### Q1. `SIF not found: /path/to/sif` 오류가 발생합니다.
+### Q1. `SIF artifact not found: /path/to/sif` 오류가 발생합니다.
 - `SIF_FILE` 경로에 지정한 절대 경로가 올바른지 파일 존재 여부를 확인하세요:
   ```bash
   ls -la /scratch/user/images/myproject-ros-prod-amd64.sif

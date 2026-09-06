@@ -10,7 +10,7 @@
 
 아래 세 레이어는 **컨테이너 안**의 의존성입니다. 그 앞에 호스트에 있어야 하는 것들이며,
 필수 항목은 `make build` 전에 `scripts/check_preflight.sh` 가 검사합니다
-(`make check-host`). 검사 대상과 이 표는 계약 `[host-prereqs]` 로 묶여 있어 한쪽만
+(`make check`). 검사 대상과 이 표는 계약 `[host-prereqs]` 로 묶여 있어 한쪽만
 바뀌면 `make verify` 가 실패합니다.
 
 | 도구 | 필요 시점 | 없으면 |

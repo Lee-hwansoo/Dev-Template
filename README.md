@@ -23,7 +23,7 @@
 
 ```mermaid
 graph TD
-    subgraph host["호스트 환경 (Native Linux / Windows WSL2)"]
+    subgraph host["호스트 환경 (Native Linux / Windows WSL2 / macOS)"]
         MakeCenter["GNU Make Command Center<br/>(make start ENV=ros | dev)"]
     end
 
@@ -273,7 +273,7 @@ MAJOR 상승은 "파생 프로젝트가 무언가 고쳐야 한다"는 뜻입니
 | :--- | :--- | :--- |
 | 이미지 스테이지 빌드 (`base`, `build-core`) | ✅ 실행 검증 | CI(실행됨) `images.yml` image-stages |
 | ROS 저장소·GPG (noetic·humble, 라이브 및 스냅샷 키) | ✅ 실행 검증 | CI(실행됨) `images.yml` apt-key-paths |
-| 계약 스위트 48개 · Dockerfile 린트 | ✅ 실행 검증 | CI(실행됨) `verify.yml` contracts |
+| 계약 스위트 58개 · Dockerfile 린트 | ✅ 실행 검증 | CI(실행됨) `verify.yml` contracts |
 | 개발 컨테이너 스모크 (빌드 · 기동 · ROS 2 파이썬) | ✅ 실행 검증 | CI(실행됨) `images.yml` runtime-smoke · 참조 호스트 |
 | WSL2 호스트: 감지 · 빌드 · 실행 (ROS 2) | ✅ 실행 검증 | 참조 호스트 |
 | NVIDIA GPU 패스스루 (`nvidia-smi`, `libcuda`) | ✅ 실행 검증 — **WSL2 경로만**. 네이티브 Linux 는 장치 노드가 달라(`/dev/nvidia*`) 별개 | 참조 호스트 |
