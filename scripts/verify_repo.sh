@@ -2885,6 +2885,44 @@ grep -qE '^[^#]*util_setup_links\.sh.*--skip-compile-commands' config/init_bash.
     && log_ok "A build refreshes the aggregated compile database (and drops removed packages); shell startup does not."
 
 # =============================================================================
+# [library-loader] devkit_require must report what actually happened. It ran
+#      `source` and returned 0 regardless, then recorded the library as loaded —
+#      so a partly-initialised shell looked healthy and the next call skipped
+#      the retry.
+# =============================================================================
+loader_errors=0
+loader_probe="$(probe_dir)"
+mkdir -p "$loader_probe/config" "$loader_probe/scripts"
+cp "${ROOT_DIR}/config/util_paths.sh" "$loader_probe/config/"
+printf 'return 17\n'   > "$loader_probe/scripts/util_devkit_broken.sh"
+printf 'DEVKIT_OK=1\n' > "$loader_probe/scripts/util_devkit_fine.sh"
+loader_out="$( WORKSPACE_PATH="$loader_probe" bash -c '
+    cd "$WORKSPACE_PATH" && source config/util_paths.sh
+    devkit_require util_devkit_broken.sh 2>/dev/null; printf "first=%s " $?
+    devkit_require util_devkit_broken.sh 2>/dev/null; printf "again=%s " $?
+    devkit_require util_devkit_fine.sh;               printf "good=%s ok=%s " $? "${DEVKIT_OK:-unset}"
+    devkit_require util_devkit_fine.sh;               printf "cached=%s" $?' 2>/dev/null || true )"
+rm -rf "$loader_probe"
+case "$loader_out" in
+    *"first=17"*) ;;
+    *) log_err "devkit_require returns 0 for a library that failed to load: ${loader_out}"; loader_errors=1 ;;
+esac
+case "$loader_out" in
+    *"again=17"*) ;;
+    *) log_err "devkit_require remembers a FAILED library as loaded and skips the retry: ${loader_out}"; loader_errors=1 ;;
+esac
+case "$loader_out" in
+    *"good=0 ok=1"*) ;;
+    *) log_err "devkit_require no longer loads a working library: ${loader_out}"; loader_errors=1 ;;
+esac
+case "$loader_out" in
+    *"cached=0"*) ;;
+    *) log_err "devkit_require re-sources a library it already loaded: ${loader_out}"; loader_errors=1 ;;
+esac
+[ "$loader_errors" -eq 0 ] \
+    && log_ok "devkit_require propagates a failed load, retries it, and caches only what succeeded."
+
+# =============================================================================
 # Result
 # =============================================================================
 echo ""

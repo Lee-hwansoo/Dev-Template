@@ -124,7 +124,15 @@ devkit_require() {
     fi
 
     if [ -f "$target_path" ]; then
-        source "$target_path"
+        # Remember it as loaded only if it LOADED. Recording success for a
+        # library that failed left a partly-initialised shell looking healthy,
+        # and the next devkit_require returned 0 without retrying.
+        local rc=0
+        source "$target_path" || rc=$?
+        if [ "$rc" -ne 0 ]; then
+            echo -e "\033[0;31m[DEVKIT-FATAL]\033[0m '$script_name' failed to load (exit ${rc})" >&2
+            return "$rc"
+        fi
         eval "${flag_var}=true"
         return 0
     fi
