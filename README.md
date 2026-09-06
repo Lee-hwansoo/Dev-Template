@@ -7,7 +7,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"/>
   <img src="https://img.shields.io/badge/Platform-Native%20Linux%20%7C%20Windows%20WSL2%20%7C%20macOS-orange.svg" alt="Platform"/>
-  <img src="https://img.shields.io/badge/ROS-ROS%201%20Noetic%20%7C%20ROS%202%20Humble-brightgreen.svg" alt="ROS Support"/>
+  <img src="https://img.shields.io/badge/ROS-ROS%202%20Humble%20%7C%20ROS%201%20Noetic%20(legacy)-brightgreen.svg" alt="ROS Support"/>
   <img src="https://img.shields.io/badge/HPC-Apptainer%20%7C%20SLURM-purple.svg" alt="HPC Ready"/>
 </p>
 
@@ -54,7 +54,7 @@ graph TD
 > 그리고 컨테이너 안에서 `mksync`. 나머지 타겟은 `make help`, 컨테이너 숏컷은 `h`로 언제든
 > 꺼내 볼 수 있으니 외울 필요가 없습니다.
 
-### 1. ROS 2 / ROS 1 개발 환경 시작 (`ENV=ros`)
+### 1. ROS 2 개발 환경 시작 (`ENV=ros`)
 
 ```bash
 # 0) 최초 1회: .env 생성 + X11 인증 + 탭 자동완성 등록
@@ -272,7 +272,8 @@ MAJOR 상승은 "파생 프로젝트가 무언가 고쳐야 한다"는 뜻입니
 | 조합 | 상태 | 근거 |
 | :--- | :--- | :--- |
 | 이미지 스테이지 빌드 (`base`, `build-core`) | ✅ 실행 검증 | CI(실행됨) `images.yml` image-stages |
-| ROS 저장소·GPG (noetic·humble, 라이브 및 스냅샷 키) | ✅ 실행 검증 | CI(실행됨) `images.yml` apt-key-paths |
+| ROS 저장소·GPG (humble, 라이브 및 스냅샷 키; noetic) | ✅ 실행 검증 | CI(실행됨) `images.yml` apt-key-paths |
+| **ROS 1 noetic** (레거시 티어 — EOL 2025-05, 동작은 유지·검증되나 새 기능은 ROS 2 에만) | ✅ 실행 검증 — 계약(`build-entrypoints`·`workspace-overlay`)과 apt 키 경로 | CI(실행됨) · `make verify` |
 | 계약 스위트 58개 · Dockerfile 린트 | ✅ 실행 검증 | CI(실행됨) `verify.yml` contracts |
 | 개발 컨테이너 스모크 (빌드 · 기동 · ROS 2 파이썬) | ✅ 실행 검증 | CI(실행됨) `images.yml` runtime-smoke · 참조 호스트 |
 | WSL2 호스트: 감지 · 빌드 · 실행 (ROS 2) | ✅ 실행 검증 | 참조 호스트 |

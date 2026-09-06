@@ -483,10 +483,11 @@ distro_errors=0
 apt_distros="$(sed -n 's/^ *humble|iron|\(.*\)) ;;$/humble iron \1/p' scripts/util_apt_helper.sh \
                | tr '|' ' ' | tr -s ' ')"
 env_distros="$(sed -n 's/^ *\([a-z|]*\)) *distro_base=.*/\1/p' scripts/check_env.sh | tr '|' ' ' | tr -s ' ')"
-{ [ "$(wc -w <<< "$apt_distros")" -ge 8 ] && [ "$(wc -w <<< "$env_distros")" -ge 6 ]; } \
+{ [ "$(wc -w <<< "$apt_distros")" -ge 6 ] && [ "$(wc -w <<< "$env_distros")" -ge 6 ]; } \
     || { log_err "the ROS distro lists could not be parsed (apt='${apt_distros}' base='${env_distros}')."; distro_errors=1; }
+# Every distro one side accepts, the other must too — no pre-20.04 names that
+# only ever failed later at apt (melodic/kinetic were carried for years).
 for ros_distro in $apt_distros; do
-    case "$ros_distro" in melodic|kinetic) continue ;; esac   # ROS 1, pre-20.04 bases
     grep -qw -- "$ros_distro" <<< "$env_distros" \
         || { log_err "check_env.sh has no base image for '${ros_distro}', which util_apt_helper.sh accepts."; distro_errors=1; }
 done
@@ -527,8 +528,13 @@ printf 'ROS_DISTRO=devkit-bogus-distro\n' > "$distro_probe/.env"
 rm -rf "$distro_probe"
 [ "$rc" -ne 0 ] \
     || { log_err "check_env.sh accepts an unknown ROS_DISTRO and picks a base image for it; the image would build on the wrong Ubuntu."; distro_errors=1; }
+grep -rqE 'melodic|kinetic' Makefile scripts config docker --exclude=verify_repo.sh \
+    && { log_err "a pre-20.04 ROS 1 name (melodic/kinetic) is back in the code; only noetic is ROS 1 here."; distro_errors=1; }
+# Both places a reader looks: the badge and the support-matrix row.
+{ grep -qiE 'badge/ROS-.*noetic.*legacy' README.md && grep -qiE '^\|.*noetic.*레거시' README.md; } \
+    || { log_err "README does not mark ROS 1 noetic as the legacy tier in both the badge and the support matrix."; distro_errors=1; }
 [ "$distro_errors" -eq 0 ] \
-    && log_ok "Every supported ROS distro has a base image, and an unknown one is refused ($(wc -w <<< "$apt_distros") distros)."
+    && log_ok "Every supported ROS distro has a base image, an unknown one is refused, and ROS 1 is noetic only, marked legacy ($(wc -w <<< "$apt_distros") distros)."
 
 # =============================================================================
 # [host-identity] The container account must survive a base image that already
@@ -2211,24 +2217,24 @@ elif 'build-system' in d:
     print("a [build-system] makes `uv sync` build src/ as a wheel; there is no package there to build")
 elif uv.get('package') is not False:
     print("[tool.uv] package is not declared false; whether src/ is installed as a package is left to inference")
+elif d.get('project', {}).get('optional-dependencies') or uv.get('index') or uv.get('sources'):
+    print("the template declares optional-dependencies / uv indexes for real; the torch split is a commented example so no fork pays for a resolution it did not ask for")
+elif not re.search(r'(?m)^# \[project\.optional-dependencies\]', pathlib.Path('src/pyproject.toml').read_text()):
+    print("the commented optional-dependencies example is gone; docs/DEPENDENCIES.md still points at it")
 else:
     print('ok')
 PYINDEX
 )"
 [ "$uv_index_ok" = "ok" ] \
     || { log_err "src/pyproject.toml: ${uv_index_ok}."; adopt_errors=1; }
-elif d.get('project', {}).get('optional-dependencies') or uv.get('index') or uv.get('sources'):
-    print("the template declares optional-dependencies / uv indexes for real; the torch split is a commented example so no fork pays for a resolution it did not ask for")
-elif not re.search(r'(?m)^# \[project\.optional-dependencies\]', pathlib.Path('src/pyproject.toml').read_text()):
-    print("the commented optional-dependencies example is gone; docs/DEPENDENCIES.md still points at it")
+grep -q 'name = "torch"' src/uv.lock 2>/dev/null \
+    && { log_err "src/uv.lock still resolves torch; the lock was not regenerated after the extras became an example."; adopt_errors=1; }
 # The description is user text. Spliced straight into a TOML basic string, a
 # quote produced description = "Robot "A"" — and adopt reported success.
 adopt_probe="$(probe_dir scripts config docker dependencies)"
 mkdir -p "$adopt_probe/src"
 cp Makefile "${ROOT_DIR}/.env.example" "$adopt_probe/"
 cp "${ROOT_DIR}/src/pyproject.toml" "$adopt_probe/src/"
-grep -q 'name = "torch"' src/uv.lock 2>/dev/null \
-    && { log_err "src/uv.lock still resolves torch; the lock was not regenerated after the extras became an example."; adopt_errors=1; }
 cp "${ROOT_DIR}/.env.example" "$adopt_probe/.env"
 adopt_desc_case() {   # adopt_desc_case <description>
     cp "${ROOT_DIR}/src/pyproject.toml" "$adopt_probe/src/pyproject.toml"
@@ -2539,18 +2545,6 @@ term_recipe="$(make -n term 2>/dev/null | grep -E 'docker exec -d' || true)"
     || { log_err "'make term' launches a terminal without the EXEC_USER_FLAG the other attach targets use; every pane would be a root shell."; sec_errors=1; }
 grep -qE 'terminator -g ' <<< "$term_recipe" && ! grep -qE 'terminator -u' <<< "$term_recipe" \
     || { log_err "'make term' passes the terminator layout with a flag other than -g (-u is --no-dbus; a positional path aborts the launch)."; sec_errors=1; }
-grep -qE '(^|[[:space:]])x11-utils([[:space:]\\]|$)' docker/Dockerfile \
-    || { log_err "x11-utils dropped from the image; 'make term' has no way left to probe the display."; sec_errors=1; }
-grep -Eq '^[^#]*for E in.*"local:' Makefile \
-    && { log_err "xhost 'local:' grant reintroduced — it admits EVERY local user, not just root."; sec_errors=1; }
-# make setup writes the username into COMPOSE_PROJECT_NAME: without the tr
-# sanitize, LDAP/AD names (John.Doe, LAB\user) break every compose invocation.
-grep -Eq "^[^#]*tr -c 'a-z0-9_-'" Makefile \
-    || { log_err "make setup lost the username sanitize — non-[a-z0-9_-] usernames would break compose project naming."; sec_errors=1; }
-# No script may fall back to sourcing a world-writable path: two did, with a
-# /tmp/util_paths.sh that no image ever holds.
-tmp_source="$(grep -nE '^[^#]*source +"?/tmp/' scripts/*.sh config/*.sh docker/*.sh 2>/dev/null | grep -v verify_repo.sh || true)"
-[ -z "$tmp_source" ] \
 # terminator and its font are OPT-IN: offered in dependencies/apt.txt as a
 # commented '# gui' line, absent from the Dockerfile, nothing fetched from
 # GitHub into every image — and `make term` must probe for the binary and say
@@ -2563,6 +2557,18 @@ grep -qE '^[^#]*curl [^#]*github\.com' docker/Dockerfile \
     && { log_err "docker/Dockerfile downloads from GitHub into the image (the D2Coding font once did); fonts are opt-in via dependencies/."; sec_errors=1; }
 make -n term 2>/dev/null | grep -q 'command -v "$TERM_BIN"' && make -n term 2>/dev/null | grep -q 'dependencies/apt.txt' \
     || { log_err "'make term' does not probe for the terminal binary and point at dependencies/apt.txt; with terminator opt-in it would silently launch nothing."; sec_errors=1; }
+grep -qE '(^|[[:space:]])x11-utils([[:space:]\\]|$)' docker/Dockerfile \
+    || { log_err "x11-utils dropped from the image; 'make term' has no way left to probe the display."; sec_errors=1; }
+grep -Eq '^[^#]*for E in.*"local:' Makefile \
+    && { log_err "xhost 'local:' grant reintroduced — it admits EVERY local user, not just root."; sec_errors=1; }
+# make setup writes the username into COMPOSE_PROJECT_NAME: without the tr
+# sanitize, LDAP/AD names (John.Doe, LAB\user) break every compose invocation.
+grep -Eq "^[^#]*tr -c 'a-z0-9_-'" Makefile \
+    || { log_err "make setup lost the username sanitize — non-[a-z0-9_-] usernames would break compose project naming."; sec_errors=1; }
+# No script may fall back to sourcing a world-writable path: two did, with a
+# /tmp/util_paths.sh that no image ever holds.
+tmp_source="$(grep -nE '^[^#]*source +"?/tmp/' scripts/*.sh config/*.sh docker/*.sh 2>/dev/null | grep -v verify_repo.sh || true)"
+[ -z "$tmp_source" ] \
     || { log_err "a script sources a file under /tmp (world-writable, and absent from every image): $(cut -d: -f1,2 <<< "$tmp_source" | tr '\n' ' ')"; sec_errors=1; }
 # mclean with no WS_ROOT (util_paths sourced '|| true' and failed) must stop
 # before its first find/rm: a plain ${WS_ROOT} once turned it into rm -rf /build.

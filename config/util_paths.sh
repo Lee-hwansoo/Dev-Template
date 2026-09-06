@@ -80,8 +80,8 @@ devkit_is_true() {
 devkit_overlay_setup() {
     local first second candidate
     case "${ROS_DISTRO:-}" in
-        noetic|melodic|kinetic) first=devel;   second=install ;;
-        *)                      first=install; second=devel   ;;
+        noetic) first=devel;   second=install ;;
+        *)      first=install; second=devel   ;;
     esac
     for candidate in "$first" "$second"; do
         if [ -f "${WS_ROOT}/${candidate}/setup.bash" ]; then

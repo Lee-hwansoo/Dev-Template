@@ -102,7 +102,7 @@ __parse_share_flag() {
             *) DEVKIT_REMAINING_ARGS+=("$arg") ;;
         esac
     done
-    [ "${ROS_DISTRO:-}" = "noetic" ] && DEVKIT_SHARE_MODE=true
+    # Shared iff ROS is installed: the bindings live in the system interpreter.
     [ ! -d "/opt/ros/${ROS_DISTRO:-}" ] || DEVKIT_SHARE_MODE=true
 }
 

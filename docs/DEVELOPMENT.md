@@ -312,6 +312,13 @@ make verify && make build && make test
 
 ---
 
+## 🧓 레거시 티어 (ROS 1)
+
+ROS 1 noetic 은 2025 년 5 월에 EOL 이 되었습니다. DevKit 은 그 경로를 **유지하고 계약으로 검증**하지만
+(`catkin_make`·`devel/` 오버레이·ROS 1 apt 키 경로·`--share` venv) 새 기능은 ROS 2 에만 추가합니다.
+20.04 이전 배포판 이름(melodic·kinetic)은 베이스 이미지 매핑이 없어 어차피 빌드되지 않았으므로 제거했습니다 —
+`ROS_DISTRO=noetic` 만 ROS 1 입니다.
+
 ## 🔁 이전 이름 (Deprecated Names)
 
 DevKit은 베이스 키트이므로 진입점 이름을 바꾸면 그 위에 올린 프로젝트의 CI가 깨집니다.

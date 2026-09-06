@@ -112,7 +112,7 @@ fi
 if [ ! -d "/opt/ros/${ROS_DISTRO:-}" ]; then
     _hw_skip "ROS: not installed in this image${ROS_DISTRO:+ (ROS_DISTRO=${ROS_DISTRO} comes from compose)}"
 elif [ -n "${ROS_DISTRO:-}" ]; then
-    case "$ROS_DISTRO" in noetic|melodic|kinetic) ROS_VER="ROS 1" ;; *) ROS_VER="ROS 2" ;; esac
+    case "$ROS_DISTRO" in noetic) ROS_VER="ROS 1" ;; *) ROS_VER="ROS 2" ;; esac
     _hw_ok "ROS: ${ROS_VER} ${ROS_DISTRO}"
     if [ "$ROS_VER" = "ROS 1" ]; then
         [ -z "${ROS_MASTER_URI:-}" ] && _hw_err "ROS_MASTER_URI not set — roscore will not start" \

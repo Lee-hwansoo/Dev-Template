@@ -75,7 +75,7 @@ select_packages() {
 
     if [ -n "$distro" ]; then
         case "$distro" in
-            noetic|melodic|kinetic) other_tag="ros2" ;;
+            noetic) other_tag="ros2" ;;
             *)                      other_tag="ros1" ;;
         esac
     fi
@@ -200,11 +200,11 @@ case "$COMMAND" in
         # Guard first: a typo'd distro would otherwise configure the wrong
         # repository family and only fail much later, at package install.
         case "$distro" in
-            humble|iron|jazzy|kilted|rolling|foxy|noetic|melodic|kinetic) ;;
-            *)  log_error "Unknown ROS distro: '${distro}' (supported: humble iron jazzy kilted rolling foxy noetic melodic kinetic)"
+            humble|iron|jazzy|kilted|rolling|foxy|noetic) ;;
+            *)  log_error "Unknown ROS distro: '${distro}' (supported: humble iron jazzy kilted rolling foxy noetic)"
                 exit 2 ;;
         esac
-        case "$distro" in noetic|melodic|kinetic) family=ros ;; *) family=ros2 ;; esac
+        case "$distro" in noetic) family=ros ;; *) family=ros2 ;; esac
         # HTTP on purpose: packages.ros.org answers TLS with a *.osuosl.org
         # certificate, so https:// fails the hostname check and apt-get update
         # dies. Integrity comes from signed-by, which is apt's actual trust
