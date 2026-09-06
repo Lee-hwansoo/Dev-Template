@@ -2222,7 +2222,30 @@ elif d.get('project', {}).get('optional-dependencies') or uv.get('index') or uv.
 elif not re.search(r'(?m)^# \[project\.optional-dependencies\]', pathlib.Path('src/pyproject.toml').read_text()):
     print("the commented optional-dependencies example is gone; docs/DEPENDENCIES.md still points at it")
 else:
-    print('ok')
+    # The example, uncommented the way the docs say, must be one valid TOML
+    # document: a second [tool.uv] header in the example once broke the parse.
+    text = pathlib.Path('src/pyproject.toml').read_text()
+    inside = False; lines = []
+    for line in text.splitlines():
+        if line.startswith('# --- opt-in example: begin'): inside = True; continue
+        if line.startswith('# --- opt-in example: end'):   inside = False; continue
+        if inside or line.startswith('# conflicts = '):
+            lines.append(line[2:] if line.startswith('# ') else ('' if line == '#' else line))
+        else:
+            lines.append(line)
+    try:
+        ex = tomllib.loads("\n".join(lines))
+    except tomllib.TOMLDecodeError as e:
+        print(f"the opt-in example does not parse once uncommented: {e}"); raise SystemExit
+    exuv = ex.get('tool', {}).get('uv', {})
+    exidx = {i['name'] for i in exuv.get('index', [])}
+    exrefs = {e['index'] for v in exuv.get('sources', {}).values() for e in v if 'index' in e}
+    if not ex.get('project', {}).get('optional-dependencies'):
+        print("the uncommented example declares no optional-dependencies")
+    elif exrefs - exidx or not exuv.get('conflicts'):
+        print(f"the uncommented example is inconsistent (indexes {sorted(exrefs - exidx)} missing, conflicts {'present' if exuv.get('conflicts') else 'absent'})")
+    else:
+        print('ok')
 PYINDEX
 )"
 [ "$uv_index_ok" = "ok" ] \
