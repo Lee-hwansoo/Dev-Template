@@ -133,7 +133,7 @@ mksync && git add src/uv.lock && git commit -m "chore: pin python dependencies"
 | **`make start [ENV=...]`** | **컨테이너 기동**: 백그라운드 개발 컨테이너 시작 |
 | **`make shell / term`** | **컨테이너 진입**: 대화형 셸 진입 / 새 터미널 창 오픈 (`term`은 opt-in — `dependencies/apt.txt`의 `terminator # gui` 주석 해제) |
 | **`make gpus`** | **호스트 GPU 모니터링**: 호스트 PC의 NVIDIA GPU / iGPU 실시간 VRAM 및 가속 상태 조회 |
-| **`make status / check`** | **진단 리포트**: 프로젝트 설정, GPU/GUI 모드, 렌더링 디바이스 종합 점검 |
+| **`make status`** | **진단 리포트**: 프로젝트 설정, 감지된 호스트 배선, 실행 중 컨테이너 (`check` 를 먼저 수행) |
 | **`make test / lint`** | **품질 루프**: 프로젝트 테스트 실행 / 스타일·린트 검사 (`FIX=1`로 자동 수정). 러너는 워크스페이스 형태(ROS·CMake·순수 Python)에서 자동 결정 |
 | **`make verify`** | **무결성 검증**: 문법·Makefile·호스트 감지·APT 태그 필터·셸 환경 동등성·GPG 핀·정리 의미론·SIF 파이프라인·IDE 설정·보안 기본값 등 **58개 계약**을 검증 |
 | **`make bake-prod`** | **Apptainer SIF 추출**: 원격 HPC/SLURM 배포용 단일 바이너리 이미지 생성 |
@@ -207,7 +207,7 @@ mksync && git add src/uv.lock && git commit -m "chore: pin python dependencies"
 > 현재 감지 결과 전체는 **`make status`** 의 `[Detected Host Wiring]` 섹션에서 확인할 수 있습니다.
 >
 > 감지 실패 시 캐시는 **기록되지 않고 make가 즉시 중단**되므로(원자적 쓰기), 부분 감지 결과가 조용히 재사용되는 일은 없습니다.
-> `help`/`setup`/`verify`/`clean*`/`down`/`logs`/`stop`/`slurm-*` 타겟은 감지를 아예 건너뛰어 프로브 비용을 내지 않습니다.
+> `help`/`setup`/`adopt`/`verify`/`clean*`/`down`/`logs`/`stop`/`slurm-*`/`run-sif` 등 컨테이너를 만들지 않는 타겟은 감지를 건너뛰어 프로브 비용을 내지 않습니다(목록은 Makefile 의 `DETECTOR_EXEMPT`).
 
 ---
 

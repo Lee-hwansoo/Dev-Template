@@ -25,7 +25,7 @@ HPC 및 클러스터 환경 배포를 위해 워크스페이스를 단일 이진
 
 | 변수 | 기본값 | 설명 |
 | :--- | :--- | :--- |
-| **`SHARE=1`** | *(없음)* | `bake-dev` 전용. 스냅샷 내부 `mksync --share` 수행 (ROS 1 Noetic) |
+| **`SHARE=1`** | *(없음)* | `bake-dev` 전용. 비-ROS 스냅샷에도 `--system-site-packages` venv 를 만듭니다 (ROS 이미지는 어차피 자동 share) |
 | **`PROD_FULL_CUDA=1`** | `false` | 런타임 CUDA를 최소 셋이 아닌 전체 툴킷으로 포함 (`FULL_CUDA` 빌드 인자) |
 | **`IMAGE_TAG=`** | `latest` | 릴리스 메타데이터(`/etc/devkit/devkit-release.json`)에 기록될 태그 |
 | **`SOURCE_DATE_EPOCH=`** | *(없음)* | 재현 가능 빌드용 고정 타임스탬프 |
@@ -94,7 +94,7 @@ DEVKIT_STRIP_SOURCE=1 DEVKIT_FAIL_ON_SOURCE=1 make bake-prod ENV=ros
 
 **완전 재현이 필요한 경우의 권장 절차**
 
-`DEVKIT_REQUIRE_PINNED=1` 검사는 템플릿의 블록형 `.repos` 형식(저장소명 2칸, 필드 4칸 들여쓰기)을 사용합니다. 태그·짧은 해시·누락된 버전·지원하지 않는 형식은 거부합니다.
+`DEVKIT_REQUIRE_PINNED=1` 검사는 PyYAML 이 있으면(ROS 이미지에는 vcstool 이 끌어옵니다) 블록형·플로우형 어느 YAML 이든 파싱하고, 없으면 awk 로 읽되 **읽지 못한 줄이 있으면 실패**합니다(unread ≠ pinned). 40자 전체 커밋 해시만 통과하며 태그·짧은 해시·누락된 버전은 거부합니다.
 
 ```bash
 # 1) Python 의존성 잠금 — 의존성을 바꿀 때마다 갱신해 커밋
@@ -160,5 +160,9 @@ docker run --rm img cat /etc/devkit/devkit-release.json | grep sha256
    공유하니 `.env`에 고유한 `ROS_DOMAIN_ID`를 두고, 필요하면 `NETWORK_MODE`/`IPC_MODE`로 좁히세요.
 4. **프로덕션 런타임은 non-root uid**: 배포 이미지는 `USER`로 uid를 낮춰 실행하며
    `install/`·`/etc/devkit`을 읽기만 합니다(k8s `runAsNonRoot` 호환). Apptainer는 `USER`를
-   무시하고 **호출한 사용자**로 돌므로, 인터프리터도 임의 uid가 읽을 수 있는 `/opt/uv/python`에
-   둡니다. check [sif-contract]가 두 조건을 모두 검사합니다.
+   무시하고 **호출한 사용자**로 돌므로, `ENV=dev` 의 순수 venv 가 쓰는 인터프리터는 임의 uid가 읽을 수
+   있는 `/opt/uv/python`에 둡니다. `ENV=ros` 의 venv 는 시스템 인터프리터를 공유하므로 그 트리를 비워
+   싣지 않습니다. check [sif-contract]가 두 조건을 모두 검사합니다.
+5. **런타임에는 apt 부트스트랩 도구가 없습니다**: `base` 가 저장소 설정에 쓴 curl·gnupg·lsb-release 는
+   `purge-bootstrap` 이 제거합니다 — 설치된 패키지가 여전히 의존하는 것(예: `ros-*-libcurl-vendor` → curl)만
+   남깁니다. 배포물은 키를 받아올 일도, 저장소를 더할 일도 없습니다.

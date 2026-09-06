@@ -71,7 +71,7 @@ mksync
 > - **`mksync --share`**: `--system-site-packages` 옵션으로 venv를 생성하여 `rospy`·`catkin`(ROS 1) 또는 `rclpy`(ROS 2) 등 시스템 파이썬 패키지를 venv 내부에서 그대로 접근 가능하게 합니다.
 > - **ROS 이미지에서는 자동 적용**: `/opt/ros/<distro>`가 있으면 `--share` 없이도 shared 모드가 켜집니다 — ROS 파이썬 바인딩은 시스템 dist-packages에 있어 격리된 venv 에서는 import 되지 않기 때문입니다. 순수 venv 는 비-ROS 이미지에서만 의미가 있습니다.
 > - 이미 격리된 venv 가 있는데 shared 가 필요하면 `mksync`가 조용히 진행하지 않고 `mkenv --share`를 한 번 실행하라고 멈춥니다.
-> - **추가 인자 전달**: `--share`를 제외한 나머지 인자는 그대로 `uv sync`로 전달됩니다 (예: `mksync --extra gpu`).
+> - **추가 인자 전달**: `--share`를 제외한 나머지 인자는 그대로 `uv sync`로 전달됩니다 (예: `mksync --extra gpu` — `pyproject.toml` 이 그 extra 를 선언한 뒤에).
 > - `cbuild` / `mbuild` / `mksync` / `mkenv`는 모두 **함수**로 정의되어 있어 `docker build`의 비대화형 셸에서도 호출됩니다
 >   (별칭은 비대화형 셸에서 전개되지 않으므로 빌드 진입점은 별칭으로 만들지 마세요 — `make verify` [build-entrypoints]이 이를 강제합니다).
 
@@ -297,10 +297,46 @@ make verify && make build && make test
 
 ## 🤖 CI (GitHub Actions)
 
-개발 도구이므로 **흔한 push 가 컨테이너 빌드를 기다리지 않도록** 두 티어로 나눠 두었습니다.
+세 워크플로가 세 티어를 이룹니다. 흔한 push 가 컨테이너 빌드를 기다리지 않도록 빠른 티어를 분리했고,
+무거운 잡은 cron·수동 전용입니다. 셋 모두 `concurrency: cancel-in-progress` 로 같은 ref 의 이전 실행을 취소합니다.
 
-| 워크플로 | 트리거 | 내용 | 실작업 |
-| :--- | :--- | :--- | :--- |
+> **호스트 OS 범위**: CI 는 **Ubuntu(네이티브 Linux)** 와 **macOS** 러너에서 돕니다. GitHub 에 WSL2 러너는 없으므로
+> WSL2 경로(`/proc/version` 판정·`/dev/dxg`·`/usr/lib/wsl`·WSLg 소켓)는 CI 가 아니라 README 지원 매트릭스의
+> **참조 호스트** 실측으로만 검증됩니다.
+
+### `verify.yml` — 빠른 티어 (모든 push · PR, 이미지 빌드 없음)
+
+| 잡 | 러너 | 무엇을 증명하나 |
+| :--- | :--- | :--- |
+| `contracts` | ubuntu | `make verify`(계약 전체) · tty·BASH_ENV 없는 `ubuntu:22.04` 컨테이너에서 `util_aliases.sh` 부트스트랩 · 네이티브 Linux 호스트 감지(`IS_WSL=false`, GPU 플래그, DXG 마운트 중립) · `docker build --check` 멀티스테이지 린트 |
+| `macos-host` | macos | 같은 `make verify` 를 bash 3.2 · BSD sed/awk/stat 위에서 · macOS 호스트 감지가 cpu 프로필로 해석 · 모든 스크립트가 `--help` 에 0 으로 응답 |
+
+### `images.yml` — 느린 티어 (키트의 이미지 파이프라인)
+
+트리거: `docker/**` · `scripts/util_apt_helper.sh` · `scripts/util_cuda_apt.sh` · `dependencies/apt.txt` · `dependencies/apt_ros.txt` ·
+워크플로 자신 · 매주 월요일 03:00 UTC · 수동. 파생 프로젝트의 의존성(`src/pyproject.toml`, `.repos`)은 여기서 보지 않습니다 —
+그것은 `project.yml` 의 몫입니다.
+
+| 잡 | 언제 | 무엇을 증명하나 |
+| :--- | :--- | :--- |
+| `apt-key-paths` | push마다 | 컨테이너 안(tty 없음)에서 `setup-ros-repo` 실행 — noetic/20.04, humble/22.04, humble 스냅샷 키 — 와 CUDA 저장소 핀 |
+| `apt-lists-resolve` | push마다 | Dockerfile 의 apt 목록을 뽑아 20.04 · 22.04 · 24.04 에서 후보 유무만 확인 (빌드 없이 ~30 s) |
+| `image-stages` | push마다 | `base`·`build-core` 실제 빌드 — BASH_ENV 배선, 관리 인터프리터의 non-root 실행, uid/gid 충돌 해소(macOS 501:20, 이름 충돌 시 원인 명시) |
+| `runtime-smoke` | cron · 수동 | 전체 ROS 이미지 → `make start` → 비-bash 프로세스에서 `import rclpy` → `mksync` 후 venv 활성·명명 → ROS venv 가 시스템 인터프리터인지 |
+| `arm64-image` | cron · 수동 | QEMU 로 arm64 `base` 빌드, 아키텍처 태그와 `sif_arch` 일치 |
+| `sif-artifact` | cron · 수동 | 실제 Apptainer 로 prod SIF 굽기 — sha256·provenance 사이드카, 호출 uid 의 venv 접근, `src/` 미포함, 실행 기록의 종료 코드 전파(0 과 7) |
+| `prod-artifact` | cron · 수동 (dev · ros 매트릭스) | `prod-runtime` 체인 — 임의 uid 에서 venv 유지, ROS 는 시스템 인터프리터·빈 `/opt/uv`, dev 는 부트스트랩 도구 부재, 매니페스트의 템플릿 버전 |
+
+### `project.yml` — 파생 프로젝트의 루프
+
+트리거: `src/**` · `dependencies/**` · 워크플로 자신 · 수동. `make verify → setup → build → start → mksync → lint → test`.
+키트가 아니라 **당신의 코드**를 검증하며, 포크가 자기 것으로 손볼 파일은 이것 하나입니다.
+
+> `config/**` 변경은 런타임 잡을 트리거하지 않습니다 — 그 부류의 회귀(`LD_LIBRARY_PATH` 오염, venv 미활성,
+> tty 없는 MOTD)는 호스트에서 도는 계약으로 고정돼 있어 빠른 티어가 바로 잡습니다.
+> 병합 전에는 `runtime-smoke` 를 수동으로 한 번 돌리는 것을 권장합니다.
+
+--- | :--- | :--- | :--- |
 | `verify.yml` | 모든 push · PR | `make verify`(계약 전체) + `docker build --check`(레이어 없이 멀티스테이지 린트) | **수 초** |
 | `images.yml` | `docker/**`·`dependencies/**`·apt 헬퍼 변경 시 + 주간 cron + 수동 | ROS 1/ROS 2 apt 키 경로(컨테이너 안, tty 없음) · CUDA 저장소 핀 · `base`/`build-core` 실제 빌드 | 수 분 |
 | `images.yml` → `runtime-smoke` | **cron · 수동 전용** | 전체 이미지 빌드 → `make start` → 비-bash 프로세스에서 `import rclpy` · `xdpyinfo` 존재 · `mksync` 후 venv 활성/명명 · `check_deps` | ~20분 |

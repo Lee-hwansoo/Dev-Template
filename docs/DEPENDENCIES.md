@@ -55,7 +55,7 @@ explicit = true
 > **`UV_EXTRA` 는 선언합니다** — `.env.example`(팀 공유) 또는 `.env`(로컬)에 적으면 `uvs`/`mksync`가
 > `uv sync --extra <값>`으로 씁니다. 감지 결과에서 유도하지 않습니다: extra 는 **빌드한 기계가 아니라
 > 배포 대상**을 기술하므로, GPU 없는 CI 러너에서도 `UV_EXTRA=gpu` 이미지를 빌드할 수 있어야 합니다.
-> 수동으로 덮어쓰려면 `.env`에 `UV_SYNC_FLAGS="--extra gpu"`를 지정하거나 `mksync --extra gpu`를 실행하세요.
+> 수동으로 덮어쓰려면 `.env`에 `UV_SYNC_FLAGS="--extra gpu"`를 지정하거나 `mksync --extra gpu`를 실행하세요 — 둘 다 `pyproject.toml` 이 그 extra 를 선언한 뒤의 이야기입니다.
 
 `extras`(cpu/gpu)와 달리 **`[dependency-groups] dev`는 런타임 의존성이 아니라 도구**이며
 `uv sync`가 기본으로 설치합니다 — `mtest`/`mlint`의 러너(`pytest`, `ruff`)가 여기 있습니다.
