@@ -7,11 +7,11 @@ DevKit은 **골격**입니다. 여기 올라오는 변경은 이 키트를 쓰�
 
 | 알고 싶은 것 | 문서 |
 | --- | --- |
-| 워크플로·품질 루프·셸 환경·버전 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
-| 의존성 세 레이어 (Python·C++/ROS·APT) | [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) |
-| 배포·재현성·보안 제약 | [docs/DEPLOY.md](docs/DEPLOY.md) |
-| 진단 명령 | [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) |
-| 어떤 파일이 어떤 규칙의 주인인가 | [docs/DEVELOPMENT.md 공유 라이브러리 표](docs/DEVELOPMENT.md#-공유-라이브러리--규칙이-한-번만-정의되는-곳) |
+| 워크플로·품질 루프·셸 환경·버전 | [docs/DEVELOPMENT.md](../docs/DEVELOPMENT.md) |
+| 의존성 세 레이어 (Python·C++/ROS·APT) | [docs/DEPENDENCIES.md](../docs/DEPENDENCIES.md) |
+| 배포·재현성·보안 제약 | [docs/DEPLOY.md](../docs/DEPLOY.md) |
+| 진단 명령 | [docs/DIAGNOSTICS.md](../docs/DIAGNOSTICS.md) |
+| 어떤 파일이 어떤 규칙의 주인인가 | [docs/DEVELOPMENT.md 공유 라이브러리 표](../docs/DEVELOPMENT.md#-공유-라이브러리--규칙이-한-번만-정의되는-곳) |
 
 ## 시작하기
 
@@ -76,4 +76,4 @@ make build && make start    # 실물이 필요할 때만
 `make` 타겟, 컨테이너 숏컷, `.env` 노브는 **광고된 표면**이며 곧 공개 API입니다. 하나 늘리면
 `make help`/`h`, 탭 자동완성, 문서, 그리고 그것을 검증하는 계약까지 같이 갱신하세요 — 광고만
 있고 동작하지 않는 스위치는 없는 기능보다 나쁩니다. 표면이 바뀌면 MAJOR 입니다
-([버전 규약](docs/DEVELOPMENT.md#버전-규약)).
+([버전 규약](../docs/DEVELOPMENT.md#버전-규약)).

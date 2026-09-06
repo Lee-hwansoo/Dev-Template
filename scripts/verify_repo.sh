@@ -1387,7 +1387,8 @@ targets = set(os.environ.get('DEVKIT_PHONY', '').split())
 # Deprecated spellings still forward, so naming one in the docs is not a lie.
 targets |= {'check-host', 'env-check', 'completion', 'completion-install'}
 bad = []
-for f in [pathlib.Path('README.md'), pathlib.Path('CONTRIBUTING.md'),
+for f in [pathlib.Path('README.md'),
+          *sorted(pathlib.Path('.github').glob('*.md')),
           *sorted(pathlib.Path('docs').glob('*.md'))]:
     text = f.read_text()
     for m in re.finditer(r'\[[^\]]*\]\(([^)]+)\)', text):
@@ -1410,9 +1411,13 @@ PYCHECK
 )"
 [ -z "$doc_problems" ] \
     || log_err "documentation is out of date: ${doc_problems}"
-# …and no guide may sit unreferenced: docs/GEMINI.md was reachable from nothing.
-for doc_file in docs/*.md; do
-    grep -rqF "$(basename "$doc_file")" README.md CONTRIBUTING.md $(ls docs/*.md | grep -v "^${doc_file}$") \
+# …and no guide may sit unreferenced, wherever it lives: GEMINI.md was reachable
+# from nothing, and moving a file between docs/ and .github/ must not drop it
+# out of this check the way scoping the loop to docs/*.md once did.
+doc_all="$(ls docs/*.md .github/*.md 2>/dev/null || true)"
+for doc_file in $doc_all; do
+    case "$doc_file" in .github/PULL_REQUEST_TEMPLATE.md) continue ;; esac  # GitHub loads it by name
+    grep -rqF "$(basename "$doc_file")" README.md $(grep -v "^${doc_file}$" <<< "$doc_all") \
         || log_err "${doc_file} is referenced by no other document."
 done
 
