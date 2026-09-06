@@ -312,10 +312,11 @@ adopt:
 		{ print }' src/pyproject.toml > src/pyproject.toml.tmp \
 		&& mv src/pyproject.toml.tmp src/pyproject.toml
 	@if [ -f .env ]; then \
-		sed -i 's/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=$(ADOPT_NAME)/' .env; \
+		sed 's/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=$(ADOPT_NAME)/' .env > .env.tmp && mv .env.tmp .env; \
 	fi
-	@sed -i 's/^COMPOSE_PROJECT_NAME=myproject$$/COMPOSE_PROJECT_NAME=$(ADOPT_NAME)/' .env.example
+	@sed 's/^COMPOSE_PROJECT_NAME=myproject$$/COMPOSE_PROJECT_NAME=$(ADOPT_NAME)/' .env.example > .env.example.tmp && mv .env.example.tmp .env.example
 	@echo -e "  $(OK) Adopted as '$(ADOPT_NAME)': src/pyproject.toml, .env, .env.example"
+	@echo -e "  $(INFO) Run mksync in the container and commit the updated src/uv.lock."
 	@echo -e "  $(INFO) Two files are yours to decide — DevKit cannot guess them:"
 	@echo -e "  $(INFO)   README.md   this front page still describes DevKit"
 	@echo -e "  $(INFO)   LICENSE     MIT-0 lets you relicense (docs/DEVELOPMENT.md)"
