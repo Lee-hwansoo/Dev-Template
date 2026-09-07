@@ -63,10 +63,6 @@ ok()      { [ "${GROUP_FAILED:-0}" -eq 0 ] && log_ok "$1"; return 0; }
 log_warn() { echo -e "  \033[0;33m[WARN]\033[0m $*" >&2; }
 log_info(){ echo -e "  \033[0;34m[INFO]\033[0m $*"; }
 
-# probe_dir [name…] — a scratch tree for one check, with symlinks to the named
-# top-level directories so a script under test resolves WS_ROOT there and never
-# writes into the repo. Every check that needs a workspace of its own builds it
-# here, so the cleanup rule lives in one place.
 # A PATH for probes that must HIDE a tool: minimal, but still holding the shell
 # and the core utilities wherever this host keeps them. Hardcoding /usr/bin:/bin
 # broke every such probe on a host that keeps bash in /usr/local/bin.
@@ -105,6 +101,10 @@ probe_cleanup() {
 }
 trap probe_cleanup EXIT INT TERM
 
+# probe_dir [name…] — a scratch tree for one check, with symlinks to the named
+# top-level directories so a script under test resolves WS_ROOT there and never
+# writes into the repo. Every check that needs a workspace of its own builds it
+# here, so the cleanup rule lives in one place.
 probe_dir() {
     local dir name
     dir="$(mktemp -d "${DEVKIT_PROBE_ROOT}/probe.XXXXXX")"
@@ -344,9 +344,6 @@ for wf in .github/workflows/*.yml; do
     esac
 done
 [ "$wf_gates" -ge 5 ] || wf_bad+=("only ${wf_gates} of the ${wf_jobs} image jobs use ./.github/actions/gate")
-# A fork that did what GETTING_STARTED says — adopted a name, removed the
-# starters, replaced README — must still pass: verify.yml runs the suite on
-# such a copy (the suite cannot run itself here without recursing).
 # Every path an image COPIES must trigger the image tier: config/ and scripts/
 # are copied into every stage and sourced by the builders, yet only the two apt
 # helpers were listed, so a change there was covered by no image job at all.
@@ -354,6 +351,9 @@ for wf_path in "config/\*\*" "scripts/\*\*" "docker/\*\*"; do
     [ "$(grep -c "'${wf_path}'" .github/workflows/images.yml)" -ge 2 ] \
         || wf_bad+=("images.yml does not trigger on ${wf_path//\\/} for both push and pull_request, though every image copies it")
 done
+# A fork that did what GETTING_STARTED says — adopted a name, removed the
+# starters, replaced README — must still pass: verify.yml runs the suite on such
+# a copy (the suite cannot run itself here without recursing).
 for wf_fork in 'make adopt NAME=' 'rm -rf src/example docs' 'terminator # gui' 'DEVKIT_SLURM_' 'BASE_IMAGE=ubuntu:22.04@sha256'; do
     grep -qF "$wf_fork" .github/workflows/verify.yml \
         || wf_bad+=("verify.yml's fork probe does not exercise '${wf_fork}'; a contract on a fork-owned file would go unnoticed")
@@ -4137,6 +4137,12 @@ fi
 # are also what the docs cite.
 readme_contracts="$(grep -oE '[0-9]+개 계약' README.md | grep -oE '[0-9]+' | head -1 || true)"
 slug_groups="$(grep -cE '^# \[[a-z][a-z-]+\]' scripts/verify_repo.sh)"
+# A budget, so "the suite is getting big" is a check and not an opinion. A
+# template's verification has to stay readable by whoever forked it: a new group
+# either replaces one or moves this ceiling on purpose.
+suite_lines="$(wc -l < scripts/verify_repo.sh)"
+{ [ "$suite_lines" -le 5200 ] && [ "$slug_groups" -le 70 ]; } \
+    || log_err "the contract suite is ${suite_lines} lines in ${slug_groups} groups, past the 5200/70 budget; replace a group or move the ceiling on purpose."
 # Every group opens with `group` and closes with `ok`: without the open, a
 # group inherits the previous verdict and its line goes silently missing —
 # the one failure mode the per-group flags could not have had.
