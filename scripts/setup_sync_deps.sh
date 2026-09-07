@@ -49,10 +49,19 @@ done
 # 'git clean -ffdx' outside the workspace is a foot-gun. Checked BEFORE the
 # directory is created or imported into, on the resolved path.
 if [ "$FORCE_MODE" = true ]; then
+    WS_REAL="$(devkit_resolve_path "$WS_ROOT")"
+    # The workspace itself, or anything above it, is never a third-party
+    # target: the reset below walks the target for .git directories and would
+    # find THIS repository's. No opt-in unlocks it.
+    case "${WS_REAL}/" in
+        "${TARGET_DIR%/}/"*)
+            log_error "--force would 'git clean -ffdx' this workspace itself: ${TARGET_DIR} contains ${WS_REAL}"
+            exit 2 ;;
+    esac
     # No blanket /tmp exemption: DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET is the
     # explicit opt-in, and a wildcard for one directory made the fence advisory.
     case "${TARGET_DIR}/" in
-        "$(devkit_resolve_path "$WS_ROOT")"/*) ;;
+        "$WS_REAL"/*) ;;
         *)  if ! devkit_is_true "${DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET:-false}"; then
                 log_error "--force would 'git clean -ffdx' outside the workspace: ${TARGET_DIR}"
                 log_error "Set DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET=1 to allow."
@@ -175,6 +184,8 @@ else
         while IFS= read -r -d '' git_dir; do
             repo_dir="$(dirname "$git_dir")"
             repo_name="$(basename "$repo_dir")"
+            # Belt to the fence's braces: never this repository, however reached.
+            [ "$(cd "$repo_dir" && pwd -P)" != "$WS_REAL" ] || { log_warn "Skipping the workspace's own repository."; continue; }
             if ! (cd "$repo_dir" && git reset --hard HEAD && git clean -ffdx); then
                 log_warn "Failed to reset: $repo_name"
             fi

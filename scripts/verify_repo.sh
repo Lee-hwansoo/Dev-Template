@@ -1398,6 +1398,18 @@ rmguard_sync "a target that resolves outside the workspace" refused \
 rmguard_sync "the same target, explicitly allowed" ran \
     SYNC_TARGET_DIR="src/thirdparty/../../../outside" DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET=1
 rmguard_sync "a target inside the workspace" ran SYNC_TARGET_DIR="src/thirdparty"
+# The workspace ITSELF passed the "inside the workspace" test ('<ws>/' matches
+# '<ws>/*'), and the .git walk then reset this repository. Spelled four ways,
+# and the external opt-in must not unlock it either.
+mkdir -p "$rmguard_probe/sync/ws/.git" "$rmguard_probe/sync/ws/src"
+ln -s "$rmguard_probe/sync/ws" "$rmguard_probe/sync/ws/src/rootlink"
+rmguard_sync "the workspace itself (.)" refused SYNC_TARGET_DIR="."
+rmguard_sync "the workspace itself (src/..)" refused SYNC_TARGET_DIR="src/.."
+rmguard_sync "a symlink back to the workspace" refused SYNC_TARGET_DIR="src/rootlink"
+rmguard_sync "an ancestor of the workspace, externally allowed" refused \
+    SYNC_TARGET_DIR="$rmguard_probe/sync" DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET=1
+rmguard_sync "the workspace itself, externally allowed" refused \
+    SYNC_TARGET_DIR="." DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET=1
 rm -rf "$rmguard_probe"
 [ "$rmguard_errors" -eq 0 ] \
     && log_ok "Destructive guards resolve the path first: a workspace round-trip, a false FORCE and an external sync target are all refused."
