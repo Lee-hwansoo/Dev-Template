@@ -528,15 +528,31 @@ ci:
 	printf "  %-19s %s\n" "GitHub CI:" "$$CI_SUMMARY"; \
 	[ -z "$$CI_LIST" ] || sed 's/^/    /' <<< "$$CI_LIST"
 
+# Switch only what differs. GitHub answers 403 for a workflow that is already
+# in the requested state ("Unable to disable a workflow that is not active"),
+# and iterating the FILES meant the first such answer aborted the loop: the
+# remaining workflows stayed as they were and make reported failure for work
+# that was already done. The list gh returns is both the truth and the plan.
 ci-on ci-off:
 	$(call GUARD_HOST_ONLY)
 	@command -v gh >/dev/null 2>&1 || { \
 		echo -e "  $(ERROR) GitHub CLI 'gh' is required (https://cli.github.com); log in once with 'gh auth login'." >&2; exit 1; }
 	@ACTION=$(if $(filter ci-on,$@),enable,disable); \
-	for wf in .github/workflows/*.yml; do \
-		gh workflow "$$ACTION" "$${wf##*/}" || exit 1; \
-	done; \
-	$(CI_STATE); echo -e "  $(OK) GitHub CI: $$CI_SUMMARY"
+	WANT=$(if $(filter ci-on,$@),active,disabled); \
+	$(CI_STATE); \
+	[ -n "$$CI_LIST" ] || { echo -e "  $(ERROR) GitHub CI: $$CI_SUMMARY" >&2; exit 1; }; \
+	CHANGED=0; KEPT=0; FAILED=0; \
+	while IFS="$$(printf '\t')" read -r WF_NAME WF_STATE WF_ID; do \
+		[ -n "$$WF_ID" ] || continue; \
+		case "$$WF_STATE" in $$WANT*) KEPT=$$((KEPT+1)); continue ;; esac; \
+		if gh workflow "$$ACTION" "$$WF_ID" >/dev/null 2>&1; then CHANGED=$$((CHANGED+1)); \
+		else echo -e "  $(WARN) Could not $$ACTION '$$WF_NAME' (id $$WF_ID)." >&2; FAILED=$$((FAILED+1)); fi; \
+	done <<< "$$CI_LIST"; \
+	WF_LOCAL=$$(ls .github/workflows/*.yml 2>/dev/null | grep -c .); WF_LISTED=$$(grep -c . <<< "$$CI_LIST"); \
+	[ "$$WF_LOCAL" -le "$$WF_LISTED" ] || echo -e "  $(INFO) $$((WF_LOCAL - WF_LISTED)) workflow file(s) not on GitHub yet — push them, then run this again."; \
+	$(CI_STATE); \
+	echo -e "  $(OK) GitHub CI: $$CI_SUMMARY ($$CHANGED changed, $$KEPT already there)"; \
+	[ "$$FAILED" -eq 0 ]
 
 # =============================================================================
 # Docker Workflows
