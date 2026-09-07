@@ -94,8 +94,11 @@ fi
 # The runtime NAME (docker info's Runtimes list), and only when the daemon
 # answered at all: an unreachable daemon blamed the missing toolkit instead,
 # and a host whose NAME contains 'nvidia' passed with no runtime at all.
+# The RUNTIMES, not `docker info`'s output: with the daemon down that command
+# still prints its 350-byte Client block, so an emptiness test on it passed and
+# this block blamed the missing toolkit for an unreachable daemon.
 docker_runtimes="$(timeout 10 docker info --format '{{range $r, $_ := .Runtimes}}{{$r}} {{end}}' 2>/dev/null || true)"
-if command -v docker >/dev/null 2>&1 && [ -n "${docker_info:-}" ] && ! grep -qw nvidia <<< " ${docker_runtimes} "; then
+if command -v docker >/dev/null 2>&1 && [ -n "${docker_runtimes// /}" ] && ! grep -qw nvidia <<< " ${docker_runtimes} "; then
     if [ "${GPU_MODE:-auto}" = nvidia ]; then
         log_error "GPU_MODE=nvidia, but Docker has no NVIDIA runtime (nvidia-container-toolkit)."
         log_detail  "Fix: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker" >&2

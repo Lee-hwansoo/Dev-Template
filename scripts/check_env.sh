@@ -67,6 +67,9 @@ fi
 # 2. GPU Detection (NVIDIA / DRI)
 # macOS is skipped entirely: Docker Desktop runs a Linux VM with no CUDA/DRI
 # passthrough, so every macOS host resolves to cpu (LLVMpipe).
+# Set when a probe could not reach something it needed: the emitted cache then
+# carries the marker and the Makefile treats it as stale.
+DETECT_INCOMPLETE=""
 HAS_NVIDIA="false"
 HAS_TOOLKIT="false"
 HAS_DRI="false"
@@ -85,10 +88,15 @@ if [ "$IS_MACOS" = "false" ]; then
         if command -v docker >/dev/null 2>&1; then
             if docker_runtimes="$(timeout 10 docker info --format '{{range $r, $_ := .Runtimes}}{{$r}} {{end}}' 2>/dev/null)"; then
                 case " $docker_runtimes " in *" nvidia "*) HAS_TOOLKIT="true" ;; esac
-            elif [ "${1:-}" = "--makefile" ]; then
-                log_error "Docker is installed but its daemon is unreachable, so the NVIDIA runtime cannot be probed." >&2
-                log_detail "Start Docker (or Docker Desktop's WSL integration) and retry; caching 'no runtime' now would silently pin this project to the iGPU/CPU profile." >&2
-                exit 2
+            else
+                # Do NOT fail: `make check`/`status`/`setup` are what a user runs
+                # WHILE the daemon is down. Answer, say so, and mark the result
+                # incomplete so the Makefile refuses to reuse this cache — the
+                # next run with a live daemon re-probes instead of pinning the
+                # project to the iGPU/CPU profile in silence.
+                DETECT_INCOMPLETE="the docker daemon was unreachable, so the NVIDIA runtime could not be probed"
+                log_warn "Docker is installed but its daemon is unreachable: assuming no NVIDIA runtime for now." >&2
+                log_detail "This result is not cached. Start Docker and re-run for the GPU profile." >&2
             fi
         fi
     fi
@@ -371,3 +379,5 @@ emit_env "HOST_SSH_AUTH_SOCK" "$HOST_SSH_AUTH_SOCK"
 emit_env "HOST_GITCONFIG" "$HOST_GITCONFIG"
 emit_env "HOST_CACHE_DIR" "$HOST_CACHE_DIR"
 emit_env "HOST_HOME" "$HOST_HOME"
+# Last line on purpose: a reader that stops early still sees the values.
+[ -z "$DETECT_INCOMPLETE" ] || emit_env "DEVKIT_DETECT_INCOMPLETE" "$DETECT_INCOMPLETE"

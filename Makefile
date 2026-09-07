@@ -34,10 +34,12 @@ ERROR  := $(RED)[ERROR]$(NC)
 
 # Every recipe path here is relative (bash scripts/…, docker/Dockerfile), so a
 # `make -f ../Makefile` from a subdirectory failed on the first one with a raw
-# "No such file". `make -C <root>` is the supported form; say so.
-MAKEFILE_DIR := $(patsubst %/,%,$(dir $(abspath $(firstword $(MAKEFILE_LIST)))))
-ifneq ($(MAKEFILE_DIR),$(CURDIR))
-$(error Run make from $(MAKEFILE_DIR) (or 'make -C $(MAKEFILE_DIR) <target>'): this Makefile resolves its scripts relative to the working directory)
+# "No such file". `make -C <root>` is the supported form. The test is the
+# makefile's own NAME, not its directory: make's $(dir)/$(abspath) are
+# word-list functions, so a path with a space ('/Users/John Doe/…', which the
+# README advertises) came apart and the guard rejected every target.
+ifneq ($(firstword $(MAKEFILE_LIST)),Makefile)
+$(error Run make from the DevKit root, or 'make -C <root> <target>': this Makefile resolves its script paths relative to the working directory)
 endif
 
 # The .env files are DEFAULTS, read the way compose reads them: the command
@@ -119,6 +121,7 @@ DETECTED_ENV_FRESH := $(shell [ -f "$(DETECTED_ENV_FILE)" ] \
 	&& [ ! scripts/check_env.sh -nt "$(DETECTED_ENV_FILE)" ] \
 	&& [ ! config/util_paths.sh -nt "$(DETECTED_ENV_FILE)" ] \
 	&& grep -qxF 'HOST_WORKSPACE_PATH := $(CURDIR)' "$(DETECTED_ENV_FILE)" \
+	&& ! grep -q '^DEVKIT_DETECT_INCOMPLETE :=' "$(DETECTED_ENV_FILE)" \
 	&& sed -n 's/^HOST_\(XAUTHORITY\|SSH_AUTH_SOCK\) := //p' "$(DETECTED_ENV_FILE)" \
 		| { while read -r p; do [ -z "$$p" ] || [ -e "$$p" ] || exit 1; done; } && echo yes)
 ifeq ($(DETECTED_ENV_FRESH),)
@@ -382,7 +385,12 @@ adopt:
 	@echo -e "  $(INFO) Review with: git diff"
 
 ## @target status : Diagnose project and container status
-status: check
+status:
+	@# NOT a prerequisite: `make status` is what you run WHEN docker is the
+	@# broken thing, and a failing preflight used to abort before printing a
+	@# single line of the wiring it exists to show. The gate still stops
+	@# build/start, which is where it matters.
+	-@$(MAKE) --no-print-directory check
 	$(call GUARD_HOST_ONLY)
 	@echo -e "\n$(BCYAN)[Project Configuration Summary]$(NC)"
 	@printf "  %-19s %s\n" "Host User:"          "$$(whoami)"

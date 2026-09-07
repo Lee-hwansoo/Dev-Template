@@ -81,9 +81,25 @@ docker_live() {
     [ "$DOCKER_LIVE" = yes ]
 }
 
+# ONE directory per run, removed however the run ends. Each group used to
+# mktemp and rm its own, so an interrupted suite (Ctrl-C, or a probe failing
+# under errexit) left them behind — 45 had accumulated here. An in-process
+# list would not do: several probes call probe_dir inside a command
+# substitution, whose array assignment dies with the subshell.
+# NOT exported: a nested run (a probe that invokes this script) would inherit
+# the parent's root and its own EXIT trap would delete the tree the parent is
+# still using — which is exactly how a probe workspace vanished mid-run once.
+DEVKIT_PROBE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/devkit-run.XXXXXX")"
+probe_cleanup() {
+    # A probe may hold root-owned files (a container writing into a bind
+    # mount), so a failure to remove them must not derail the exit.
+    rm -rf "$DEVKIT_PROBE_ROOT" 2>/dev/null || true
+}
+trap probe_cleanup EXIT INT TERM
+
 probe_dir() {
     local dir name
-    dir="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+    dir="$(mktemp -d "${DEVKIT_PROBE_ROOT}/probe.XXXXXX")"
     for name in "$@"; do ln -s "${ROOT_DIR}/${name}" "${dir}/${name}"; done
     printf '%s' "$dir"
 }
@@ -92,7 +108,7 @@ probe_dir() {
 # captured from a stub. Several groups read a --build-arg out of it.
 bake_argv() {
     local mode="$1" env_name="$2" dir; shift 2
-    dir="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+    dir="$(mktemp -d "${DEVKIT_PROBE_ROOT}/bake.XXXXXX")"
     printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/argv"\nexit 1\n' "$dir" > "$dir/docker"
     printf '#!/bin/sh\nexit 0\n' > "$dir/apptainer"
     chmod +x "$dir/docker" "$dir/apptainer"
@@ -702,7 +718,45 @@ cache_ro_rc=0; cache_ro_out="$( cd "$cache_ro" && make -n help 2>&1 )" || cache_
     || { log_err "an unwritable .docker_cache does not stop make (rc ${cache_ro_rc}); every .env setting would be ignored in silence."; cache_errors=1; }
 chmod 755 "$cache_ro/.docker_cache"; rm -rf "$cache_ro"
 rm -rf "$cache_probe"
-[ "$cache_errors" -eq 0 ] && log_ok "Host detection cache: a failed probe stops make, a moved checkout and dead session paths are re-probed, and .env's include is atomic and fatal."
+# `make status` is the diagnostic: it must report the wiring even when the
+# preflight gate fails, because a broken docker is exactly when it is run. The
+# gate still stops build/start.
+cache_status="$(cd "$(probe_dir scripts config docker dependencies)" && pwd -P)"
+cp Makefile "${ROOT_DIR}/.env.example" "${ROOT_DIR}"/docker-compose*.yml "$cache_status/"
+mkdir -p "$cache_status/bin"
+printf '#!/bin/sh\ncase "$1 $2" in "info --format") exit 1 ;; "info ") printf "Client:\\n"; exit 1 ;; esac\ncase "$1" in compose) echo 2.30.0 ;; buildx) echo v0.20.0 ;; esac\nexit 0\n' > "$cache_status/bin/docker"
+chmod +x "$cache_status/bin/docker"
+cache_status_out="$( cd "$cache_status" && PATH="$cache_status/bin:$probe_min_path" make status 2>&1 || true )"
+grep -q 'Detected Host Wiring' <<< "$cache_status_out" \
+    || { log_err "'make status' prints no wiring when the docker daemon is down; that is the run it exists for."; cache_errors=1; }
+grep -qE '^status:$' Makefile \
+    || { log_err "'status' depends on 'check' again, so a failing preflight aborts the report."; cache_errors=1; }
+rm -rf "$cache_status"
+
+# The suite itself must leave nothing behind: every probe lives under one
+# per-run directory removed by the EXIT trap, on a clean run and on Ctrl-C
+# alike. 45 stale probe directories had accumulated in /tmp before this.
+# The mechanism itself, extracted and run once: a probe directory created in a
+# COMMAND SUBSTITUTION (several groups do that) must still be gone when the
+# script exits. No signal is sent here — `kill -INT $$` in a harness reaches
+# the whole foreground process group, including this suite, whose own trap then
+# removes the tree it is still using.
+cache_tmp="$(mktemp -d "${DEVKIT_PROBE_ROOT}/tmpprobe.XXXXXX")"
+{ sed -n '/^DEVKIT_PROBE_ROOT=/,/^}/p' scripts/verify_repo.sh
+  sed -n '/^trap probe_cleanup EXIT INT TERM$/p' scripts/verify_repo.sh
+  sed -n '/^probe_dir() {/,/^}/p' scripts/verify_repo.sh
+  printf 'ROOT_DIR=%s\n' "$(printf %q "$ROOT_DIR")"
+  echo 'd="$(cd "$(probe_dir config)" && pwd -P)"; : > "$d/marker"'
+  echo 'exit 0'
+} > "$cache_tmp/mech.sh"
+( TMPDIR="$cache_tmp" bash "$cache_tmp/mech.sh" ) >/dev/null 2>&1 || true
+cache_left="$(find "$cache_tmp" -mindepth 1 -maxdepth 1 -name 'devkit-run.*' 2>/dev/null | wc -l)"
+[ "$cache_left" -eq 0 ] \
+    || { log_err "a probe directory created in a command substitution survives the run (${cache_left} left); 45 had accumulated in /tmp before the trap."; cache_errors=1; }
+grep -qE '^trap probe_cleanup EXIT INT TERM$' scripts/verify_repo.sh \
+    || { log_err "the suite has no EXIT/INT trap removing its probe directories."; cache_errors=1; }
+rm -rf "$cache_tmp"
+[ "$cache_errors" -eq 0 ] && log_ok "Host detection cache: a failed probe stops make, a moved checkout and dead session paths are re-probed, .env's include is atomic and fatal, and the suite leaves no temp files."
 
 # =============================================================================
 # [advertised-shortcuts] Every shortcut the help screen or MOTD names must
@@ -718,7 +772,7 @@ adv_motd="$(sed -n 's/^ *"\([a-z_0-9 /]*\)|.*/\1/p' scripts/show_welcome.sh | ad
 [ "$(wc -w <<< "$adv_motd")" -ge 5 ] \
     || log_err "MOTD shortcut extraction collapsed ($(wc -w <<< "$adv_motd") names, expected ≥5)."
 advertised="$(printf '%s\n%s\n' "$adv_help" "$adv_motd" | sort -u | sed '/^$/d')"
-defined="$(bash --norc -ic 'WORKSPACE_PATH='"$ROOT_DIR"' source config/util_aliases.sh >/dev/null 2>&1
+defined="$(WORKSPACE_PATH="$ROOT_DIR" bash --norc -ic 'source config/util_aliases.sh >/dev/null 2>&1
     compgen -a; compgen -A function' 2>/dev/null | sort -u || true)"
 undefined="$(comm -23 <(echo "$advertised") <(echo "$defined") | grep -vE '^(help|noetic|share)$' || true)"
 if [ -z "$undefined" ]; then
@@ -785,7 +839,7 @@ child_fns="$(__DEVKIT_ENV_READY="$ROOT_DIR" WORKSPACE_PATH="$ROOT_DIR" bash -c \
 # …and the ALIAS-shaped shortcuts too: `make exec CMD='h'` runs `bash -c`, where
 # bash expands no aliases unless asked, so every one of them answered "command
 # not found" on the path the docs call the default for automation.
-child_alias="$(printf 'source %s/config/init_bash.sh\n' "$ROOT_DIR" > "$ROOT_DIR/.devkit-bashenv.$$" \
+child_alias="$(printf 'source "%s/config/init_bash.sh"\n' "$ROOT_DIR" > "$ROOT_DIR/.devkit-bashenv.$$" \
     && WORKSPACE_PATH="$ROOT_DIR" BASH_ENV="$ROOT_DIR/.devkit-bashenv.$$" bash -c 'type -t h; type -t sync_deps' 2>/dev/null | tr '\n' ' ' || true)"
 rm -f "$ROOT_DIR/.devkit-bashenv.$$"
 case "$child_alias" in
@@ -1556,7 +1610,11 @@ rm -rf "$hostdep_probe"
 # runtime must block, a detected GPU under auto must only warn (auto falls back
 # to iGPU/CPU). A stub docker with no nvidia runtime answers every probe.
 hostdep_gpu="$(probe_dir)"
-printf '#!/bin/sh\ncase "$1 $2" in "info ") echo "Runtimes: io.containerd.runc.v2 runc" ;; "compose version") echo 2.30.0 ;; "buildx version") echo v0.20.0 ;; esac\nexit 0\n' \
+# The stub answers what the code asks: `docker info --format …` (the runtime
+# NAMES) and, like the real client, prints its Client block even when the
+# daemon is gone. A stub that ignored --format returned nothing, and an
+# emptiness test then read "daemon down" where a live daemon had answered.
+printf '#!/bin/sh\ncase "$1" in info) echo "io.containerd.runc.v2 runc " ;; compose) echo 2.30.0 ;; buildx) echo v0.20.0 ;; esac\nexit 0\n' \
     > "$hostdep_gpu/docker"; chmod +x "$hostdep_gpu/docker"
 hostdep_gpu_run() {   # hostdep_gpu_run <env…> → "<rc> <output>"
     local rc=0 out
@@ -1569,18 +1627,33 @@ hostdep_gpu_out="$(hostdep_gpu_run GPU_MODE=nvidia HAS_NVIDIA=true)"
 hostdep_gpu_out="$(hostdep_gpu_run GPU_MODE=auto HAS_NVIDIA=true)"
 { [ "${hostdep_gpu_out%% *}" -eq 0 ] && grep -q 'nvidia-ctk' <<< "$hostdep_gpu_out"; } \
     || { log_err "check_preflight.sh does not warn (rc ${hostdep_gpu_out%% *}) when the detector saw a GPU but docker has no NVIDIA runtime; the CPU fallback would be silent."; hostdep_errors=1; }
+# The positive path: a runtime list that DOES carry nvidia must be accepted.
+printf '#!/bin/sh\ncase "$1" in info) echo "io.containerd.runc.v2 nvidia runc " ;; compose) echo 2.30.0 ;; buildx) echo v0.20.0 ;; esac\nexit 0\n' \
+    > "$hostdep_gpu/docker"
+hostdep_gpu_out="$(hostdep_gpu_run GPU_MODE=nvidia HAS_NVIDIA=true)"
+{ [ "${hostdep_gpu_out%% *}" -eq 0 ] && ! grep -q 'nvidia-ctk' <<< "$hostdep_gpu_out"; } \
+    || { log_err "check_preflight.sh rejects GPU_MODE=nvidia on a host whose docker DOES list the nvidia runtime (rc ${hostdep_gpu_out%% *})."; hostdep_errors=1; }
+printf '#!/bin/sh\ncase "$1" in info) echo "io.containerd.runc.v2 runc " ;; compose) echo 2.30.0 ;; buildx) echo v0.20.0 ;; esac\nexit 0\n' \
+    > "$hostdep_gpu/docker"
 hostdep_gpu_out="$(hostdep_gpu_run GPU_MODE=auto HAS_NVIDIA=false)"
 { [ "${hostdep_gpu_out%% *}" -eq 0 ] && ! grep -q 'nvidia-ctk' <<< "$hostdep_gpu_out"; } \
     || { log_err "check_preflight.sh mentions the NVIDIA runtime on a host with no NVIDIA GPU."; hostdep_errors=1; }
 # A host merely NAMED nvidia has no runtime: the check reads the Runtimes list,
 # not the word anywhere in `docker info`.
-printf '#!/bin/sh\ncase "$1 $2" in "info ") echo "Name: nvidia-box"; echo "Runtimes: io.containerd.runc.v2 runc" ;; "compose version") echo 2.30.0 ;; "buildx version") echo v0.20.0 ;; esac\nexit 0\n' \
+printf '#!/bin/sh\ncase "$1" in info) echo "io.containerd.runc.v2 runc " ;; compose) echo 2.30.0 ;; buildx) echo v0.20.0 ;; esac\nexit 0\n' \
     > "$hostdep_gpu/docker"
 hostdep_gpu_out="$(hostdep_gpu_run GPU_MODE=nvidia HAS_NVIDIA=true)"
 [ "${hostdep_gpu_out%% *}" -ne 0 ] \
     || { log_err "check_preflight.sh accepts GPU_MODE=nvidia because the word 'nvidia' appears in docker info (the host's name); 'docker compose up' would fail with unknown runtime."; hostdep_errors=1; }
 # …and an unreachable daemon is reported as such, not as a missing toolkit.
-printf '#!/bin/sh\ncase "$1 $2" in "info ") exit 1 ;; "compose version") echo 2.30.0 ;; "buildx version") echo v0.20.0 ;; esac\nexit 0\n' \
+# Daemon down, exactly as the real client behaves: rc 1 with the Client block
+# still on stdout, which is why an emptiness test on `docker info` was no
+# liveness proxy at all.
+# Measured against the real client: with the daemon down a BARE `docker info`
+# still prints its 354-byte Client block (rc 1), while the templated form
+# prints nothing at all. Both shapes here, so the code cannot pass by reading
+# the wrong one.
+printf '#!/bin/sh\ncase "$1 $2" in "info --format") exit 1 ;; "info ") printf "Client:\\n Version: 29.0\\n"; exit 1 ;; esac\ncase "$1" in compose) echo 2.30.0 ;; buildx) echo v0.20.0 ;; esac\nexit 0\n' \
     > "$hostdep_gpu/docker"
 hostdep_gpu_out="$(hostdep_gpu_run GPU_MODE=nvidia HAS_NVIDIA=true)"
 { grep -q 'daemon is not reachable' <<< "$hostdep_gpu_out" && ! grep -q 'nvidia-ctk' <<< "$hostdep_gpu_out"; } \
@@ -1601,10 +1674,17 @@ hostdep_det_out="$( PATH="$hostdep_det:$probe_min_path" HOST_CACHE_DIR="$hostdep
 grep -qx 'HAS_NVIDIA := false' <<< "$hostdep_det_out" \
     || { log_err "an nvidia-smi that cannot talk to the driver still sets HAS_NVIDIA := true; 'auto' would pick the nvidia profile and the container would not start."; hostdep_errors=1; }
 printf '#!/bin/sh\n[ "$1" = "-L" ] && { echo "GPU 0: NVIDIA"; exit 0; }\nexit 0\n' > "$hostdep_det/nvidia-smi"
+# A GPU present and the daemon down: `make check`/`status`/`setup` are exactly
+# what a user runs then, so detection must ANSWER — and mark the answer
+# incomplete, because caching "no NVIDIA runtime" would pin the project to the
+# iGPU/CPU profile in silence. The Makefile treats such a cache as stale.
 hostdep_det_rc=0
-( PATH="$hostdep_det:$probe_min_path" HOST_CACHE_DIR="$hostdep_det/cache" bash scripts/check_env.sh --makefile ) >/dev/null 2>&1 || hostdep_det_rc=$?
-[ "$hostdep_det_rc" -ne 0 ] \
-    || { log_err "with a GPU present and the docker daemon unreachable, the detector still writes a cache (HAS_TOOLKIT := false); every later run would use the iGPU profile in silence."; hostdep_errors=1; }
+hostdep_det_out="$( PATH="$hostdep_det:$probe_min_path" HOST_CACHE_DIR="$hostdep_det/cache" bash scripts/check_env.sh --makefile 2>/dev/null )" || hostdep_det_rc=$?
+{ [ "$hostdep_det_rc" -eq 0 ] && grep -q '^DEVKIT_DETECT_INCOMPLETE := ' <<< "$hostdep_det_out"; } \
+    || { log_err "with a GPU present and the docker daemon unreachable, detection exits ${hostdep_det_rc} or emits no DEVKIT_DETECT_INCOMPLETE marker; either the diagnostics die or a wrong GPU profile gets cached."; hostdep_errors=1; }
+grep -q "^DEVKIT_DETECT_INCOMPLETE :=" <<< "$(printf '%s\n' "$hostdep_det_out")" && \
+    grep -q 'DEVKIT_DETECT_INCOMPLETE' Makefile \
+    || { log_err "the Makefile does not treat a cache carrying DEVKIT_DETECT_INCOMPLETE as stale, so an incomplete probe would be reused forever."; hostdep_errors=1; }
 printf '#!/bin/sh\n[ "$1" = info ] && { echo "Name: nvidia-box"; exit 0; }\nexit 0\n' > "$hostdep_det/docker"
 hostdep_det_out="$( PATH="$hostdep_det:$probe_min_path" HOST_CACHE_DIR="$hostdep_det/cache" bash scripts/check_env.sh --makefile 2>/dev/null || true )"
 grep -qx 'HAS_TOOLKIT := false' <<< "$hostdep_det_out" \
@@ -2071,7 +2151,7 @@ fi
 #       detector reads .env itself and its cache must expire when .env changes.
 #       Get either wrong and ROS_DISTRO=noetic builds a humble image.
 # =============================================================================
-probe_env="$(mktemp "${TMPDIR:-/tmp}/devkit-env.XXXXXX")"
+probe_env="$(mktemp "${DEVKIT_PROBE_ROOT}/env.XXXXXX")"
 printf 'ROS_DISTRO=noetic\n' > "$probe_env"
 # Capture first: `grep -q` exits early and the SIGPIPE fails pipefail.
 # Unset first: `make verify` exports ROS_DISTRO into the recipe, so the probe
@@ -4067,7 +4147,7 @@ query_errors=0
 # under test and hide exactly the effect being measured, so the command runs
 # with the shell's own stdout.
 query_fd() {   # query_fd <command…> → same | changed | unsupported
-    local out; out="$(mktemp "${TMPDIR:-/tmp}/devkit.XXXXXX")"
+    local out; out="$(mktemp "${DEVKIT_PROBE_ROOT}/fd.XXXXXX")"
     # No display: the question is the file descriptor, and with one set the
     # three status calls ran glxinfo/eglinfo/vulkaninfo for real — 6.6 s, 44 %
     # of the whole suite on a WSLg host.
