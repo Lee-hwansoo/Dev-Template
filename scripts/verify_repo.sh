@@ -142,15 +142,15 @@ make_probe() {
     local dir name
     dir="$(cd "$(probe_dir scripts config docker dependencies)" && pwd -P)"
     cp "${ROOT_DIR}/Makefile" "${ROOT_DIR}/.env.example" "$@" "${dir}/"
-    # …under a project name of its own. The copied .env.example carries the
-    # REPOSITORY's COMPOSE_PROJECT_NAME, so on an adopted fork a probe spoke for
-    # the developer's project: `make clean` saw their running container and
-    # `make adopt` saw their volumes, and both refused — correctly, which made
-    # `make verify` unusable on a fork with its stack up. Unique per probe, and
-    # in the character set the kit's own name rule allows.
+    # …under a project name of its own, written where a local name BELONGS: the
+    # probe's own .env, which the kit already resolves over .env.example. No
+    # second spelling of the rule `make adopt` owns, and it is what a real fork
+    # looks like. The copied .env.example carries the REPOSITORY's name, so
+    # without this a probe spoke for the developer's project: `make clean` saw
+    # their running container and `make adopt` their volumes, both refused —
+    # correctly — and `make verify` could not run on a fork with its stack up.
     name="devkit-probe-$(printf '%s' "${dir##*/}" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9-')"
-    sed -i.bak "s/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=${name}/" "${dir}/.env.example"
-    rm -f "${dir}/.env.example.bak"
+    printf 'COMPOSE_PROJECT_NAME=%s\n' "$name" > "${dir}/.env"
     printf '%s' "$dir"
 }
 
@@ -3580,7 +3580,7 @@ adopt_probe="$(make_probe)"
 mkdir -p "$adopt_probe/src"
 
 cp "${ROOT_DIR}/src/pyproject.toml" "$adopt_probe/src/"
-cp "$adopt_probe/.env.example" "$adopt_probe/.env"   # the probe's identity, not this repository's
+# .env comes from make_probe: the probe's own identity, not this repository's.
 adopt_desc_case() {   # adopt_desc_case <description>
     cp "${ROOT_DIR}/src/pyproject.toml" "$adopt_probe/src/pyproject.toml"
     ( cd "$adopt_probe" && make adopt NAME=robot DESC="$1" ) >/dev/null 2>&1 || true
