@@ -250,6 +250,13 @@ done
 # A fork that did what GETTING_STARTED says — adopted a name, removed the
 # starters, replaced README — must still pass: verify.yml runs the suite on
 # such a copy (the suite cannot run itself here without recursing).
+# Every path an image COPIES must trigger the image tier: config/ and scripts/
+# are copied into every stage and sourced by the builders, yet only the two apt
+# helpers were listed, so a change there was covered by no image job at all.
+for wf_path in "config/\*\*" "scripts/\*\*" "docker/\*\*"; do
+    [ "$(grep -c "'${wf_path}'" .github/workflows/images.yml)" -ge 2 ] \
+        || wf_bad+=("images.yml does not trigger on ${wf_path//\\/} for both push and pull_request, though every image copies it")
+done
 for wf_fork in 'make adopt NAME=' 'rm -rf src/example docs' 'terminator # gui' 'DEVKIT_SLURM_' 'BASE_IMAGE=ubuntu:22.04@sha256'; do
     grep -qF "$wf_fork" .github/workflows/verify.yml \
         || wf_bad+=("verify.yml's fork probe does not exercise '${wf_fork}'; a contract on a fork-owned file would go unnoticed")
@@ -833,6 +840,20 @@ if docker_live; then
         || { log_err "after the first-run sync the cloned tree is owned by '${ep_owner:-nothing}' (expected user); neither the container user nor the host could write it."; bridge_errors=1; }
     rm -rf "$ep_own"
 fi
+# The GPU settings reach a `docker exec` shell through /etc/profile.d, not
+# through the caller's HOME: the probe above runs as this user, so it can only
+# see its own file. Assert the real delivery path in a container.
+if docker_live; then
+    ep_gpu="$(docker run --rm -v "${ROOT_DIR}:/w:ro" --entrypoint bash ubuntu:22.04 -c '
+        cp -R /w/config /w/scripts /w/docker /tmp/kit 2>/dev/null || { mkdir -p /tmp/kit; cp -R /w/config /w/scripts /w/docker /tmp/kit/; }
+        cd /tmp/kit 2>/dev/null || cd /tmp
+        useradd -m -u 1000 user 2>/dev/null
+        WORKSPACE_PATH=/tmp/kit GPU_MODE=cpu CONTAINER_USER=user bash docker/entrypoint.sh \
+            sh -c "test -f /etc/profile.d/devkit-gpu.sh && sh -lc \"echo DELIVERED=\\\$LIBGL_ALWAYS_SOFTWARE\""' 2>/dev/null \
+        | sed -n 's/^DELIVERED=//p' | tail -n 1 || true)"
+    [ "$ep_gpu" = 1 ] \
+        || { log_err "a login shell in the container does not receive the GPU settings through /etc/profile.d (got: '${ep_gpu:-nothing}'); 'docker exec' sessions would render in software without knowing."; bridge_errors=1; }
+fi
 rm -rf "$ep_probe"
 [ "$bridge_errors" -eq 0 ] && log_ok "Runtime env reaches login, interactive and non-interactive shells; the entrypoint boots, logs, hands the sync over and wraps a command as a user."
 
@@ -857,6 +878,33 @@ for ros_distro in $apt_distros; do
     grep -qw -- "$ros_distro" <<< "$env_distros" \
         || { log_err "check_env.sh has no base image for '${ros_distro}', which util_apt_helper.sh accepts."; distro_errors=1; }
 done
+
+# Two inputs that used to pass and break much later: a relative WORKSPACE_PATH
+# (compose renders working_dir: ws and only the container start complains) and
+# an unknown distro with a pinned BASE_IMAGE, where the interpreter silently
+# defaulted to 3.10 and the venv imported neither rclpy nor rospy.
+distro_reject() {   # distro_reject <label> <env…>
+    local label="$1"; shift
+    local rc=0
+    ( env "$@" DEVKIT_ENV_FILE=/dev/null DEVKIT_ENV_DEFAULTS=/dev/null \
+        bash scripts/check_env.sh --makefile ) >/dev/null 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] \
+        || { log_err "check_env.sh accepts ${label}; the failure surfaces only when the container starts."; distro_errors=1; }
+}
+distro_reject "a relative WORKSPACE_PATH" WORKSPACE_PATH=relative/ws
+# The pin warning compares RELEASES: 'ubuntu:jammy' IS 22.04 and warned falsely,
+# while a same-number tag of another image passed on the digits alone.
+for distro_pin in "ubuntu:22.04 0" "ubuntu:jammy 0" "ubuntu:22.04@sha256:aa 0" "ubuntu:jammy-20260101 0" "ubuntu:24.04 1" "ubuntu:20.04 1"; do
+    set -- $distro_pin
+    distro_warns="$( env ROS_DISTRO=humble BASE_IMAGE="$1" DEVKIT_ENV_FILE=/dev/null DEVKIT_ENV_DEFAULTS=/dev/null \
+        bash scripts/check_env.sh --makefile 2>&1 >/dev/null | grep -c 'expects ubuntu' || true )"
+    [ "$distro_warns" = "$2" ] \
+        || { log_err "BASE_IMAGE=$1 with humble warns ${distro_warns} time(s), expected $2."; distro_errors=1; }
+done
+distro_reject "an unknown distro with a pinned BASE_IMAGE and no UV_PYTHON" ROS_DISTRO=galactic BASE_IMAGE=ubuntu:22.04
+( env ROS_DISTRO=galactic BASE_IMAGE=ubuntu:22.04 UV_PYTHON=3.10 DEVKIT_ENV_FILE=/dev/null DEVKIT_ENV_DEFAULTS=/dev/null \
+    bash scripts/check_env.sh --makefile ) >/dev/null 2>&1 \
+    || { log_err "an unknown distro with BOTH BASE_IMAGE and UV_PYTHON given is refused; that is the documented escape hatch."; distro_errors=1; }
 
 # The pairing must be DERIVED end to end: changing ROS_DISTRO alone has to move
 # the Ubuntu release with it. Probed through the REAL .env.example, so a
@@ -1270,7 +1318,7 @@ for submit_gpu in "nvidia --nv" "amd --rocm" "igpu -" "intel -" "cpu -"; do
         || { log_err "GPU_MODE=$1 gives apptainer '${submit_gpu_out}', expected '$2'."; submit_errors=1; }
 done
 # …and every knob a script consumes is documented, this one included.
-grep -qF 'DEVKIT_VERIFY_SIF_HASH' docs/SLURM.md \
+{ [ ! -f docs/SLURM.md ] || grep -qF 'DEVKIT_VERIFY_SIF_HASH' docs/SLURM.md; } \
     || { log_err "DEVKIT_VERIFY_SIF_HASH has a consumer in util_sif_common.sh but no documentation."; submit_errors=1; }
 
 # The "not found" message must name the artifact the mode WRITES: -share is a
@@ -1848,6 +1896,21 @@ rmguard_left="$(cd "$rmguard_all" && ls *.oci.tar *.sha256 2>/dev/null | tr '\n'
 [ -z "$rmguard_left" ] \
     || { log_err "'make clean-all' leaves the baked artifacts behind (${rmguard_left}); DEVELOPMENT.md calls it a full reset."; rmguard_errors=1; }
 rm -rf "$rmguard_all"
+# make resolves every recipe path relative to the CWD, so it must be told when
+# that is not the Makefile's own directory: `make -f ../Makefile` from src/ died
+# on the first `bash scripts/…` with a raw "No such file".
+rmguard_sub="$( cd "$ROOT_DIR/src" 2>/dev/null && make -f ../Makefile help 2>&1 | head -n 1 || true )"
+grep -q 'Run make from' <<< "$rmguard_sub" \
+    || { log_err "make -f from another directory is not refused (got: ${rmguard_sub:-nothing}); the first script path fails instead."; rmguard_errors=1; }
+[ "$( cd "$ROOT_DIR" && make -C . help >/dev/null 2>&1; echo $? )" = 0 ] \
+    || { log_err "'make -C .' is refused by the working-directory guard; that is the supported form."; rmguard_errors=1; }
+# …and a target that reads no detected value must not pay for the host probe
+# (nvidia-smi + docker info): `make gpus` and `make shell` did.
+for rmguard_exempt in gpus shell exec test lint h help stats top update-gpg; do
+    grep -qE "^DETECTOR_EXEMPT :=.*(^| )${rmguard_exempt}( |$)" Makefile \
+        || { log_err "'${rmguard_exempt}' uses no detected variable but is not in DETECTOR_EXEMPT; it runs the host probe for nothing."; rmguard_errors=1; }
+done
+
 # One truthiness rule for every switch: FIX/NO_CACHE/SHARE took only 1|true
 # while KEEP_VENV and the container's devkit_is_true also accept yes/on, so
 # `make lint FIX=yes` quietly linted without fixing.

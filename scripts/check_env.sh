@@ -124,6 +124,12 @@ esac
 # include that follows then overwrote the user's answer with it.
 WORKSPACE_PATH="${WORKSPACE_PATH:-$(env_setting WORKSPACE_PATH)}"
 WORKSPACE_PATH="${WORKSPACE_PATH:-/workspace}"
+# Absolute, like DOCKER_DEV_CACHE_DIR: compose happily renders working_dir: ws
+# and a relative mount target, and only the container start says so.
+case "$WORKSPACE_PATH" in
+    /*) ;;
+    *)  log_error "WORKSPACE_PATH must be an absolute container path (got: ${WORKSPACE_PATH})." >&2; exit 1 ;;
+esac
 DOCKER_DEV_CACHE_DIR="${DOCKER_DEV_CACHE_DIR:-$(env_setting DOCKER_DEV_CACHE_DIR)}"
 # Under sudo, bind the invoking user's HOME and ids, not root's. macOS has no
 # getent, hence the fallbacks; each is `|| true` so a missing tool degrades.
@@ -291,6 +297,13 @@ case "$ROS_DISTRO" in
     humble|iron)          distro_base="ubuntu:22.04"; distro_python="3.10" ;;
     *)                    distro_base="";             distro_python=""     ;;
 esac
+# An explicit BASE_IMAGE takes a pairing DevKit does not know: then the
+# interpreter cannot be derived either, and defaulting it silently to 3.10
+# installed a venv that imports neither rclpy nor rospy.
+if [ -n "${BASE_IMAGE:-}" ] && [ -z "$distro_python" ] && [ -z "${UV_PYTHON:-}" ]; then
+    log_error "ROS_DISTRO '${ROS_DISTRO}' is not one DevKit knows, and BASE_IMAGE is pinned: set UV_PYTHON to the Python of that base."
+    exit 2
+fi
 if [ -z "${BASE_IMAGE:-}" ]; then
     [ -n "$distro_base" ] || {
         log_error "Unsupported ROS_DISTRO '${ROS_DISTRO}'. Each distro is bound to one Ubuntu release:"
@@ -305,11 +318,25 @@ UV_PYTHON="${UV_PYTHON:-${distro_python:-3.10}}"
 # a .env written before ROS_DISTRO changed pins the OLD pairing and nothing says
 # so until apt fails deep in the build. Say it here, once, and keep going.
 if [ -n "$distro_base" ]; then
-    case "$BASE_IMAGE" in
-        "$distro_base"|*"${distro_base#ubuntu:}"*) ;;
-        *) log_warn "ROS_DISTRO=${ROS_DISTRO} expects ${distro_base}, but BASE_IMAGE is '${BASE_IMAGE}'." >&2
-           log_detail "Comment BASE_IMAGE out in .env to follow ROS_DISTRO, or ignore this if the pin is deliberate." >&2 ;;
+    # By RELEASE, not substring: 'ubuntu:jammy' IS 22.04 and warned falsely,
+    # while 'ubuntu:22.04-something-else' passed on the number alone.
+    case "${distro_base#ubuntu:}" in
+        20.04) base_alias=focal ;; 22.04) base_alias=jammy ;; 24.04) base_alias=noble ;;
+        *)     base_alias="" ;;
     esac
+    base_ok=false
+    case "$BASE_IMAGE" in
+        "$distro_base"|"$distro_base"@*|"$distro_base"-*) base_ok=true ;;
+    esac
+    if [ -n "$base_alias" ]; then
+        case "$BASE_IMAGE" in
+            ubuntu:"$base_alias"|ubuntu:"$base_alias"@*|ubuntu:"$base_alias"-*) base_ok=true ;;
+        esac
+    fi
+    if [ "$base_ok" != true ]; then
+        log_warn "ROS_DISTRO=${ROS_DISTRO} expects ${distro_base}, but BASE_IMAGE is '${BASE_IMAGE}'." >&2
+        log_detail "Comment BASE_IMAGE out in .env to follow ROS_DISTRO, or ignore this if the pin is deliberate." >&2
+    fi
     [ "$UV_PYTHON" = "$distro_python" ] \
         || { log_warn "ROS_DISTRO=${ROS_DISTRO} ships Python ${distro_python}, but UV_PYTHON is '${UV_PYTHON}'." >&2
              log_detail "The venv will not import the apt-installed rclpy/rospy. Comment UV_PYTHON out in .env." >&2; }

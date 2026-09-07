@@ -52,15 +52,15 @@ done <<< "$HOST_REQUIRED"
 # 1. Docker CLI presence
 if ! command -v docker >/dev/null 2>&1; then
     log_error "Docker CLI not found in PATH."
-    log_info  "Install Docker Engine (native Linux) or Docker Desktop with WSL2 integration."
+    log_detail  "Install Docker Engine (native Linux) or Docker Desktop with WSL2 integration." >&2
     errors=$((errors + 1))
 else
     # 2. Docker daemon reachability. The output is kept: the NVIDIA runtime
     # check below reads it too, and `docker info` costs ~300 ms a call.
     if ! docker_info="$(docker info 2>/dev/null)"; then
         log_error "Docker daemon is not reachable."
-        log_info  "Native Linux: 'sudo systemctl start docker' and add your user to the 'docker' group ('sudo usermod -aG docker \$USER', then re-login)."
-        log_info  "WSL2: start Docker Desktop and enable integration for this distro."
+        log_detail  "Native Linux: 'sudo systemctl start docker' and add your user to the 'docker' group ('sudo usermod -aG docker \$USER', then re-login)." >&2
+        log_detail  "WSL2: start Docker Desktop and enable integration for this distro." >&2
         errors=$((errors + 1))
     fi
 
@@ -69,9 +69,9 @@ else
     if [ -z "$compose_version" ]; then
         log_error "'docker compose' (Compose v2 plugin) is not available — this project requires it."
         if command -v docker-compose >/dev/null 2>&1; then
-            log_info "Found legacy 'docker-compose' (v1), which is NOT used. Install the Compose v2 plugin (package 'docker-compose-plugin')."
+            log_detail "Found legacy 'docker-compose' (v1), which is NOT used. Install the Compose v2 plugin (package 'docker-compose-plugin')." >&2
         else
-            log_info "Install the Docker Compose v2 plugin (package 'docker-compose-plugin')."
+            log_detail "Install the Docker Compose v2 plugin (package 'docker-compose-plugin')." >&2
         fi
         errors=$((errors + 1))
     elif ! awk -F. '{gsub(/^v/, ""); exit !($1 > 2 || ($1 == 2 && $2 >= 24))}' <<< "$compose_version"; then
@@ -82,7 +82,7 @@ else
     # 4. BuildKit (the Dockerfile uses --mount=type=cache/bind, which require BuildKit)
     if ! docker buildx version >/dev/null 2>&1 || [ "${DOCKER_BUILDKIT:-1}" = 0 ]; then
         log_error "BuildKit/buildx is required and must be enabled."
-        log_info "The Dockerfile requires BuildKit. Export DOCKER_BUILDKIT=1 or install the buildx plugin ('docker-buildx-plugin')."
+        log_detail "The Dockerfile requires BuildKit. Export DOCKER_BUILDKIT=1 or install the buildx plugin ('docker-buildx-plugin')." >&2
         errors=$((errors + 1))
     fi
 fi
@@ -98,12 +98,12 @@ docker_runtimes="$(timeout 10 docker info --format '{{range $r, $_ := .Runtimes}
 if command -v docker >/dev/null 2>&1 && [ -n "${docker_info:-}" ] && ! grep -qw nvidia <<< " ${docker_runtimes} "; then
     if [ "${GPU_MODE:-auto}" = nvidia ]; then
         log_error "GPU_MODE=nvidia, but Docker has no NVIDIA runtime (nvidia-container-toolkit)."
-        log_info  "Fix: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
+        log_detail  "Fix: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker" >&2
         errors=$((errors + 1))
     elif [ "${HAS_NVIDIA:-false}" = true ]; then
         log_warn "NVIDIA GPU detected, but Docker has no NVIDIA runtime configured."
-        log_info "Fix: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
-        log_info "Until then DevKit falls back to the iGPU/CPU profile."
+        log_detail "Fix: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker" >&2
+        log_detail "Until then DevKit falls back to the iGPU/CPU profile." >&2
         warnings=$((warnings + 1))
     fi
 fi

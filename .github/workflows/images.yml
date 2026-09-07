@@ -16,16 +16,22 @@ on:
   push:
     paths:
       - 'docker/**'
-      - 'scripts/util_apt_helper.sh'
-      - 'scripts/util_cuda_apt.sh'
+      # config/ and scripts/ are COPYed into every image and sourced by the
+      # builder stages, so a change there can break a build that no other
+      # trigger covers (the apt helpers were listed alone).
+      - 'config/**'
+      - 'scripts/**'
       - 'dependencies/apt.txt'
       - 'dependencies/apt_ros.txt'
       - '.github/workflows/images.yml'
   pull_request:
     paths:
       - 'docker/**'
-      - 'scripts/util_apt_helper.sh'
-      - 'scripts/util_cuda_apt.sh'
+      # config/ and scripts/ are COPYed into every image and sourced by the
+      # builder stages, so a change there can break a build that no other
+      # trigger covers (the apt helpers were listed alone).
+      - 'config/**'
+      - 'scripts/**'
       - 'dependencies/apt.txt'
       - 'dependencies/apt_ros.txt'
       - '.github/workflows/images.yml'

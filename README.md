@@ -108,7 +108,7 @@ mksync
 | :--- | :--- |
 | **`h` / `help`** | **도움말 안내**: 컨테이너 내부 전용 통합 숏컷 및 카테고리 안내 출력 |
 | **`mksync [--share]`** | **원클릭 환경 동기화**: 파이썬 venv 생성 + 의존성 설치 + ROS/CMake 빌드 일괄 수행. `--share`는 ROS 이미지에서 자동 적용 (시스템 파이썬 공유 venv — `rospy`/`rclpy`가 시스템에 있음) |
-| **`cbuild` / `mbuild`** | **통합 빌드**: `colcon build` / `catkin_make` (ROS) 또는 Modern `cmake` (Pure C++) 실행. `--debug`/`--release`(기본 `RelWithDebInfo`), `--pkg <이름…>`, `--meta`(`config/colcon.meta` 적용) |
+| **`cbuild` / `mbuild`** | **통합 빌드**: `colcon build` / `catkin_make` (ROS) 또는 Modern `cmake` (Pure C++) 실행. `--debug`/`--release`(기본 `RelWithDebInfo`), `--pkg <이름…>`·`--meta`(`cbuild` 전용; `mbuild` 는 거부합니다) |
 | **`cw` / `cs` / `cc`** | **디렉토리 이동**: 워크스페이스 루트(`$WS_ROOT`), `src/`, `config/`로 빠르게 이동 |
 | **`gpus` / `gpu <mode>`** | **렌더링 스택 리포트**: OpenGL/GLX·EGL·Vulkan·D3D12 렌더러와 Mesa 버전, 로더 경로, 활성 환경변수 조회 / 가속 모드 전환 |
 | **`hwcheck`** | **6섹션 종합 스캔**: 시스템·네트워크·GPU·디스플레이·**신원(uid/gid)과 마운트 권한**·툴체인 |
@@ -126,7 +126,8 @@ mksync
 `GPU_MODE` 환경변수를 통해 사용자의 하드웨어를 자동으로 감지합니다 (`.env` 제어 가능).
 
 - **`GPU_MODE=auto`** (기본값): 아래 순서로 하드웨어를 감지해 모드를 선택합니다.
-  `nvidia`(dGPU) → `tegra`(Jetson) → `amd`(ROCm) → `intel`/`amd`(DRI) → `igpu`(WSL2 D3D12) → `cpu`.
+  호스트 측(`GPU_MODE`, compose 프로파일): `nvidia`(툴킷까지 있을 때) → `igpu`(DRI 또는 WSL2 D3D12) → `cpu`.
+  컨테이너 안(`gpu auto`): `nvidia` → `tegra` → ROCm → `intel`/`amd`(DRI) → `igpu` → `cpu`.
 - **`GPU_MODE=nvidia`**: NVIDIA Container Toolkit 기반 하드웨어 가속 (OpenGL + Vulkan + EGL).
 - **`tegra`**: NVIDIA Jetson / Tegra 내장 GPU (L4T 스택, `/dev/nvhost-*`).
   Jetson은 `/dev/nvidiactl`이 없어 일반 NVIDIA 탐지로는 잡히지 않으므로 별도 경로로 처리합니다.
@@ -147,6 +148,7 @@ mksync
 ### 자동으로 연결되는 호스트 리소스
 
 `scripts/check_env.sh`가 호스트를 1회 감지하여 `.docker_cache/detected-env.mk`에 캐시하고, 그 값으로 아래 마운트가 결정됩니다.
+`ROS_DISTRO=…  make` 처럼 감지 입력을 직접 준 호출은 그 조합만의 캐시 파일(`detected-env-<해시>.mk`)을 씁니다.
 감지에 실패한 항목은 호스트를 오염시키지 않도록 `.docker_cache/dummy_*` 플레이스홀더로 대체됩니다.
 
 | 호스트 리소스 | 컨테이너 매핑 | 비고 |

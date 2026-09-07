@@ -32,6 +32,14 @@ OK     := $(GREEN)[OK]$(NC)
 WARN   := $(YELLOW)[WARN]$(NC)
 ERROR  := $(RED)[ERROR]$(NC)
 
+# Every recipe path here is relative (bash scripts/…, docker/Dockerfile), so a
+# `make -f ../Makefile` from a subdirectory failed on the first one with a raw
+# "No such file". `make -C <root>` is the supported form; say so.
+MAKEFILE_DIR := $(patsubst %/,%,$(dir $(abspath $(firstword $(MAKEFILE_LIST)))))
+ifneq ($(MAKEFILE_DIR),$(CURDIR))
+$(error Run make from $(MAKEFILE_DIR) (or 'make -C $(MAKEFILE_DIR) <target>'): this Makefile resolves its scripts relative to the working directory)
+endif
+
 # The .env files are DEFAULTS, read the way compose reads them: the command
 # line beats the environment, the environment beats .env, .env beats
 # .env.example, and a value's surrounding quotes are dropped. Rendered to `?=`
@@ -54,8 +62,10 @@ $(error Cannot write $(ENV_MK), so .env would be ignored entirely. Check .docker
 endif
 -include $(ENV_MK)
 shell_quote = '$(subst ','"'"',$(1))'
-# Detector inputs the user set explicitly — from any layer, since `?=` keeps
-# their origin — are handed to the probe and key its cache.
+# Detector inputs the user set explicitly on the COMMAND LINE or in the
+# environment are handed to the probe and key its cache. A value from .env
+# arrives as origin `file`, so it is not here — check_env.sh reads those files
+# itself, which is what keeps the two answers the same.
 DETECT_INPUTS := ROS_DISTRO BASE_IMAGE UV_PYTHON WORKSPACE_PATH DOCKER_DEV_CACHE_DIR HOST_UID HOST_GID
 DETECT_OVERRIDES := $(strip $(foreach v,$(DETECT_INPUTS),\
 	$(if $(filter command line environment override,$(origin $(v))),$(call shell_quote,$(v)=$($(v))))))
@@ -87,7 +97,7 @@ export
 # Help/teardown/validation targets skip detection and never pay the
 # nvidia-smi / docker-info probe.
 # Bakes require detection to derive BASE_IMAGE and UV_PYTHON from ROS_DISTRO.
-DETECTOR_EXEMPT := help h setup adopt verify ci ci-on ci-off stop down logs clean clean-cache clean-all docker-clean slurm-status slurm-cancel completion completion-install check-host env-check run-sif update-gpg stats top
+DETECTOR_EXEMPT := help h setup adopt verify ci ci-on ci-off stop down logs clean clean-cache clean-all docker-clean slurm-status slurm-cancel completion completion-install check-host env-check run-sif update-gpg stats top gpus shell exec test lint
 # A bare `make` runs the default target (help), so it must not pay for
 # detection either — substitute 'help' before filtering.
 NEEDS_DETECTOR  := $(filter-out $(DETECTOR_EXEMPT),$(or $(MAKECMDGOALS),help))

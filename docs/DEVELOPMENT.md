@@ -98,7 +98,7 @@ CI 에서 같은 루프를 도는 `project.yml` 은 아래 [CI 절](#-ci-github-
 
 | 호출 방식 | bash가 읽는 파일 | 경로 |
 | :--- | :--- | :--- |
-| 로그인 | `/etc/profile` | → `profile.d/devkit-*.sh` → `init_bash.sh` |
+| 로그인 | `/etc/profile` | → `profile.d/devkit-*.sh`(엔트리포인트가 남긴 값) + `BASH_ENV` 훅 → `init_bash.sh` |
 | 대화형 (`make shell`) | `/etc/bash.bashrc` | → 동일 훅 |
 | **비대화형** (`bash -c`, CI) | **`$BASH_ENV`** | → 동일 훅 |
 
@@ -281,7 +281,7 @@ make verify && make build && make test
 | 바뀐 경로 | 도는 것 | 벽시계 · 러너 시간 |
 | :--- | :--- | :--- |
 | 어디든 (`scripts/`, `config/`, `Makefile`, `docs/` …) | `verify.yml` 두 잡 | ~30 s · ~1 min |
-| `docker/**`, `dependencies/apt*.txt`, apt 헬퍼 두 파일 | + `images.yml` 의 push 잡 (키 경로 3 · apt 해석 3 · 스테이지 빌드 1) | ~1 min · ~6 min |
+| `docker/**`, `dependencies/apt*.txt`, apt 헬퍼 두 파일 | + `images.yml` 의 push 잡 (키 경로 3 · dev apt 해석 3 · ROS apt 해석 4 · 스테이지 빌드 1) | ~1 min · ~6 min |
 | `src/**`, `dependencies/**` | + `project.yml` (dev 이미지 빌드 → `mksync` → lint → test) | ~2 min · ~2 min |
 | 어떤 푸시에도 | 무거운 넷(`runtime-smoke` · `arm64-image` · `sif-artifact` · `prod-artifact`)은 돌지 않음 — 월요일 cron 과 `workflow_dispatch` 만 | — |
 

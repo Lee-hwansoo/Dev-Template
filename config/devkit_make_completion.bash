@@ -8,9 +8,11 @@
 # Silent no-op outside bash so a stray rc entry never prints errors.
 [ -z "${BASH_VERSION:-}" ] && return 0 2>/dev/null
 
-# Locate the DevKit Makefile by walking up from $PWD, so completion works from
-# any subdirectory (src/, docs/, …) exactly like `git` does. Printing nothing
-# and returning 1 means "this is not a DevKit tree".
+# Locate the DevKit Makefile by walking up from $PWD, so completion still knows
+# the target list from a subdirectory. make itself does NOT search upward: from
+# src/ the answer is `make -C <root> <target>`, and the -C form completes too
+# (the option and its directory are skipped when looking for the target).
+# Printing nothing and returning 1 means "this is not a DevKit tree".
 _devkit_find_makefile() {
     local dir="$PWD"
     while :; do
@@ -53,10 +55,17 @@ _devkit_make_completion() {
 
     # Determine target (first non-assignment word after 'make', excluding the
     # word currently being completed)
-    local target="" word i n=${#words[@]}
+    local target="" word i n=${#words[@]} skip=0
     [ -n "$cur" ] && n=$((n - 1))
     for ((i=1; i<n; i++)); do
         word="${words[i]}"
+        # An option that TAKES a value (-C dir, -f file, -j N…) hides its
+        # argument: 'make -C . build' read '.' as the target and completed
+        # nothing from then on.
+        if [ "$skip" = 1 ]; then skip=0; continue; fi
+        case "$word" in
+            -C|-f|--file|--makefile|--directory|-o|-W|-I|-l) skip=1; continue ;;
+        esac
         [[ "$word" == *=* ]] && continue
         [[ "$word" == -* ]] && continue
         target="$word"
