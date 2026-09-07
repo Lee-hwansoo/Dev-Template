@@ -275,7 +275,10 @@ git checkout upstream/main -- Makefile config/ scripts/ docker/ docker-compose*.
 #     `make verify` 의 실패 메시지가 무엇을 더해야 하는지 그대로 알려줍니다.
 git diff HEAD upstream/main -- .gitignore .env.example docs/ .vscode/ .devcontainer/
 
-# 4) 계약으로 검증 후 커밋
+# 4) 호스트가 정하는 값 두 개를 다시 씌우고, 계약으로 검증한 뒤 커밋
+#    .devcontainer/devcontainer.json 의 service/remoteUser 는 이 호스트의 GPU 프로파일에서
+#    나오므로 상류 값(기본 프로파일)으로 덮이는 것이 정상입니다. 한 번 되돌리면 됩니다.
+make ide-config
 make verify && make build && make test
 ```
 
