@@ -4079,6 +4079,29 @@ gpu_typo="$(bash --norc -c "WORKSPACE_PATH='${ROOT_DIR}' source config/util_alia
 #      just `bash -n` them. Syntax passes on constructs whose behaviour differs,
 #      and the macOS runner answers with whatever bash is first on its PATH.
 # =============================================================================
+# The class, checked statically first: five of these reached the macOS runner
+# before anything noticed, each because a probe asked the HOST for a tool only
+# GNU userland has. One table, over every file that runs on a host — this suite
+# included, since its own probes are what kept breaking. The rule lines carry a
+# tab, which is how they exclude themselves from their own scan.
+# Container- and Linux-only libraries are out of scope: hwcheck and the shell
+# helpers only ever run inside the image, the link setup with them, and
+# check_wsl.sh only under WSL — all GNU userland by construction.
+legacy_host_files="Makefile $(ls scripts/*.sh config/*.sh \
+    | grep -vE 'check_hardware\.sh|util_aliases\.sh|util_setup_links\.sh|check_wsl\.sh' | tr '\n' ' ')"
+while IFS="$(printf '\t')" read -r legacy_pat legacy_why; do
+    [ -n "$legacy_pat" ] || continue
+    legacy_hits="$(grep -nE "^[^#]*${legacy_pat}" $legacy_host_files 2>/dev/null | grep -v "$(printf '\t')" || true)"
+    [ -z "$legacy_hits" ] \
+        || log_err "host-side code uses ${legacy_why}: $(cut -d: -f1,2 <<< "$legacy_hits" | tr '\n' ' ')"
+done <<'LEGACY_RULES'
+sed.*\\[|+?]	GNU-only BRE in a sed expression; BSD sed reads the escape as a literal and matches nothing
+make --eval	make --eval, which is GNU make 3.82+ (macOS ships 3.81)
+grep -[a-zA-Z]*P 	grep -P, a GNU extension
+(^|[^-_[:alnum:]])timeout +[0-9]	a bare timeout; macOS has neither it nor gtimeout, so use devkit_timeout
+\$\(python3 -c[^)]*yaml	a value read out of PyYAML, which the macOS interpreter does not have (a guarded capability test is fine)
+readlink -f	readlink -f, which macOS does not support (use devkit_resolve_path)
+LEGACY_RULES
 if docker_live; then
     legacy_out="$(docker run --rm -v "${ROOT_DIR}:/w:ro" -w /w -e SOURCED_ONLY="$sourced_only" bash:3.2 bash -c '
         [ "${BASH_VERSINFO[0]}" = 3 ] || { echo "WRONG-BASH ${BASH_VERSION}"; exit 1; }

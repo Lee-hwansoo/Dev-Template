@@ -218,8 +218,8 @@ case "$COMMAND" in
             # https: Check-Valid-Until is disabled above (snapshots are stale by
             # definition), so TLS is the only remaining anti-rollback control.
             tmp_sources="$(mktemp)"
-            sed -e "s|https\?://archive.ubuntu.com/ubuntu/|https://snapshot.ubuntu.com/ubuntu/${snap_date}/|g" \
-                -e "s|https\?://security.ubuntu.com/ubuntu/|https://snapshot.ubuntu.com/ubuntu/${snap_date}/|g" \
+            sed -e "s|https*://archive.ubuntu.com/ubuntu/|https://snapshot.ubuntu.com/ubuntu/${snap_date}/|g" \
+                -e "s|https*://security.ubuntu.com/ubuntu/|https://snapshot.ubuntu.com/ubuntu/${snap_date}/|g" \
                 -e "s|https\?://ports.ubuntu.com/ubuntu-ports/|https://snapshot.ubuntu.com/ubuntu-ports/${snap_date}/|g" \
                 /etc/apt/sources.list > "$tmp_sources"
             cat "$tmp_sources" > /etc/apt/sources.list
