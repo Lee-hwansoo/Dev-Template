@@ -129,11 +129,16 @@ case "$COMMAND" in
         # init-apt's curl/gnupg/lsb-release have no job in a shipped stage, but
         # `purge -y` takes dependents along: ros-*-libcurl-vendor needs curl and
         # python3-rospkg needs lsb-release. Drop only what nothing installed
-        # still depends on (Depends/Pre-Depends; not Suggests or Breaks).
+        # still depends on (Depends/Pre-Depends; not Suggests or Breaks) and
+        # what the runtime manifest did not ask for by name — an app's `curl`
+        # call is a dependency apt cannot see. [distro] selects apt_ros.txt too.
+        requested="$(select_packages runtime "${1:-}" 2>/dev/null | sed 's/=.*//' || true)"
         drop=""; kept=""
         for pkg in curl gnupg dirmngr lsb-release; do
             dpkg-query -W -f='${db:Status-Abbrev}' "$pkg" 2>/dev/null | grep -q '^ii' || continue
-            if [ -n "$(apt-cache rdepends --installed --no-recommends --no-suggests --no-conflicts \
+            if grep -qx "$pkg" <<< "$requested"; then
+                kept="$kept $pkg(runtime)"
+            elif [ -n "$(apt-cache rdepends --installed --no-recommends --no-suggests --no-conflicts \
                            --no-breaks --no-replaces --no-enhances "$pkg" 2>/dev/null | sed '1,2d')" ]; then
                 kept="$kept $pkg"
             else
@@ -142,7 +147,7 @@ case "$COMMAND" in
         done
         # shellcheck disable=SC2086  # deliberate word split over the package list
         [ -z "$drop" ] || apt-get purge -y --auto-remove $drop
-        log_ok "Bootstrap tools purged:${drop:- none}.${kept:+ Kept, still depended on:$kept}"
+        log_ok "Bootstrap tools purged:${drop:- none}.${kept:+ Kept (depended on or requested):$kept}"
         ;;
     configure-snapshot)
         # Pin APT to a point-in-time Ubuntu snapshot so SOURCE_DATE_EPOCH builds are

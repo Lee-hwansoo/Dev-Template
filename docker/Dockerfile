@@ -396,11 +396,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=bind,source=dependencies/,target=${WORKSPACE_PATH}/dependencies/ \
     if [ "$PROD_ENV" = ros ]; then \
         bash /tmp/util_apt_helper.sh setup-ros-repo ${ROS_DISTRO} && \
-        bash /tmp/util_apt_helper.sh install-packages runtime ${ROS_DISTRO}; \
+        bash /tmp/util_apt_helper.sh install-packages runtime ${ROS_DISTRO} && \
+        bash /tmp/util_apt_helper.sh purge-bootstrap ${ROS_DISTRO}; \
     else \
-        bash /tmp/util_apt_helper.sh install-packages runtime; \
+        bash /tmp/util_apt_helper.sh install-packages runtime && \
+        bash /tmp/util_apt_helper.sh purge-bootstrap; \
     fi && \
-    bash /tmp/util_apt_helper.sh purge-bootstrap && \
     if command -v sudo >/dev/null 2>&1; then chmod a-s "$(command -v sudo)"; fi
 COPY --from=prod-builder ${WORKSPACE_PATH}/install ${WORKSPACE_PATH}/install
 COPY --from=prod-builder /opt/uv/python /opt/uv/python

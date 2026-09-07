@@ -2706,17 +2706,27 @@ printf '#!/bin/sh\necho ii\n' > "$purge_probe/dpkg-query"
 printf '#!/bin/sh\nfor a; do :; done\nprintf "%%s\\nReverse Depends:\\n" "$a"\n[ "$a" != curl ] || echo "  ros-humble-libcurl-vendor"\n' > "$purge_probe/apt-cache"
 printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/argv"\n' "$purge_probe" > "$purge_probe/apt-get"
 chmod +x "$purge_probe/dpkg-query" "$purge_probe/apt-cache" "$purge_probe/apt-get"
-( PATH="$purge_probe:$probe_min_path" bash scripts/util_apt_helper.sh purge-bootstrap ) >/dev/null 2>&1 || true
+# …and what the runtime manifest requested by name (`gnupg # runtime` here —
+# an app's own call to it is a dependency apt cannot see) is kept even with no
+# reverse dependency. The ROS distro selects apt_ros.txt as it does for install.
+mkdir -p "$purge_probe/deps"
+printf 'gnupg # runtime\nlsb-release # dev\n' > "$purge_probe/deps/apt.txt"
+printf 'dirmngr=1.0 # runtime ros2\n' > "$purge_probe/deps/apt_ros.txt"
+( PATH="$purge_probe:$probe_min_path" DEVKIT_DEPS_DIR="$purge_probe/deps" \
+  bash scripts/util_apt_helper.sh purge-bootstrap humble ) >/dev/null 2>&1 || true
 purge_argv="$(tr '\n' ' ' < "$purge_probe/argv" 2>/dev/null || echo '<apt-get never called>')"
-case " $purge_argv " in
-    *" curl "*) log_err "purge-bootstrap purges curl while an installed package depends on it (argv: ${purge_argv})."; sec_errors=1 ;;
-esac
-for purge_want in gnupg dirmngr lsb-release; do
+for purge_keep in curl gnupg dirmngr; do
     case " $purge_argv " in
-        *" $purge_want "*) ;;
-        *) log_err "purge-bootstrap keeps '${purge_want}' although nothing depends on it (argv: ${purge_argv})."; sec_errors=1 ;;
+        *" $purge_keep "*) log_err "purge-bootstrap purges '${purge_keep}' although an installed package depends on it or the runtime manifest requested it (argv: ${purge_argv})."; sec_errors=1 ;;
     esac
 done
+case " $purge_argv " in
+    *" lsb-release "*) ;;
+    *) log_err "purge-bootstrap keeps 'lsb-release' although nothing depends on it and only '# dev' asked for it (argv: ${purge_argv})."; sec_errors=1 ;;
+esac
+awk '/AS prod-runtime$/{inside=1} inside && /^FROM / && !/AS prod-runtime$/{inside=0}
+     inside && /purge-bootstrap \$\{ROS_DISTRO\}/{found=1} END {exit found ? 0 : 1}' docker/Dockerfile \
+    || { log_err "docker/Dockerfile: the ROS prod-runtime does not pass ROS_DISTRO to purge-bootstrap; a '# runtime' entry in apt_ros.txt would not be spared."; sec_errors=1; }
 rm -rf "$purge_probe"
 # `make term` must probe with a binary the image actually ships: xset lives in
 # x11-xserver-utils (not installed) and made the target report "no display" on a
@@ -3190,28 +3200,6 @@ rm -rf "$mclean_probe"
     && log_ok "mclean empties build/, devel/, log/ and install/ (keeping the venv), and fails on what it could not remove."
 
 # =============================================================================
-# [dependency-presence] "Are there external repositories?" must have ONE answer.
-#      A regex anchored to a line starting with url: saw nothing in flow-style
-#      YAML, so a populated .repos reported "nothing to import" and exited 0
-#      with vcstool absent; the first-run check counted the shipped .gitkeep as
-#      content and skipped the sync entirely.
-# =============================================================================
-deps_errors=0
-deps_probe="$(probe_dir config scripts)"
-mkdir -p "$deps_probe/dependencies" "$deps_probe/src/thirdparty" "$deps_probe/bin"
-deps_hash="0123456789abcdef0123456789abcdef01234567"
-deps_repos() { printf '%s\n' "$1" > "$deps_probe/dependencies/dependencies.repos"; }
-# Without vcstool a declared repository must FAIL, in either YAML style.
-deps_missing_tool() {
-    ( PATH="$probe_min_path" WORKSPACE_PATH="$deps_probe" \
-      bash scripts/setup_sync_deps.sh 2>&1 || true )
-}
-deps_repos "repositories:
-  a: {type: git, url: https://example.invalid/a.git, version: ${deps_hash}}"
-grep -qi 'vcstool is missing' <<< "$(deps_missing_tool)" \
-    || { log_err "a flow-style .repos reads as empty; a populated file would report 'nothing to import' and exit 0."; deps_errors=1; }
-deps_repos "repositories:
-# =============================================================================
 # [prod-build-inputs] The production builder COPYs an explicit input set; the
 #      project-type detector (`__cmake_entry`) must see the same tree as a dev
 #      build. A repository-root CMake project resolved to PYTHON inside the
@@ -3253,6 +3241,28 @@ pbi_ctx="$(pbi_type "$pbi_probe/ctx")"; pbi_img="$(pbi_type "$pbi_probe/img")"
 rm -rf "$pbi_probe"
 [ "$pbi_errors" -eq 0 ] && log_ok "Production builder inputs: a root CMake project resolves to CPP inside the builder as it does in a dev build."
 
+# =============================================================================
+# [dependency-presence] "Are there external repositories?" must have ONE answer.
+#      A regex anchored to a line starting with url: saw nothing in flow-style
+#      YAML, so a populated .repos reported "nothing to import" and exited 0
+#      with vcstool absent; the first-run check counted the shipped .gitkeep as
+#      content and skipped the sync entirely.
+# =============================================================================
+deps_errors=0
+deps_probe="$(probe_dir config scripts)"
+mkdir -p "$deps_probe/dependencies" "$deps_probe/src/thirdparty" "$deps_probe/bin"
+deps_hash="0123456789abcdef0123456789abcdef01234567"
+deps_repos() { printf '%s\n' "$1" > "$deps_probe/dependencies/dependencies.repos"; }
+# Without vcstool a declared repository must FAIL, in either YAML style.
+deps_missing_tool() {
+    ( PATH="$probe_min_path" WORKSPACE_PATH="$deps_probe" \
+      bash scripts/setup_sync_deps.sh 2>&1 || true )
+}
+deps_repos "repositories:
+  a: {type: git, url: https://example.invalid/a.git, version: ${deps_hash}}"
+grep -qi 'vcstool is missing' <<< "$(deps_missing_tool)" \
+    || { log_err "a flow-style .repos reads as empty; a populated file would report 'nothing to import' and exit 0."; deps_errors=1; }
+deps_repos "repositories:
   a:
     type: git
     url: https://example.invalid/a.git
