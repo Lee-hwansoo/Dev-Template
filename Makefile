@@ -102,7 +102,7 @@ export
 # Help/teardown/validation targets skip detection and never pay the
 # nvidia-smi / docker-info probe.
 # Bakes require detection to derive BASE_IMAGE and UV_PYTHON from ROS_DISTRO.
-DETECTOR_EXEMPT := help h setup adopt verify ci ci-on ci-off stop down logs clean clean-cache clean-all docker-clean slurm-status slurm-cancel completion completion-install check-host env-check run-sif update-gpg stats top gpus shell exec test lint
+DETECTOR_EXEMPT := help h setup adopt verify ci ci-on ci-off stop down logs clean clean-cache clean-all docker-clean slurm-status slurm-cancel run-sif update-gpg stats top gpus shell exec test lint
 # A bare `make` runs the default target (help), so it must not pay for
 # detection either — substitute 'help' before filtering.
 NEEDS_DETECTOR  := $(filter-out $(DETECTOR_EXEMPT),$(or $(MAKECMDGOALS),help))
@@ -160,7 +160,7 @@ is_false = $(filter 0 false FALSE False no NO No off OFF Off,$(1))
 # Scoped to every target consuming ENV — including down, where `make down
 # ENV=ros2` would stop the wrong profile without a word. (clean-all removes
 # EVERY ENV's volumes and images by design; its confirmation says so.)
-ENV_EXEMPT := help h adopt verify ci ci-on ci-off clean clean-cache docker-clean update-gpg xauth gpus slurm-status slurm-cancel completion completion-install
+ENV_EXEMPT := help h adopt verify ci ci-on ci-off clean clean-cache docker-clean update-gpg xauth gpus slurm-status slurm-cancel
 ifneq ($(filter-out $(ENV_EXEMPT),$(or $(MAKECMDGOALS),help)),)
 ifeq ($(filter ros dev,$(ENV)),)
 $(error ENV must be 'ros' or 'dev' (got: '$(ENV)'))
@@ -937,20 +937,3 @@ docker-clean:
 	@docker system prune -f --volumes
 	@docker builder prune -a -f
 	@echo -e "  $(OK) Global Docker build cache, volumes & dangling images pruned."
-
-# =============================================================================
-# Deprecated target names (pre-streamline spellings)
-# =============================================================================
-# Renaming an entry point breaks the CI of every project built on this kit, so
-# these forward and say where to go. Absent from .PHONY and help on purpose.
-DEPRECATED = @echo -e "  $(WARN) 'make $(1)' is deprecated — use 'make $(2)'." >&2
-
-## deprecated: check-host, env-check → check
-check-host env-check:
-	$(call DEPRECATED,$@,check)
-	@$(MAKE) --no-print-directory check
-
-## deprecated: completion, completion-install → setup
-completion completion-install:
-	$(call DEPRECATED,$@,setup)
-	@bash config/devkit_make_completion.bash --install

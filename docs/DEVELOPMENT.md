@@ -390,20 +390,21 @@ ROS 1 noetic 은 2025 년 5 월에 EOL 이 되었습니다. DevKit 은 그 경�
 20.04 이전 배포판 이름(melodic·kinetic)은 베이스 이미지 매핑이 없어 어차피 빌드되지 않았으므로 제거했습니다 —
 `ROS_DISTRO=noetic` 만 ROS 1 입니다.
 
-## 🔁 이전 이름 (Deprecated Names)
+## 🔁 제거된 이름 (Removed Names)
 
-DevKit은 베이스 키트이므로 진입점 이름을 바꾸면 그 위에 올린 프로젝트의 CI가 깨집니다.
-아래 이름은 **계속 동작**하며, 실행 시 새 이름을 한 줄로 안내한 뒤 위임합니다.
-탭 완성과 `make help` / `h`에는 노출되지 않으므로 새 코드에서는 오른쪽 이름만 쓰세요.
-(`make verify` [deprecated-entrypoints]가 위임 동작을 실행으로 검증합니다.)
+**한 동작에 이름 하나** — 옛 이름을 위임으로 남겨 두면 표면이 두 배가 되고, 무엇이 정식
+이름인지 문서·탭 완성·계약이 각각 답해야 합니다. 직전 리비전까지 안내와 함께 위임했던 아래
+이름들은 이 리비전에서 **제거**되었습니다(태그 메시지가 어느 리비전인지 말합니다).
+streamline 이전에서 갈라진 포크가 상류를 병합할 때는 자기 스크립트의 왼쪽 이름을 오른쪽으로
+바꾸면 됩니다 — sed 한 줄입니다.
 
-| 이전 이름 | 현재 이름 | 비고 |
+| 제거된 이름 | 쓸 이름 | 왜 없어졌나 |
 | :--- | :--- | :--- |
-| `make check-host` | `make check` | 호스트 GPU/툴킷 점검이 `check`로 통합 |
-| `make env-check` | `make check` | `.env` ↔ `.env.example` 키 비교가 `check`로 통합 |
-| `make completion` / `completion-install` | `make setup` | `setup`이 탭 완성을 `~/.bashrc`에 등록 |
-| `hw_check` (컨테이너) | `hwcheck` | 동일 스크립트, 이름만 변경 |
+| 타깃 `check-host` · `env-check` | `make check` | 호스트 점검과 `.env` 키 비교가 `check` 하나로 통합 |
+| 타깃 `completion` · `completion-install` | `make setup` | `setup` 이 탭 완성을 `~/.bashrc` 에 등록 |
+| 셸 함수 `hw_check` (컨테이너) | `hwcheck` | 동일 스크립트, 이름만 |
+| `GPU_MODE=software` | `GPU_MODE=cpu` | `cpu` 와 완전히 같은 동작이었고 문서화된 적이 없음 |
 
-> **`software` GPU 모드는 예외적으로 제거되었습니다.** `cpu`와 완전히 동일한 동작이었고
+> **`software` GPU 모드도 같은 이유로 제거되었습니다.** `cpu`와 완전히 동일한 동작이었고
 > `GPU_MODE`·`gpu` 명령·README 어디에도 문서화된 적이 없는 내부 동의어였기 때문입니다.
 > 한 동작에 두 이름을 남기지 않는다는 원칙에 따라 `cpu` 하나만 유지합니다.

@@ -2460,7 +2460,11 @@ if grep -q '^DEBUG_MODE=' .env.example; then
     ( set -euo pipefail; source scripts/util_logging.sh; DEBUG_MODE=true; log_debug probe ) 2>/dev/null | grep -q probe \
         && log_err "log_debug writes to stdout; a data-emitting script would ship debug lines as data."
 fi
-ok "Documented knobs still have a working consumer (DEBUG_MODE → log_debug)."
+# The same rule for the GPU knob: OPENCV_CUDA is documented and `gpu
+# opencv_args` is what consumes it.
+[ "$(OPENCV_CUDA=off bash scripts/setup_gpu.sh opencv_args 2>/dev/null)" = "-DWITH_CUDA=OFF" ] \
+    || log_err "OPENCV_CUDA=off no longer forces -DWITH_CUDA=OFF via 'gpu opencv_args'."
+ok "Documented knobs still have a working consumer (DEBUG_MODE → log_debug, OPENCV_CUDA → gpu opencv_args)."
 
 # =============================================================================
 # [env-reaches-detector] make's `export` does not reach $(shell …), so the
@@ -3973,39 +3977,6 @@ fi
 ok "Security defaults: fail-closed GPG pins, unprivileged containers, TLS snapshot, scoped xhost, guarded rm/arrays."
 
 # =============================================================================
-# [deprecated-entrypoints] Renaming a target breaks the CI of every project
-#      built on this kit, so the old spellings forward. By DRY-RUN (resolve AND
-#      delegate), and they must stay out of .PHONY/help so nothing advertises
-#      them.
-# =============================================================================
-group
-while read -r old new; do
-    probe="$(make -n "$old" 2>&1 || true)"
-    grep -q "is deprecated" <<< "$probe" \
-        || log_err "'make ${old}' no longer warns that it is deprecated (or the rule is gone)."
-    # Skip the notice line first: it names the new target itself, so a plain
-    # grep is satisfied by the deprecation message even with no delegation left.
-    grep -v 'is deprecated' <<< "$probe" | grep -qE "(make .*${new}|devkit_make_completion)" \
-        || log_err "'make ${old}' no longer delegates to '${new}' — existing CI would silently do nothing."
-    grep -qE "^\.PHONY:.*(^| )${old}( |$)" Makefile \
-        && log_err "deprecated target '${old}' is in .PHONY — tab completion would advertise it."
-done <<'PAIRS'
-check-host check
-env-check check
-completion setup
-completion-install setup
-PAIRS
-# The in-container spelling: a function, so `hw_check --brief` still forwards.
-compat_shell="$(bash --norc -ic "WORKSPACE_PATH='${ROOT_DIR}' source config/util_aliases.sh >/dev/null 2>&1
-    type -t hw_check; type -t hwcheck" 2>/dev/null)"
-grep -q function <<< "$compat_shell" \
-    || log_err "hw_check() is gone — scripts calling the pre-streamline name would break."
-# OPENCV_CUDA is a documented knob with a documented consumer (`gpu opencv_args`).
-[ "$(OPENCV_CUDA=off bash scripts/setup_gpu.sh opencv_args 2>/dev/null)" = "-DWITH_CUDA=OFF" ] \
-    || log_err "OPENCV_CUDA=off no longer forces -DWITH_CUDA=OFF via 'gpu opencv_args'."
-ok "Deprecated entry points still forward (4 make targets, hw_check) and OPENCV_CUDA is wired."
-
-# =============================================================================
 # [cli-convention] Every executed script answers --help with 0 and refuses an
 #      unknown flag. `check_deps --help` once died with "Target directory
 #      '--help' does not exist"; check_env.sh took a typo'd mode as its
@@ -4178,8 +4149,6 @@ def code_only(text):
     return "\n".join(fenced + re.findall(r'`([^`\n]+)`', text))
 
 targets = set(os.environ.get('DEVKIT_PHONY', '').split())
-# Deprecated spellings still forward, so naming one in the docs is not a lie.
-targets |= {'check-host', 'env-check', 'completion', 'completion-install'}
 bad = []
 # README is the fork's: its links and headings are checked upstream only.
 upstream = os.environ.get('DEVKIT_UPSTREAM_CHECKS') == '1'

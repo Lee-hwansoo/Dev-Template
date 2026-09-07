@@ -114,12 +114,6 @@ hwcheck()    { bash "${WS_SCRIPTS}/check_hardware.sh" "$@"; }
 gpus()       { bash "${WS_SCRIPTS}/setup_gpu.sh" status "$@"; }
 check_deps() { bash "${WS_SCRIPTS}/check_deps.sh" "$@"; }
 
-# Pre-streamline spelling: a base kit must not break scripts already calling it.
-hw_check() {
-    log_warn "'hw_check' is deprecated — use 'hwcheck'."
-    bash "${WS_SCRIPTS}/check_hardware.sh" "$@"
-}
-
 __print_container_help() {
     # Locals, not devkit_auto_color: `exec >` would redirect the user's shell
     # for good. _log_plain is the same rule the log verbs apply.
@@ -733,5 +727,5 @@ complete -W "--debug --release" mbuild 2>/dev/null || true
 complete -W "--rosdep --force" sync_deps 2>/dev/null || true
 complete -W "--all" mclean 2>/dev/null || true
 complete -W "--fix" mlint 2>/dev/null || true
-complete -W "--brief" hwcheck hw_check 2>/dev/null || true
+complete -W "--brief" hwcheck 2>/dev/null || true
 complete -W "--share" mksync mkenv 2>/dev/null || true
