@@ -254,7 +254,7 @@ cat /etc/devkit/devkit-release.json | grep devkit_version    # 배포된 SIF/이
 ```bash
 # 1) 최초 1회: 상류를 원격으로 등록
 git remote add upstream https://github.com/Lee-hwansoo/DevKit.git
-git fetch upstream
+git fetch upstream --tags   # 태그까지: 2) 의 비교가 v* 태그를 로컬에서 찾습니다
 
 # 2) 무엇이 바뀌었는지 먼저 읽기 (MAJOR 인지 확인)
 git diff HEAD upstream/main -- VERSION
@@ -269,18 +269,49 @@ git checkout upstream/main -- Makefile config/ scripts/ docker/ docker-compose*.
     .github/workflows/verify.yml .github/workflows/images.yml .github/workflows/images-deep.yml .github/actions/ \
     .editorconfig .clang-format .gitattributes .dockerignore
 
-# 3b) 당신 것이지만 키트도 항목을 추가하는 세 파일은 손으로 병합합니다 —
+# 3b) 당신 것이지만 키트도 항목을 추가하는 파일들은 손으로 병합합니다 —
 #     .gitignore(키트가 만드는 산출물), .env.example(새 노브 선언), docs/(키트 사용법),
 #     .vscode/·.devcontainer/(편집기 계약: 경로와 확장은 키트가 정하고 설정은 당신 것).
 #     `make verify` 의 실패 메시지가 무엇을 더해야 하는지 그대로 알려줍니다.
 git diff HEAD upstream/main -- .gitignore .env.example docs/ .vscode/ .devcontainer/
 
-# 4) 호스트가 정하는 값 두 개를 다시 씌우고, 계약으로 검증한 뒤 커밋
-#    .devcontainer/devcontainer.json 의 service/remoteUser 는 이 호스트의 GPU 프로파일에서
-#    나오므로 상류 값(기본 프로파일)으로 덮이는 것이 정상입니다. 한 번 되돌리면 됩니다.
-make ide-config
+#     ⚠ 정체성은 가져오지 마세요. .env.example 의 COMPOSE_PROJECT_NAME 과
+#     src/pyproject.toml 의 [project] name 은 이 프로젝트의 이름입니다. 상류 값(myproject)이
+#     섞여 들어와도 당신의 .env 가 이기므로 당장은 아무 일도 없지만, .env 없이 클론한
+#     팀원은 다른 도커 프로젝트를 상대하게 되어 컨테이너와 볼륨(빌드된 venv 포함)이
+#     고아가 됩니다. 섞였다면 손으로 고치지 말고 이름의 주인에게 시키세요:
+make adopt NAME=<이 프로젝트 이름>   # .env · .env.example · pyproject · uv.lock 을 한 번에
+
+#     src/pyproject.toml 과 src/uv.lock 의 짝이 어긋난 경우는 `make verify` 가 잡습니다
+#     (`uv sync --locked` 가 프로덕션 빌드에서 거부하기 전에). 이름만 어긋난 경우는
+#     유효한 이름이라 계약이 잡지 못합니다 — 위 한 줄이 그 자리입니다.
+
+# 4) 계약으로 검증한 뒤 커밋
+#    3b 에서 .devcontainer/devcontainer.json 을 상류 값으로 받았다면 `make ide-config` 를
+#    한 번 — service/remoteUser 는 이 호스트의 GPU 프로파일에서 나오는 값입니다.
 make verify && make build && make test
 ```
+
+### 통짜로 가져오기 (목록을 관리하고 싶지 않다면)
+
+3) 의 목록은 키트가 파일을 추가할 때마다 사람이 갱신해야 하고, 빠뜨리면 옛 파일이 조용히 남습니다.
+반대로 **전부 가져온 뒤 당신 것만 되돌리는** 방법도 있습니다 — 관리할 목록이 "포크가 소유하는 것"
+쪽으로 바뀌는데, 그쪽이 더 작고 잘 변하지 않습니다.
+
+```bash
+git status --porcelain   # 반드시 깨끗한 트리에서 (되돌릴 것이 섞이면 구분할 수 없습니다)
+
+git checkout upstream/main -- .          # 상류의 모든 파일 — 당신 것도 함께 덮입니다
+git checkout HEAD -- src dependencies .env.example README.md LICENSE VERSION     .github/workflows/project.yml        # 되돌리기: 소유 표의 왼쪽 열
+make adopt NAME=<이 프로젝트 이름>        # 정체성을 다시 씌우고
+make setup && make verify                 # 호스트 값(.env·IDE)을 다시 만든 뒤 계약 검증
+```
+
+> [!WARNING]
+> 되돌리기 줄을 빠뜨리면 `src/`·`dependencies/`·`README.md` 가 상류 것으로 바뀝니다.
+> `git checkout upstream/main -- .` 은 **상류에 존재하는 모든 경로**를 덮어쓰므로,
+> 당신만 가진 디렉터리(예: `src/my_package/`)는 남지만 이름이 겹치는 파일은 사라집니다.
+> 깨끗한 트리에서 시작하면 `git diff` 로 무엇이 바뀌었는지 그대로 검토할 수 있습니다.
 
 > [!TIP]
 > `make verify`가 통과하면 병합이 키트의 런타임 계약을 깨지 않았다는 뜻입니다. 반대로 실패
