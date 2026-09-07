@@ -139,9 +139,18 @@ probe_farm() {
 # /var → /private/var) compared its own path against what the recipe recorded
 # and disagreed.
 make_probe() {
-    local dir
+    local dir name
     dir="$(cd "$(probe_dir scripts config docker dependencies)" && pwd -P)"
     cp "${ROOT_DIR}/Makefile" "${ROOT_DIR}/.env.example" "$@" "${dir}/"
+    # …under a project name of its own. The copied .env.example carries the
+    # REPOSITORY's COMPOSE_PROJECT_NAME, so on an adopted fork a probe spoke for
+    # the developer's project: `make clean` saw their running container and
+    # `make adopt` saw their volumes, and both refused — correctly, which made
+    # `make verify` unusable on a fork with its stack up. Unique per probe, and
+    # in the character set the kit's own name rule allows.
+    name="devkit-probe-$(printf '%s' "${dir##*/}" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9-')"
+    sed -i.bak "s/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=${name}/" "${dir}/.env.example"
+    rm -f "${dir}/.env.example.bak"
     printf '%s' "$dir"
 }
 
@@ -887,6 +896,18 @@ BSDSED
 else
     log_err "the moved-checkout probe produced no detected-env*.mk to test."
 fi
+# A probe speaks for itself, never for the repository. The copied .env.example
+# used to carry the real COMPOSE_PROJECT_NAME, so on an adopted fork a probe was
+# the developer's project: `make clean` found their running container and
+# `make adopt` their volumes, both refused — correctly — and `make verify` could
+# not be run with the stack up, which is when a developer runs it.
+cache_ident="$(make_probe)"
+cache_ident_name="$(cd "$cache_ident" && env -u DOCKER_DEV_CACHE_DIR make -pn help 2>/dev/null | sed -n 's/^COMPOSE_PROJECT_NAME = //p' | head -n 1)"
+case "$cache_ident_name" in
+    devkit-probe-*) ;;
+    *) log_err "a probe tree resolves COMPOSE_PROJECT_NAME='${cache_ident_name}' instead of one of its own; on an adopted fork the destructive-path guards see the developer's containers and refuse." ;;
+esac
+rm -rf "$cache_ident"
 # A cache the detector itself marked incomplete (the daemon was down when it
 # ran) must be re-probed too, or one bad moment pins the project to the CPU
 # profile forever.
@@ -3482,6 +3503,8 @@ cp Makefile "$adopt_lock_probe/"; mkdir -p "$adopt_lock_probe/src"
 cp src/pyproject.toml src/uv.lock "$adopt_lock_probe/src/"
 for adopt_link in config scripts docker dependencies; do ln -s "${ROOT_DIR}/${adopt_link}" "$adopt_lock_probe/${adopt_link}"; done
 cp "${ROOT_DIR}/.env.example" "${ROOT_DIR}/.gitignore" "$adopt_lock_probe/"
+sed -i.bak 's/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=devkit-probe-lock/' "$adopt_lock_probe/.env.example"
+rm -f "$adopt_lock_probe/.env.example.bak"
 ( cd "$adopt_lock_probe" && git init -q . && git add -A \
   && git -c user.email=probe@devkit -c user.name=probe commit -qm probe \
   && make adopt NAME=lockprobe DESC=probe ) >/dev/null 2>&1 || true
@@ -3557,7 +3580,7 @@ adopt_probe="$(make_probe)"
 mkdir -p "$adopt_probe/src"
 
 cp "${ROOT_DIR}/src/pyproject.toml" "$adopt_probe/src/"
-cp "${ROOT_DIR}/.env.example" "$adopt_probe/.env"
+cp "$adopt_probe/.env.example" "$adopt_probe/.env"   # the probe's identity, not this repository's
 adopt_desc_case() {   # adopt_desc_case <description>
     cp "${ROOT_DIR}/src/pyproject.toml" "$adopt_probe/src/pyproject.toml"
     ( cd "$adopt_probe" && make adopt NAME=robot DESC="$1" ) >/dev/null 2>&1 || true
