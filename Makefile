@@ -861,7 +861,7 @@ clean:
 			$(call HINT_ROOT_OWNED,install); \
 		}; \
 	fi
-	@if [ -z "$(ROS_INSTALL_VOL)$(DEV_INSTALL_VOL)" ]; then \
+	@if [ -z "$(ROS_INSTALL_VOL)$(DEV_INSTALL_VOL)$(DEVKIT_CLEAN_FROM_ALL)" ]; then \
 		echo -e "  $(INFO) build/install/log are named Docker volumes in this configuration;"; \
 		echo -e "  $(INFO) container-side artifacts are removed by 'make clean-all'."; \
 	fi
@@ -915,9 +915,10 @@ clean-all: KEEP_VENV := $(if $(call is_true,$(KEEP_VENV)),1,0)
 clean-all:
 	$(call GUARD_HOST_ONLY)
 	$(call CONFIRM,This removes EVERY ENV of '$(COMPOSE_PROJECT_NAME)' — ros and dev alike: containers, all six named volumes (build/install/log), compose-built images, host build artifacts and baked SIF/OCI artifacts$(if $(filter 0,$(KEEP_VENV)), — including install/.venv))
-	@# `clean` runs as a sub-make (not a prerequisite) so this single [y/N]
-	@# covers everything — FORCE=1 suppresses clean's own venv prompt.
-	@$(MAKE) --no-print-directory clean KEEP_VENV=$(KEEP_VENV) FORCE=1
+	@# Containers BEFORE the host artifacts, because `clean` refuses while one
+	@# is running (build/ and install/ are its mount points). Cleaning first
+	@# meant the [y/N] above could never finish the job: it stopped at that
+	@# guard and asked for a `make down` this recipe was about to do itself.
 	@# --rmi local drops the images compose built for THIS project only; other
 	@# projects' images on the host are never touched.
 	@if [ "$(KEEP_VENV)" = "1" ]; then \
@@ -929,6 +930,10 @@ clean-all:
 	else \
 		$(COMPOSE) --profile "*" down --volumes --remove-orphans --rmi local; \
 	fi
+	@# `clean` runs as a sub-make (not a prerequisite) so this single [y/N]
+	@# covers everything — FORCE=1 suppresses clean's own venv prompt, and
+	@# DEVKIT_CLEAN_FROM_ALL drops its "run clean-all" hint: we are clean-all.
+	@$(MAKE) --no-print-directory clean KEEP_VENV=$(KEEP_VENV) FORCE=1 DEVKIT_CLEAN_FROM_ALL=1
 	@$(MAKE) --no-print-directory clean-cache
 	@# The bake artifacts live in the workspace root and DEVELOPMENT.md calls
 	@# this a full reset; leaving a 100 MB *.oci.tar behind is not one. The

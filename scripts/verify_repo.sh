@@ -2760,7 +2760,42 @@ if [ "$(id -u)" -ne 0 ]; then
         || log_err "'make clean' on an unremovable build/ exits ${clean_rc} without the docker-run remediation hint."
 fi
 rm -rf "$clean_probe"
-ok "'make clean' empties build/devel/log, the install output and the links, keeps the venv unless asked, and hints on root-owned output."
+# `clean-all` asks ONCE and must then finish. It runs `clean`, whose guard
+# refuses while a container is running — so with the teardown after the clean
+# the answered [y/N] dead-ended on a `make down` this very recipe was about to
+# run. Against a docker that reports one container until compose tears it down.
+clean_all="$(make_probe "${ROOT_DIR}"/docker-compose*.yml)"
+mkdir -p "$clean_all/bin" "$clean_all/build/x" "$clean_all/install/share"
+: > "$clean_all/build/x/o"; : > "$clean_all/install/share/f"
+cat > "$clean_all/bin/docker" <<'CLEANDOCKER'
+#!/bin/sh
+STATE="$(dirname "$0")/../running"
+[ -e "$STATE" ] || echo container-id > "$STATE"
+echo "$*" >> "$(dirname "$0")/../calls.log"
+case "$1 $2" in
+  "ps -q")          [ -s "$STATE" ] && cat "$STATE" ;;
+  "info --format")  echo "io.containerd.runc.v2 runc " ;;
+  "compose version") echo 2.30.0 ;;
+  "buildx version") echo v0.20.0 ;;
+esac
+case "$*" in *" down "*|*" down") : > "$STATE"; ;; esac
+exit 0
+CLEANDOCKER
+chmod +x "$clean_all/bin/docker"
+clean_all_rc=0
+clean_all_out="$( cd "$clean_all" && PATH="$clean_all/bin:$probe_min_path" make clean-all FORCE=1 2>&1 )" || clean_all_rc=$?
+{ [ "$clean_all_rc" -eq 0 ] && grep -q 'Full project reset complete' <<< "$clean_all_out"; } \
+    || log_err "'make clean-all' cannot finish while a container runs (rc ${clean_all_rc}): $(tr '\n' ' ' <<< "$clean_all_out" | tail -c 120)"
+# …and the teardown must come FIRST, which is what makes the above possible.
+clean_all_order="$(grep -nE 'compose .*down|^[0-9]*:?ps -q' "$clean_all/calls.log" 2>/dev/null | head -n 1)"
+grep -q 'down' <<< "$clean_all_order" \
+    || log_err "'make clean-all' asks docker about running containers before it tears them down (first call: ${clean_all_order:-none})."
+# The hint `clean` prints for a standalone run names clean-all; inside clean-all
+# it told the user to run the thing they were already running.
+grep -q "removed by 'make clean-all'" <<< "$clean_all_out" \
+    && log_err "'make clean-all' repeats clean's standalone hint and tells the user to run 'make clean-all'."
+rm -rf "$clean_all"
+ok "'make clean' empties build/devel/log, the install output and the links, keeps the venv unless asked, and hints on root-owned output; 'make clean-all' finishes in one confirmation."
 # Match the compose invocation, not the phrase: the explanatory comment above
 # it would satisfy a bare grep for '--rmi local'.
 grep -qE '\$\(COMPOSE\).*down .*--rmi local' Makefile \
