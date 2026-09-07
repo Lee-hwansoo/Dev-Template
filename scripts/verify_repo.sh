@@ -31,6 +31,25 @@ case "${1:-}" in
     *) echo "verify_repo.sh: unknown option: $1" >&2; exit 2 ;;
 esac
 
+# Hermetic under `make verify`: the Makefile's bare `export` (compose needs it)
+# hands every make variable to this script — COMPOSE_PROJECT_NAME made the
+# clean-cache probes abort on the developer's running container,
+# HOST_WORKSPACE_PATH aimed their path guard at the real tree, IMAGE_TAG beat a
+# probe's .env. Drop exactly what make defined (its own settings and every key
+# the .env files carry), keep the ambient locale, and the two entry points agree.
+if [ -n "${MAKELEVEL:-}" ]; then
+    _keep_lang="${LANG-}" _keep_lc="${LC_ALL-}" _keep_tz="${TZ-}"
+    # Listed from a CLEAN environment: with the exports present, make reports
+    # every `?=` setting as origin "environment" and would list none of them.
+    for _mk_var in $(env -i PATH="$PATH" HOME="${HOME:-/}" make -pn help 2>/dev/null \
+                     | awk '/^# makefile/ { getline; sub(/[[:space:]]*[:?+]*=.*/, ""); if ($0 ~ /^[A-Za-z_][A-Za-z0-9_]*$/) print }'); do
+        unset "$_mk_var" 2>/dev/null || true
+    done
+    unset MAKEFLAGS MFLAGS MAKELEVEL MAKE_TERMOUT MAKE_TERMERR
+    [ -z "$_keep_lang" ] || export LANG="$_keep_lang"; [ -z "$_keep_lc" ] || export LC_ALL="$_keep_lc"; [ -z "$_keep_tz" ] || export TZ="$_keep_tz"
+    unset _mk_var _keep_lang _keep_lc _keep_tz
+fi
+
 FAILED=0
 log_ok()  { echo -e "  \033[0;32m[OK]\033[0m $*"; }
 log_err() { echo -e "  \033[0;31m[ERROR]\033[0m $*" >&2; FAILED=$((FAILED+1)); }
@@ -1496,12 +1515,16 @@ rmguard_case() {
     ( cd "${rmguard_ws:-$rmguard_probe/ws}" && PATH="$rmguard_probe/bin:$PATH" make clean-cache "$@" ) >/dev/null 2>&1 || true
     # The recipe removes other things too, so only a call naming the guarded
     # path counts as "the guard let it through". ${*##…} strips per word and
-    # would leave FORCE=1 glued to the front.
-    local got=refused target="" arg
+    # would leave FORCE=1 glued to the front. And "refused" must be the GUARD's
+    # verdict, in its own words: an earlier abort (a running container seen
+    # through a leaked COMPOSE_PROJECT_NAME) also leaves the log empty.
+    local got=aborted target="" arg
     for arg in "$@"; do case "$arg" in DOCKER_DEV_CACHE_DIR=*) target="${arg#*=}" ;; esac; done
-    grep -qF -- "$target" "$rmguard_probe/rm.log" 2>/dev/null && got=deleted
+    if grep -qF -- "$target" "$rmguard_probe/rm.log" 2>/dev/null; then got=deleted
+    elif grep -qE 'refusing to delete|does not look like a cache|must be an absolute path' <<< "$out"; then got=refused
+    fi
     [ "$got" = "$want" ] \
-        || { log_err "clean-cache on ${label}: ${got}, expected ${want}."; rmguard_errors=1; }
+        || { log_err "clean-cache on ${label}: ${got}, expected ${want}$( [ "$got" = aborted ] && printf ' (recipe stopped before the guard: %s)' "$(head -n 1 <<< "$out")" )."; rmguard_errors=1; }
 }
 rmguard_case "a path that resolves back to the workspace" refused \
     FORCE=1 "DOCKER_DEV_CACHE_DIR=$rmguard_probe/ws/cache/../../ws"
@@ -1549,6 +1572,14 @@ rmguard_sync() {   # rmguard_sync <label> <expect refused|ran> [env…]
         || { log_err "sync --force on ${label}: ${got}, expected ${want} (a refusal must precede every command)."; rmguard_errors=1; }
 }
 rmguard_sync "a target that resolves outside the workspace" refused \
+# The suite itself must not carry make's exports into these probes: the scrub
+# at the top, run against a leaked environment, and the live environment now.
+rmguard_scrub="$(MAKELEVEL=1 COMPOSE_PROJECT_NAME=leaked HOST_WORKSPACE_PATH=/leaked IMAGE_TAG=leaked LANG="${LANG:-C.UTF-8}" \
+    bash -c "$(sed -n '/^if \[ -n "\${MAKELEVEL:-}" \]; then$/,/^fi$/p' scripts/verify_repo.sh); echo \"\${COMPOSE_PROJECT_NAME:-clean} \${HOST_WORKSPACE_PATH:-clean} \${IMAGE_TAG:-clean} \${LANG:-lost}\"" 2>/dev/null)"
+[ "$rmguard_scrub" = "clean clean clean ${LANG:-C.UTF-8}" ] \
+    || { log_err "the make-export scrub leaves '${rmguard_scrub}' (expected 'clean clean clean <LANG>'): 'make verify' and 'bash scripts/verify_repo.sh' would disagree."; rmguard_errors=1; }
+[ -z "${COMPOSE_PROJECT_NAME:-}${HOST_WORKSPACE_PATH:-}${MAKELEVEL:-}" ] \
+    || { log_err "this run inherits make's exports (COMPOSE_PROJECT_NAME/HOST_WORKSPACE_PATH/MAKELEVEL); the probes above are not hermetic."; rmguard_errors=1; }
     SYNC_TARGET_DIR="src/thirdparty/../../../outside"
 rmguard_sync "the same target, explicitly allowed" ran \
     SYNC_TARGET_DIR="src/thirdparty/../../../outside" DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET=1
