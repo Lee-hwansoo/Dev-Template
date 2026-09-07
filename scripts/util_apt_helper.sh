@@ -273,7 +273,15 @@ case "$COMMAND" in
         log_info "Setting up ROS repository for ${distro}..."
         mkdir -p /usr/share/keyrings
         tmp_key="$(mktemp)"
-        curl -fsSL "$key_url" -o "$tmp_key"
+        # The key host rate-limits: a weekly cron run died here with HTTP 429,
+        # and the bare `curl: (22)` aborted the build with nothing to act on.
+        # Every ROS image build passes through this fetch, so retry it and say
+        # what failed. No --retry-all-errors: curl on 20.04 does not have it.
+        curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 15 "$key_url" -o "$tmp_key" || {
+            log_error "Could not fetch the ROS archive key from ${key_url%%\?*} (network, or the key host rate-limited us)."
+            log_detail "Retry the build; the fetch already retried 5 times. ROS_SNAPSHOT_DATE=<date>|final uses the snapshot key host instead." >&2
+            rm -f "$tmp_key"; exit 1
+        }
 
         verify_key_fingerprint "$tmp_key" "$fingerprint" "ROS" \
             "Check the upstream archive signing key; make update-gpg updates the live archive pin." \
@@ -318,7 +326,7 @@ case "$COMMAND" in
         # NVIDIA's pin file keeps their repo ahead of Ubuntu's for CUDA packages.
         # This runs in the base stage of every image: fail with a diagnosis, not
         # a bare curl exit 22 nobody can interpret.
-        if ! curl -fsSL "${repo_url}/cuda-ubuntu${os_version}.pin" \
+        if ! curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 15 "${repo_url}/cuda-ubuntu${os_version}.pin" \
                 -o /etc/apt/preferences.d/cuda-repository-pin-600; then
             log_error "NVIDIA publishes no CUDA repo for this base (ubuntu${os_version}/${repo_arch})."
             log_error "Unset CUDA_VERSION in .env, or use a base image NVIDIA supports."
@@ -328,7 +336,7 @@ case "$COMMAND" in
         # Only the key matching the pin below is fetched — a legacy-key fallback
         # would fail the fingerprint check by construction and misread as attack.
         tmp_key="$(mktemp)"
-        curl -fsSL "${repo_url}/3bf863cc.pub" -o "$tmp_key" \
+        curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 15 "${repo_url}/3bf863cc.pub" -o "$tmp_key" \
             || { log_error "Could not download the NVIDIA repository key from ${repo_url}."; rm -f "$tmp_key"; exit 1; }
         verify_key_fingerprint "$tmp_key" "$NVIDIA_GPG_FINGERPRINT" "NVIDIA CUDA" \
             "If NVIDIA rotated the key, update NVIDIA_GPG_FINGERPRINT after verifying upstream." \

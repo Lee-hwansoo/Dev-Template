@@ -2443,7 +2443,26 @@ fi
 rm -rf "$gpg_probe"
 grep -q "STRICT_GPG_CHECK" scripts/util_apt_helper.sh \
     || log_err "STRICT_GPG_CHECK is gone from util_apt_helper.sh; the pin has no documented escape hatch left."
-ok "Both ROS pins are wired to their archive and to 'make update-gpg', and the snapshot check refuses a document that only CLAIMS the key."
+# Every ROS image build fetches this key, and the key host rate-limits: a weekly
+# cron run died here with HTTP 429 and a bare `curl: (22)` mid-build. Against a
+# stubbed curl that fails the same way, in the container the code runs in (the
+# helper reads the base image's codename and writes to /usr/share/keyrings, so
+# the host is the wrong place to ask): the fetch must retry, and the run must
+# end in a sentence that names the key host instead of an exit code.
+if docker_live; then
+    gpg_fetch="$(probe_dir)"
+    printf '#!/bin/sh\necho "$@" >> /stub/curl.log\nexit 22\n' > "$gpg_fetch/curl"
+    chmod +x "$gpg_fetch/curl"
+    gpg_fetch_out="$( docker run --rm -v "${ROOT_DIR}/scripts/util_apt_helper.sh:/h.sh:ro" -v "$gpg_fetch:/stub" \
+        -e PATH=/stub:/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/usr/bin:/bin \
+        ubuntu:22.04 bash -c 'bash /h.sh setup-ros-repo humble 2>&1; echo "rc=$?"' 2>/dev/null || true )"
+    { ! grep -q 'rc=0' <<< "$gpg_fetch_out" && grep -qi 'could not fetch the ros archive key' <<< "$gpg_fetch_out"; } \
+        || log_err "a failed ROS key fetch reports no cause: $(tr '\n' ' ' <<< "$gpg_fetch_out" | tail -c 160)"
+    grep -q -- '--retry' "$gpg_fetch/curl.log" 2>/dev/null \
+        || log_err "the ROS key fetch does not retry ($(tr '\n' ' ' < "$gpg_fetch/curl.log" 2>/dev/null)); one HTTP 429 from the key host fails the whole build."
+    rm -rf "$gpg_fetch"
+fi
+ok "Both ROS pins are wired to their archive and to 'make update-gpg', the snapshot check refuses a document that only CLAIMS the key, and a rate-limited key fetch retries and says so."
 
 # =============================================================================
 # [knob-consumers] A documented knob needs a live consumer: log_debug with no
