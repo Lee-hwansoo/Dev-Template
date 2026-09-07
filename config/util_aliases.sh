@@ -130,6 +130,7 @@ __print_container_help() {
     echo -e "${S}[ Quick Start & Build ] =============================${N}"
     printf "  ${G}%-20s${N} : %s\n" "mksync [--share]" "Initialize workspace; --share for system-site-packages"
     printf "  ${G}%-20s${N} : %s\n" "cbuild / mbuild" "Build workspace (ROS colcon or Modern CMake)"
+    printf "  ${G}%-20s${N} : %s\n" "mkbuild / mdebugenv" "Build for the detected layout / write .vscode/.debug.env for F5"
     printf "  ${G}%-20s${N} : %s\n" "mtest / mlint" "Run the project's tests / check style and lint rules"
     printf "  ${G}%-20s${N} : %s\n" "cbt / cbtr" "Run ROS tests directly / view test results"
     printf "  ${G}%-20s${N} : %s\n" "s / sb" "Source workspace / Source .bashrc"
@@ -380,6 +381,14 @@ mksync() {
     uvs "${uvs_args[@]}" && \
     bash "${WS_SCRIPTS}/setup_sync_deps.sh" --rosdep || return 1
 
+    mkbuild
+}
+
+# mkbuild [--debug|--release] [<build args>…]
+#   Build with whatever the project layout calls for: ROS → cbuild (+ overlay
+#   sourced), CMake → mbuild, pure Python → nothing. The one dispatcher mksync
+#   and the IDE's pre-launch task share.
+mkbuild() {
     # 2. Build with whatever the project layout calls for
     local project_type
     project_type=$(__detect_project_type)
@@ -394,6 +403,28 @@ mksync() {
             log_ok "Pure Python project — no build step needed." ;;
     esac
 }
+# mdebugenv
+#   Write the SOURCED environment (ROS + overlay + venv + GPU) to
+#   .vscode/.debug.env for the VS Code debuggers' envFile. A debugger's parent
+#   process cannot source setup.bash, and the static copies launch.json used to
+#   carry drifted from colcon's per-package prefixes, ROS 1's devel/ and the GPU
+#   library path. Only single-line values; the file is regenerated every run.
+mdebugenv() {
+    local out="${WS_ROOT}/.vscode/.debug.env" kv n=0
+    mkdir -p "${WS_ROOT}/.vscode" || return 1
+    ( __smart_source >/dev/null 2>&1 || true
+      : > "$out"
+      while IFS= read -r -d '' kv; do
+          case "$kv" in *$'\n'*) continue ;; esac
+          case "${kv%%=*}" in
+              PATH|PYTHONPATH|LD_LIBRARY_PATH|PKG_CONFIG_PATH|VIRTUAL_ENV|AMENT_*|CMAKE_PREFIX_PATH|COLCON_*|ROS*|RMW_*|CYCLONEDDS_*|FASTRTPS_*|LIBGL_*|MESA_*|GALLIUM_DRIVER|VK_ICD_FILENAMES|GBM_BACKEND|QT_*|GDK_BACKEND|__NV_*|__GLX_*|__VK_*|__EGL_*)
+                  printf '%s\n' "$kv" >> "$out" ;;
+          esac
+      done < <(env -0) )
+    n="$(grep -c . "$out" 2>/dev/null || echo 0)"
+    log_ok "Debugger environment written: ${out#"$WS_ROOT"/} (${n} variables)"
+}
+
 
 # --- Quality loop (test / lint) -----------------------------------------------
 # mtest [<runner args>…]

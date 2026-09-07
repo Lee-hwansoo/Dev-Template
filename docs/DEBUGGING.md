@@ -3,7 +3,9 @@
 본 문서는 **DevKit** 환경에 통합된 전문 디버깅 에코시스템 활용법을 안내합니다. VSCode 연동을 통해 Docker 컨테이너 내부에서 구동되는 **C++, Python, ROS 1/2** 애플리케이션을 브레이크포인트 단위로 디버깅할 수 있습니다.
 
 > [!TIP]
-> **동적 환경 자동 구성**: 모든 디버그 프로필은 `.env` 파일의 `ROS_DISTRO` 및 `WORKSPACE_PATH` 환경변수에 맞춰 자동으로 동기화됩니다.
+> **디버거 환경은 실제로 소싱한 것**: 모든 launch 프로필은 `.vscode/.debug.env`(`envFile`)를 읽습니다. 이 파일은
+> pre-launch 태스크가 `mdebugenv` 로 씁니다 — ROS·오버레이(`install/` 또는 ROS 1 `devel/`)·venv·GPU 라이브러리 경로를
+> 컨테이너에서 소싱한 그대로입니다. 정적 경로 사본은 없습니다. 손으로 갱신하려면 컨테이너에서 `mdebugenv`.
 
 ---
 
@@ -96,10 +98,10 @@ GDB 디버그 엔진을 통해 C++ 실행 파일 및 ROS 노드를 라인 단위
 
 전체 시스템 런치 파일과 개별 노드를 한 번에 디버깅합니다.
 
-* **ROS 2 Launch**: **`🤖 ROS2: Launch File`** 선택 (`PYTHONPATH`, `AMENT_PREFIX_PATH`, `LD_LIBRARY_PATH` 자동 할당).
+* **ROS 2 Launch**: **`🤖 ROS2: Launch File`** 선택 (빌드 후 `mdebugenv` 가 환경을 씁니다).
   코드를 고치지 않았다면 빌드를 건너뛰는 **`🤖 ROS2: Launch File (skip build)`** 가 빠릅니다.
 * **ROS 1 Launch**: **`🐢 ROS1: roslaunch`** 선택 (터미널에서 `roscore` 실행 필요).
-* **단일 노드**: **`🤖 ROS2: Run Node`** / **`🐢 ROS1: rosrun`** — 패키지와 실행 파일 이름을 묻습니다.
+* **단일 노드**: **`🤖 ROS2: Run Node`** — 패키지와 실행 파일 이름을 묻습니다. ROS 1 파이썬 노드는 **`🐢 ROS1: Python Node`** — `rosrun` 은 bash 스크립트라 파이썬 디버거가 붙을 수 없으므로 노드 파일을 직접 띄우고 `__name:=` 을 넘깁니다. C++ 노드는 위의 GDB Direct 프로필.
 
 ### 런치와 노드를 동시에 (Compound)
 

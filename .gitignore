@@ -60,6 +60,7 @@ compile_commands.json
 
 # --- IDE ---------------------------------------------
 .vscode/*.log
+.vscode/.debug.env
 .vscode/ipch/
 .idea/
 *.swp

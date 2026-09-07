@@ -2,19 +2,17 @@
     // =========================================================================
     // .vscode/launch.json — C++ via GDB (launch & attach), Python via debugpy
     // (local & remote), ROS 1/2 launch and node debugging, and compounds for
-    // multi-process sessions. ROS paths follow /opt/ros/${env:ROS_DISTRO}.
+    // multi-process sessions.
     //
-    // Prerequisites: build with Debug symbols (Ctrl+Shift+B → "🔨 colcon:
-    // Build (Debug)"), and debugpy in the container for remote Python.
+    // Environment: every launch reads .vscode/.debug.env (envFile), written by
+    // the pre-launch task through `mdebugenv` from the SOURCED workspace — the
+    // real overlay (colcon's per-package prefixes, ROS 1's devel/, the venv,
+    // the GPU library path), never a static copy. Prerequisites: a Debug build
+    // (Ctrl+Shift+B → "🔨 colcon: Build (Debug)" / "🔨 cmake: Build (Debug)"),
+    // and debugpy in the container for remote Python.
     // =========================================================================
     "version": "0.2.0",
     "inputs": [
-        {
-            "id": "processId",
-            "type": "command",
-            "command": "extension.pickRemoteNativeProcess",
-            "args": {}
-        },
         {
             "id": "executablePath",
             "type": "promptString",
@@ -44,12 +42,6 @@
             "type": "promptString",
             "description": "Python file to debug (e.g., src/my_pkg/my_pkg/main.py)",
             "default": "${file}"
-        },
-        {
-            "id": "debugpyPort",
-            "type": "promptString",
-            "description": "debugpy listen port (default: 5678)",
-            "default": "5678"
         }
     ],
     "configurations": [
@@ -64,12 +56,7 @@
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
-            "environment": [
-                { "name": "LD_LIBRARY_PATH", "value": "${workspaceFolder}/install/lib:/opt/ros/${env:ROS_DISTRO}/lib:${env:LD_LIBRARY_PATH}" },
-                { "name": "AMENT_PREFIX_PATH", "value": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}" },
-                { "name": "CMAKE_PREFIX_PATH", "value": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}" },
-                { "name": "ROS_DISTRO", "value": "${env:ROS_DISTRO}" }
-            ],
+            "envFile": "${workspaceFolder}/.vscode/.debug.env",
             "externalConsole": false,
             "MIMode": "gdb",
             "setupCommands": [
@@ -77,10 +64,10 @@
                 { "text": "set print thread-events off", "ignoreFailures": true },
                 { "text": "set pagination off", "ignoreFailures": true }
             ],
-            "preLaunchTask": "⚙️ Source & Build (Debug, pre-launch)",
             "sourceFileMap": {
                 "${env:WORKSPACE_PATH}/src": "${workspaceFolder}/src"
             },
+            "preLaunchTask": "⚙️ Source & Build (Debug, pre-launch)",
             "logging": { "engineLogging": false }
         },
         {
@@ -91,12 +78,7 @@
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
-            "environment": [
-                { "name": "LD_LIBRARY_PATH", "value": "${workspaceFolder}/install/lib:/opt/ros/${env:ROS_DISTRO}/lib:${env:LD_LIBRARY_PATH}" },
-                { "name": "AMENT_PREFIX_PATH", "value": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}" },
-                { "name": "CMAKE_PREFIX_PATH", "value": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}" },
-                { "name": "ROS_DISTRO", "value": "${env:ROS_DISTRO}" }
-            ],
+            "envFile": "${workspaceFolder}/.vscode/.debug.env",
             "externalConsole": false,
             "MIMode": "gdb",
             "setupCommands": [
@@ -107,6 +89,7 @@
             "sourceFileMap": {
                 "${env:WORKSPACE_PATH}/src": "${workspaceFolder}/src"
             },
+            "preLaunchTask": "⚙️ Debugger env (pre-launch)",
             "logging": { "engineLogging": false }
         },
         {
@@ -135,12 +118,12 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${file}",
+            "args": [],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}/install/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}"
-            },
-            "justMyCode": false
+            "envFile": "${workspaceFolder}/.vscode/.debug.env",
+            "justMyCode": false,
+            "preLaunchTask": "⚙️ Debugger env (pre-launch)"
         },
         {
             "name": "🐍 Python: Debug with Args",
@@ -150,10 +133,9 @@
             "args": [],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}/install/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}"
-            },
-            "justMyCode": false
+            "envFile": "${workspaceFolder}/.vscode/.debug.env",
+            "justMyCode": false,
+            "preLaunchTask": "⚙️ Debugger env (pre-launch)"
         },
         {
             "name": "🐍 Python: Attach to debugpy (Remote)",
@@ -183,13 +165,7 @@
             "args": ["launch", "${input:launchFile}"],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/install/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}",
-                "AMENT_PREFIX_PATH": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}",
-                "LD_LIBRARY_PATH": "${workspaceFolder}/install/lib:/opt/ros/${env:ROS_DISTRO}/lib",
-                "ROS_DISTRO": "${env:ROS_DISTRO}",
-                "RMW_IMPLEMENTATION": "${env:RMW_IMPLEMENTATION}"
-            },
+            "envFile": "${workspaceFolder}/.vscode/.debug.env",
             "justMyCode": false,
             "preLaunchTask": "⚙️ Source & Build (Debug, pre-launch)"
         },
@@ -201,14 +177,9 @@
             "args": ["launch", "${input:launchFile}"],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/install/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}",
-                "AMENT_PREFIX_PATH": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}",
-                "LD_LIBRARY_PATH": "${workspaceFolder}/install/lib:/opt/ros/${env:ROS_DISTRO}/lib",
-                "ROS_DISTRO": "${env:ROS_DISTRO}",
-                "RMW_IMPLEMENTATION": "${env:RMW_IMPLEMENTATION}"
-            },
-            "justMyCode": false
+            "envFile": "${workspaceFolder}/.vscode/.debug.env",
+            "justMyCode": false,
+            "preLaunchTask": "⚙️ Debugger env (pre-launch)"
         },
         {
             "name": "🤖 ROS2: Run Node",
@@ -218,17 +189,15 @@
             "args": ["run", "${input:rosPackage}", "${input:rosExecutable}"],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/install/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}",
-                "AMENT_PREFIX_PATH": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}",
-                "LD_LIBRARY_PATH": "${workspaceFolder}/install/lib:/opt/ros/${env:ROS_DISTRO}/lib",
-                "ROS_DISTRO": "${env:ROS_DISTRO}"
-            },
-            "justMyCode": false
+            "envFile": "${workspaceFolder}/.vscode/.debug.env",
+            "justMyCode": false,
+            "preLaunchTask": "⚙️ Debugger env (pre-launch)"
         },
 
         // =====================================================================
-        // ROS 1 Launch Debugging (Noetic)
+        // ROS 1 Launch Debugging (Noetic). roslaunch is a Python program;
+        // rosrun is a bash script, so a Python node is debugged as the file
+        // it is (ROS 1 remaps __name:= on the node's own argv).
         // =====================================================================
         {
             "name": "🐢 ROS1: roslaunch",
@@ -238,36 +207,21 @@
             "args": ["${input:rosPackage}", "${input:launchFile}"],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/install/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}",
-                "CMAKE_PREFIX_PATH": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}",
-                "LD_LIBRARY_PATH": "${workspaceFolder}/install/lib:/opt/ros/${env:ROS_DISTRO}/lib",
-                "ROS_DISTRO": "${env:ROS_DISTRO}",
-                "ROS_MASTER_URI": "${env:ROS_MASTER_URI}",
-                "ROS_HOSTNAME": "${env:ROS_HOSTNAME}",
-                "ROS_PACKAGE_PATH": "${workspaceFolder}/src:/opt/ros/${env:ROS_DISTRO}/share"
-            },
+            "envFile": "${workspaceFolder}/.vscode/.debug.env",
             "justMyCode": false,
             "preLaunchTask": "⚙️ Source & Build (Debug, pre-launch)"
         },
         {
-            "name": "🐢 ROS1: rosrun",
+            "name": "🐢 ROS1: Python Node",
             "type": "debugpy",
             "request": "launch",
-            "program": "/opt/ros/${env:ROS_DISTRO}/bin/rosrun",
-            "args": ["${input:rosPackage}", "${input:rosExecutable}"],
+            "program": "${input:pythonFile}",
+            "args": ["__name:=${input:rosExecutable}"],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/install/lib/python3/dist-packages:/opt/ros/${env:ROS_DISTRO}/lib/python3/dist-packages:${env:PYTHONPATH}",
-                "CMAKE_PREFIX_PATH": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}",
-                "LD_LIBRARY_PATH": "${workspaceFolder}/install/lib:/opt/ros/${env:ROS_DISTRO}/lib",
-                "ROS_DISTRO": "${env:ROS_DISTRO}",
-                "ROS_MASTER_URI": "${env:ROS_MASTER_URI}",
-                "ROS_HOSTNAME": "${env:ROS_HOSTNAME}",
-                "ROS_PACKAGE_PATH": "${workspaceFolder}/src:/opt/ros/${env:ROS_DISTRO}/share"
-            },
-            "justMyCode": false
+            "envFile": "${workspaceFolder}/.vscode/.debug.env",
+            "justMyCode": false,
+            "preLaunchTask": "⚙️ Debugger env (pre-launch)"
         },
 
         // =====================================================================
@@ -281,22 +235,19 @@
             "args": ["--ros-args", "-r", "__node:=${input:rosExecutable}"],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
-            "environment": [
-                { "name": "LD_LIBRARY_PATH", "value": "${workspaceFolder}/install/lib:/opt/ros/${env:ROS_DISTRO}/lib:${env:LD_LIBRARY_PATH}" },
-                { "name": "AMENT_PREFIX_PATH", "value": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}" },
-                { "name": "ROS_DISTRO", "value": "${env:ROS_DISTRO}" },
-                { "name": "RMW_IMPLEMENTATION", "value": "${env:RMW_IMPLEMENTATION}" }
-            ],
+            "envFile": "${workspaceFolder}/.vscode/.debug.env",
             "externalConsole": false,
             "MIMode": "gdb",
             "setupCommands": [
                 { "text": "-enable-pretty-printing", "ignoreFailures": true },
-                { "text": "set print thread-events off", "ignoreFailures": true }
+                { "text": "set print thread-events off", "ignoreFailures": true },
+                { "text": "set pagination off", "ignoreFailures": true }
             ],
             "sourceFileMap": {
                 "${env:WORKSPACE_PATH}/src": "${workspaceFolder}/src"
             },
-            "preLaunchTask": "⚙️ Source & Build (Debug, pre-launch)"
+            "preLaunchTask": "⚙️ Source & Build (Debug, pre-launch)",
+            "logging": { "engineLogging": false }
         },
         {
             "name": "🐢 ROS1: C++ Node (GDB Direct)",
@@ -306,24 +257,19 @@
             "args": ["__name:=${input:rosExecutable}"],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
-            "environment": [
-                { "name": "LD_LIBRARY_PATH", "value": "${workspaceFolder}/install/lib:/opt/ros/${env:ROS_DISTRO}/lib:${env:LD_LIBRARY_PATH}" },
-                { "name": "CMAKE_PREFIX_PATH", "value": "${workspaceFolder}/install:/opt/ros/${env:ROS_DISTRO}" },
-                { "name": "ROS_DISTRO", "value": "${env:ROS_DISTRO}" },
-                { "name": "ROS_MASTER_URI", "value": "${env:ROS_MASTER_URI}" },
-                { "name": "ROS_HOSTNAME", "value": "${env:ROS_HOSTNAME}" },
-                { "name": "ROS_PACKAGE_PATH", "value": "${workspaceFolder}/src:/opt/ros/${env:ROS_DISTRO}/share" }
-            ],
+            "envFile": "${workspaceFolder}/.vscode/.debug.env",
             "externalConsole": false,
             "MIMode": "gdb",
             "setupCommands": [
                 { "text": "-enable-pretty-printing", "ignoreFailures": true },
-                { "text": "set print thread-events off", "ignoreFailures": true }
+                { "text": "set print thread-events off", "ignoreFailures": true },
+                { "text": "set pagination off", "ignoreFailures": true }
             ],
             "sourceFileMap": {
                 "${env:WORKSPACE_PATH}/src": "${workspaceFolder}/src"
             },
-            "preLaunchTask": "⚙️ Source & Build (Debug, pre-launch)"
+            "preLaunchTask": "⚙️ Source & Build (Debug, pre-launch)",
+            "logging": { "engineLogging": false }
         }
     ],
 

@@ -2309,6 +2309,43 @@ while IFS= read -r ide_launch; do
     grep -qF "$ide_launch" docs/DEBUGGING.md \
         || { log_err "debug configuration '${ide_launch}' is not documented in docs/DEBUGGING.md."; vscode_errors=1; }
 done <<< "$ide_launch_names"
+# The debuggers' environment is the SOURCED workspace, not a copy: every launch
+# reads .vscode/.debug.env (envFile) and carries no static env/environment
+# block (colcon's per-package prefixes, ROS 1's devel/ and the GPU library
+# path all drifted from the copies); every pre-launch task ends in mdebugenv,
+# which writes that file; and no ${input:…} is defined without a reader or
+# read without a definition (three dead inputs sat in these files).
+ide_env_report="$(python3 - <<'PYIDE' 2>/dev/null || echo 'parse failed'
+import json, re, pathlib
+def load(p): return json.loads(re.sub(r'(?m)^\s*//.*$', '', pathlib.Path(p).read_text()))
+launch, tasks = load('.vscode/launch.json'), load('.vscode/tasks.json')
+task_by_label = {t['label']: t for t in tasks['tasks']}
+bad = []
+for c in launch['configurations']:
+    if c.get('request') != 'launch': continue
+    if c.get('envFile') != '${workspaceFolder}/.vscode/.debug.env': bad.append(f"{c['name']}: no envFile")
+    if 'env' in c or 'environment' in c: bad.append(f"{c['name']}: static env block")
+    pre = c.get('preLaunchTask')
+    if not pre: bad.append(f"{c['name']}: no preLaunchTask (nothing writes .debug.env)")
+    elif pre not in task_by_label: bad.append(f"{c['name']}: preLaunchTask '{pre}' is not a task")
+    elif not task_by_label[pre]['command'].rstrip("'\" ").endswith('mdebugenv'): bad.append(f"task '{pre}' does not end in mdebugenv")
+for name, doc in (('launch.json', launch), ('tasks.json', tasks)):
+    defined = {i['id'] for i in doc.get('inputs', [])}
+    used = set(re.findall(r'\$\{input:([A-Za-z]+)\}', pathlib.Path('.vscode/' + name).read_text()))
+    for i in sorted(defined - used): bad.append(f"{name}: input '{i}' is defined but never read")
+    for i in sorted(used - defined): bad.append(f"{name}: input '{i}' is read but not defined")
+print('\n'.join(bad) if bad else 'ok')
+PYIDE
+)"
+[ "$ide_env_report" = ok ] || { log_err "IDE debug configuration: ${ide_env_report//$'\n'/; }"; vscode_errors=1; }
+# mdebugenv, executed: the file it writes is what envFile can read.
+ide_env_probe="$(probe_dir config scripts)"; mkdir -p "$ide_env_probe/.vscode"
+( cd "$ide_env_probe" && WORKSPACE_PATH="$ide_env_probe" bash -c 'source config/util_aliases.sh >/dev/null 2>&1; mdebugenv' ) >/dev/null 2>&1 || true
+{ grep -qE '^PATH=' "$ide_env_probe/.vscode/.debug.env" && ! grep -qvE '^[A-Za-z_][A-Za-z0-9_]*=' "$ide_env_probe/.vscode/.debug.env"; } \
+    || { log_err "mdebugenv did not write a KEY=VALUE .vscode/.debug.env with PATH in it."; vscode_errors=1; }
+rm -rf "$ide_env_probe"
+grep -qE '^[[:space:]]+mkbuild$' config/util_aliases.sh \
+    || { log_err "mksync no longer builds through mkbuild; the IDE pre-launch and mksync would dispatch differently."; vscode_errors=1; }
 for ide_script in $(grep -ohE '(WS_SCRIPTS\}?|scripts)/[A-Za-z0-9_]+\.sh' .vscode/*.json .devcontainer/*.json 2>/dev/null \
                     | sed 's|.*/||' | sort -u); do
     [ -f "scripts/${ide_script}" ] \
