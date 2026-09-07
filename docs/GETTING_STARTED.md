@@ -11,13 +11,23 @@ DevKit 을 복제해 **내 프로젝트**로 만드는 순서입니다. 키트�
 | 파생 프로젝트가 소유 (마음껏 고침) | 키트가 소유 (상류에서 갱신, 계약이 지킴) |
 | :--- | :--- |
 | `src/` — 코드, `pyproject.toml`, `uv.lock` | `Makefile`, `docker/`, `docker-compose*.yml` |
-| `dependencies/` — `apt*.txt`, `dependencies.repos`, `overlay/` | `config/`, `scripts/` |
-| `.env`(로컬) · `.env.example`(팀 공유 기본값) | `scripts/verify_repo.sh` 의 계약 |
-| `.github/workflows/project.yml` | `.github/workflows/verify.yml`, `images.yml`, `.github/actions/` |
+| `dependencies/dependencies.repos`, `dependencies/overlay/` | `config/`, `scripts/` |
+| `.env` (로컬 — 커밋되지 않습니다) | `scripts/verify_repo.sh` 의 계약 |
+| `.github/workflows/project.yml` | `.github/workflows/verify.yml`, `images.yml`, `images-deep.yml`, `.github/actions/` |
 | `README.md`, `LICENSE` | `docs/` (지우거나 두거나 — 키트 사용법) |
-| | `VERSION` — 이 프로젝트가 출발한 템플릿 리비전 |
+| | `VERSION` — 이 체크아웃이 서 있는 템플릿 리비전 |
 
-상류 갱신은 오른쪽 열만 골라 가져옵니다 — 절차는
+**둘 다 항목을 더하는 파일**은 세 번째 부류입니다 — 어느 한쪽을 통째로 가져오면 다른 쪽의 항목이
+사라지므로, 상류 갱신에서 **병합**합니다:
+
+| 파일 | 키트가 더하는 것 | 당신이 더하는 것 |
+| :--- | :--- | :--- |
+| `.env.example` | 새 노브와 그 설명 | 프로젝트 값(이름 · `ENV` · `ROS_DISTRO` · extras) |
+| `dependencies/apt.txt` · `apt_ros.txt` | 태그 규칙과 기본 패키지 | 프로젝트가 필요로 하는 패키지 |
+| `.gitignore` | 키트가 만드는 산출물 | 프로젝트 산출물 |
+| `.vscode/` · `.devcontainer/` | 경로·확장 계약 | 개인 설정 |
+
+상류 갱신은 오른쪽 열을 가져오고, 세 번째 부류는 병합하며, 왼쪽 열은 건드리지 않습니다 — 절차는
 [DEVELOPMENT.md 의 템플릿 수명주기](DEVELOPMENT.md#-템플릿-버전과-상류-갱신-가져오기-template-lifecycle).
 
 ---

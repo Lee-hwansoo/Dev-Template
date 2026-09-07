@@ -264,16 +264,15 @@ git log --oneline "v$(cat VERSION)"..upstream/main
 git diff HEAD upstream/main -- Makefile config/ scripts/ docker/ docker-compose*.yml
 # 키트 소유 묶음은 한 단위입니다 — `scripts/verify_repo.sh` 가 Makefile·docker/·apt 목록·워크플로의
 # 계약이기도 해서, 일부만 가져오면 4 단계의 `make verify` 가 가져오지 않은 파일을 가리키며 실패합니다.
-git checkout upstream/main -- Makefile config/ scripts/ docker/ docker-compose*.yml \
-    dependencies/apt.txt dependencies/apt_ros.txt \
+git checkout upstream/main -- Makefile config/ scripts/ docker/ docker-compose*.yml VERSION \
     .github/workflows/verify.yml .github/workflows/images.yml .github/workflows/images-deep.yml .github/actions/ \
     .editorconfig .clang-format .gitattributes .dockerignore
 
-# 3b) 당신 것이지만 키트도 항목을 추가하는 파일들은 손으로 병합합니다 —
-#     .gitignore(키트가 만드는 산출물), .env.example(새 노브 선언), docs/(키트 사용법),
-#     .vscode/·.devcontainer/(편집기 계약: 경로와 확장은 키트가 정하고 설정은 당신 것).
+# 3b) 둘 다 항목을 더하는 파일은 손으로 병합합니다 (소유 표의 세 번째 부류) —
+#     통째로 가져오면 당신 패키지가, 통째로 두면 키트의 새 노브가 사라집니다.
 #     `make verify` 의 실패 메시지가 무엇을 더해야 하는지 그대로 알려줍니다.
-git diff HEAD upstream/main -- .gitignore .env.example docs/ .vscode/ .devcontainer/
+git diff HEAD upstream/main -- .env.example dependencies/apt.txt dependencies/apt_ros.txt \
+    .gitignore docs/ .vscode/ .devcontainer/
 
 #     ⚠ 정체성은 가져오지 마세요. .env.example 의 COMPOSE_PROJECT_NAME 과
 #     src/pyproject.toml 의 [project] name 은 이 프로젝트의 이름입니다. 상류 값(myproject)이
@@ -302,13 +301,22 @@ make verify && make build && make test
 git status --porcelain   # 반드시 깨끗한 트리에서 (되돌릴 것이 섞이면 구분할 수 없습니다)
 
 git checkout upstream/main -- .          # 상류의 모든 파일 — 당신 것도 함께 덮입니다
-git checkout HEAD -- src dependencies .env.example README.md LICENSE VERSION     .github/workflows/project.yml        # 되돌리기: 소유 표의 왼쪽 열
+git checkout HEAD -- src README.md LICENSE .github/workflows/project.yml \
+    dependencies/dependencies.repos dependencies/overlay   # 되돌리기: 소유 표의 왼쪽 열
+git checkout HEAD -- .env.example dependencies/apt.txt dependencies/apt_ros.txt \
+    .gitignore .vscode .devcontainer     # 세 번째 부류: 내 값을 되찾습니다 (VERSION 은 되돌리지 않습니다)
 make adopt NAME=<이 프로젝트 이름>        # 정체성을 다시 씌우고
 make setup && make verify                 # 호스트 값(.env·IDE)을 다시 만든 뒤 계약 검증
+
+# 세 번째 부류에 상류가 더한 것 — 되돌렸으니 여기서 골라 넣습니다
+git diff HEAD upstream/main -- .env.example dependencies/apt.txt dependencies/apt_ros.txt \
+    .gitignore .vscode .devcontainer
 ```
 
 > [!WARNING]
-> 되돌리기 줄을 빠뜨리면 `src/`·`dependencies/`·`README.md` 가 상류 것으로 바뀝니다.
+> 되돌리기 줄을 빠뜨리면 `src/`·`README.md`·`dependencies/` 가 상류 것으로 바뀝니다.
+> 반대로 `VERSION` 은 **되돌리지 않습니다** — 키트 소유이고, 이 체크아웃이 지금 서 있는 리비전을
+> 가리켜야 `make status` 와 릴리스 매니페스트의 `devkit_version`, 그리고 2) 의 버전 비교가 맞습니다.
 > `git checkout upstream/main -- .` 은 **상류에 존재하는 모든 경로**를 덮어쓰므로,
 > 당신만 가진 디렉터리(예: `src/my_package/`)는 남지만 이름이 겹치는 파일은 사라집니다.
 > 깨끗한 트리에서 시작하면 `git diff` 로 무엇이 바뀌었는지 그대로 검토할 수 있습니다.
