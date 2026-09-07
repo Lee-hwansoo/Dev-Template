@@ -217,8 +217,17 @@ else
     HOST_X11_DIR="$(placeholder x11_unix)"
 fi
 
-HOST_XAUTHORITY="${XAUTHORITY:-${HOST_HOME}/.Xauthority}"
-[ -f "$HOST_XAUTHORITY" ] || HOST_XAUTHORITY="$(placeholder xauthority --file)"
+# An explicit HOST_XAUTHORITY (.env layers or the environment) is the answer;
+# it used to be ignored and the placeholder emitted in its place. Detection
+# only fills the gap, and a named file that does not exist is an error, not a
+# silent downgrade.
+HOST_XAUTHORITY="${HOST_XAUTHORITY:-$(env_setting HOST_XAUTHORITY)}"
+if [ -n "$HOST_XAUTHORITY" ]; then
+    [ -f "$HOST_XAUTHORITY" ] || { log_error "HOST_XAUTHORITY=${HOST_XAUTHORITY} is not a file (set in .env or the environment)." >&2; exit 1; }
+else
+    HOST_XAUTHORITY="${XAUTHORITY:-${HOST_HOME}/.Xauthority}"
+    [ -f "$HOST_XAUTHORITY" ] || HOST_XAUTHORITY="$(placeholder xauthority --file)"
+fi
 
 # ssh-agent forwarding & host git identity (mounted read-only into the container)
 if [ -S "${SSH_AUTH_SOCK:-}" ]; then

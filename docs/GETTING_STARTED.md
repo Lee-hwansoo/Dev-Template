@@ -38,7 +38,8 @@ make adopt NAME=my-robot DESC='One line about it'
 
 ### 2. 팀 공유 기본값 — `.env.example`
 
-`.env.example` 은 커밋되는 **팀의 답**이고 `.env` 는 로컬 오버라이드입니다(`make setup` 이 복사).
+`.env.example` 은 커밋되는 **팀의 답**이고 `.env` 는 로컬 오버라이드입니다(`make setup` 이 복사). 그 위에
+셸 환경 변수, 맨 위에 `make` 명령행 `VAR=값` 이 옵니다 — `APT_SNAPSHOT_DATE=… make bake-prod` 는 그 날짜로 빕니다.
 프로젝트가 결정해야 하는 항목:
 
 | 항목 | 결정 |
@@ -109,7 +110,7 @@ mtest                                                                 # 예제�
 ### 7. 확인
 
 ```bash
-make verify        # 키트 계약 — 포크에서도 통과해야 합니다
+make verify        # 키트 계약 — 포크에서도 통과해야 합니다 (README·스타터 등 템플릿 자체 문구 검사는 상류 전용)
 make test          # 프로젝트 테스트 (mtest 를 make exec 으로 경유)
 make status        # 프로젝트 이름 · 템플릿 버전 · 감지된 호스트 배선
 ```

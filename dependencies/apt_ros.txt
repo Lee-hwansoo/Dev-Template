@@ -6,8 +6,10 @@
 #   - # runtime : Packages required by deployment artifacts
 #   - # dev     : Full development image only; excluded from production builders
 #   - # gui     : Interactive desktop tools excluded from production builders
-#   - # ros1    : Packages for ROS 1 (Noetic) environments only
-#   - # ros2    : Packages for ROS 2 (Humble) environments only
+#   - # ros1    : ROS 1 (noetic) images only
+#   - # ros2    : ROS 2 images only — every ROS 2 distro, not one in particular
+#   - # !<distro> : skipped for that distro (e.g. !foxy) — for packages that
+#                 moved between releases
 #   - (No tag)  : Installed in dev and production builder environments
 # =============================================================================
 
@@ -19,7 +21,9 @@ ros-${ROS_DISTRO}-rospy # runtime,ros1
 ros-${ROS_DISTRO}-roscpp # runtime,ros1
 ros-${ROS_DISTRO}-std-msgs # runtime
 ros-${ROS_DISTRO}-tf2-ros # runtime
-ros-${ROS_DISTRO}-tf2-ros-py # runtime,ros2
+# tf2_ros_py was split out of tf2_ros in Galactic; Foxy's tf2_ros still carries
+# the Python bindings and has no such package.
+ros-${ROS_DISTRO}-tf2-ros-py # runtime,ros2,!foxy
 ros-${ROS_DISTRO}-rmw-cyclonedds-cpp # runtime,ros2
 
 # Production builder baseline: enough for normal source workspace builds without

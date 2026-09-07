@@ -56,8 +56,10 @@ SHARE_SUFFIX=""
 [ "$SHARE_MODE" = "true" ] && SHARE_SUFFIX="-share"
 SIF_FILE="${SIF_FILE:-${WS_ROOT}/${COMPOSE_PROJECT}-${ENV_NAME}-${MODE}${SHARE_SUFFIX}-${TARGETARCH}.sif}"
 GIT_COMMIT="$(git -C "${WS_ROOT}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-# PROD_FULL_CUDA is the documented user-facing spelling of the FULL_CUDA build arg.
-FULL_CUDA="${FULL_CUDA:-${PROD_FULL_CUDA:-false}}"
+# PROD_FULL_CUDA is the SIF's own knob for the FULL_CUDA build arg. FULL_CUDA
+# belongs to the compose dev image and make exports it, so reading it here
+# let a dev setting silently decide the artifact.
+FULL_CUDA="${PROD_FULL_CUDA:-false}"
 [ "$FULL_CUDA" = "1" ] && FULL_CUDA="true"
 
 # Pass the release pin policy into every stage that imports dependencies.

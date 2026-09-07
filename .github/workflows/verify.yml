@@ -30,6 +30,15 @@ jobs:
       - uses: actions/checkout@v5
       # The contract suite. Needs neither docker nor .env.
       - run: make verify
+      # A fork that did what GETTING_STARTED says — adopted its name, removed
+      # the starters, replaced README — must still pass: the template's own
+      # content is checked only upstream (upstream_checks in the suite).
+      - name: the suite passes on a fork that replaced the template's own files
+        run: |
+          cp -a . /tmp/fork && cd /tmp/fork
+          make adopt NAME=forkprobe DESC='fork probe'
+          rm -rf src/example && printf '# forkprobe\n' > README.md
+          make verify
       # The docker-build shell has no terminal and no BASH_ENV, and the prod
       # builder stages source config/util_aliases.sh in exactly that shell —
       # a host run passes even when that path is broken.

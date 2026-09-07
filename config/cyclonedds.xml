@@ -1,22 +1,26 @@
 <?xml version="1.0" encoding="UTF-8" ?>
+<!-- Used by init_ros_env.sh when rmw_cyclonedds_cpp is selected. -->
 <CycloneDDS xmlns="https://cdds.io/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <Domain id="any">
+    <Domain Id="any">
         <General>
+            <!-- Multicast for participant discovery only; all other traffic uses unicast. -->
+            <AllowMulticast>spdp</AllowMulticast>
             <!--
-                By default, bridge networks drop DDS UDP Multicast packets.
-                This setting allows the discovery to proceed without explicitly
-                crashing, while the fallback node pairs via the Unicast Peers configuration below.
+                Optional: pin the LAN interface if automatic selection is wrong.
+                CycloneDDS 0.7-0.8:
+                <NetworkInterfaceAddress>eth1</NetworkInterfaceAddress>
+                CycloneDDS 0.9+:
+                <Interfaces><NetworkInterface name="eth1"/></Interfaces>
             -->
-            <AllowMulticast>default</AllowMulticast>
         </General>
         <Discovery>
             <Peers>
                 <!--
-                    Unicast Discovery Proxy: Automatically pair local nodes (Host/Container mapping)
-                    that are cut off from IGMP Multicast. Add more external IP addresses here
-                    for multi-robot operation over VPNs or isolated subnets.
+                    localhost reaches only a shared loopback (same container,
+                    host networking, or WSL2 mirrored networking). For bridge,
+                    VPN, or LAN discovery, add a reachable peer address.
                 -->
-                <Peer address="localhost"/>
+                <Peer Address="localhost"/>
             </Peers>
             <ParticipantIndex>auto</ParticipantIndex>
         </Discovery>

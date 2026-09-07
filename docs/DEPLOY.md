@@ -123,7 +123,7 @@ APT_SNAPSHOT_DATE=20260801T000000Z SOURCE_DATE_EPOCH=1785542400 make bake-prod E
 
 | 파일 | 내용 |
 | :--- | :--- |
-| `devkit-release.json` | `base_image`, `apt_snapshot`, `source_date_epoch`, `build_type`, `git_commit`, 매니페스트 **SHA-256** |
+| `devkit-release.json` | `base_image`, `apt_snapshot`, `apt_snapshot_applied`, `source_date_epoch`, `build_type`, `git_commit`, 매니페스트 **SHA-256** |
 | `devkit-apt-manifest.txt` | 설치된 전체 APT 패키지 `이름=버전` (정렬됨) |
 | `devkit-pip-manifest.txt` | venv의 `pip freeze` 결과 (정렬됨) |
 
@@ -141,7 +141,9 @@ docker run --rm img cat /etc/devkit/devkit-release.json | grep sha256
 해당 패키지가 그 시점으로 **사후 고정**됩니다.
 >
 > 스냅샷 서버가 불통이면 빌드는 **중단**됩니다 — 롤링 미러로 조용히 넘어가면 재현성이 무의미해지기 때문입니다.
-> 의도적으로 넘어가려면 `APT_SNAPSHOT_FALLBACK=1`을 명시하세요. (`make verify` [reproducibility]이 이 메커니즘의 존재를 강제합니다.)
+> 의도적으로 넘어가려면 `APT_SNAPSHOT_FALLBACK=1`을 명시하세요(`.env`·환경·`make` 인자 어디서든; 기본은 `false`).
+> 넘어간 빌드는 매니페스트에 `apt_snapshot_applied: false` 로 남아 고정 빌드로 오인되지 않습니다.
+> (`make verify` [reproducibility]이 기본값·전달·기록을 실행으로 검증합니다.)
 
 
 ---

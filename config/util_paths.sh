@@ -91,10 +91,52 @@ devkit_overlay_setup() {
     return 1
 }
 
+# devkit_env_entries <file> — every assignment of a .env file as 'KEY<TAB>VALUE',
+# read the way compose reads it: one pair of surrounding quotes dropped, an
+# unquoted ' # …' tail is a comment, CR and trailing blanks stripped. The ONE
+# parser for .env syntax; make and every script read through it.
+devkit_env_entries() {
+    local tab; tab="$(printf '\t')"
+    [ -f "$1" ] || return 0
+    sed -nE -e 's/\r$//' \
+        -e "s/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=\"(.*)\"[[:space:]]*(#.*)?\$/\2${tab}\3/p" -e t \
+        -e "s/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)='(.*)'[[:space:]]*(#.*)?\$/\2${tab}\3/p" -e t \
+        -e "s/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*[^[:space:]])?[[:space:]]+#.*\$/\2${tab}\3/p" -e t \
+        -e "s/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*[^[:space:]])?[[:space:]]*\$/\2${tab}\3/p" "$1"
+}
+
 devkit_env_value() {
     local key="$1" file="${2:-${WS_ROOT}/.env}"
-    [ -f "$file" ] || return 0
-    sed -n "s/^[[:space:]]*${key}=//p" "$file" | tail -n 1 | tr -d '"'"'"'\r'
+    devkit_env_entries "$file" | awk -F'\t' -v k="$key" '$1 == k { v = $2 } END { printf "%s", v }'
+}
+
+# devkit_env_render <ambient-regex> <file…> — the .env files as make syntax.
+# Files are DEFAULTS: `?=` lets the command line and the environment win and
+# the first file listed beat the later ones. Names matching <ambient-regex>
+# (LANG, TZ… — exported by every shell) are re-emitted with `=` in reverse
+# order so the file still wins for them; a host locale must not reach an image.
+# '#' is escaped so a value never turns into a make comment.
+devkit_env_render() {
+    local ambient="$1" file i; shift
+    for file in "$@"; do
+        # `?=` preserves file/environment precedence, but emitting every line
+        # would make the FIRST duplicate win. Compose and devkit_env_value use
+        # the last assignment within one file, so emit only that occurrence.
+        devkit_env_entries "$file" | sed 's/#/\\#/g' | awk -F'\t' '
+            {
+                key[NR] = $1
+                value[NR] = substr($0, length($1) + 2)
+                last[$1] = NR
+            }
+            END {
+                for (i = 1; i <= NR; i++)
+                    if (last[key[i]] == i) print key[i] " ?= " value[i]
+            }'
+    done
+    for (( i = $#; i >= 1; i-- )); do
+        devkit_env_entries "${!i}" | sed 's/#/\\#/g' \
+            | awk -F'\t' -v re="^(${ambient})\$" '$1 ~ re { print $1 " = " $2 }'
+    done
 }
 
 configure_git_safe_directory() {

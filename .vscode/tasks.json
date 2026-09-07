@@ -12,11 +12,6 @@
       "id": "packageName",
       "type": "promptString",
       "description": "ROS package name to build (e.g., my_robot_pkg)"
-    },
-    {
-      "id": "executablePath",
-      "type": "promptString",
-      "description": "Path to the executable to run (e.g., install/lib/my_pkg/my_node)"
     }
   ],
   "tasks": [
@@ -271,12 +266,14 @@
       "detail": "⚠️ WARNING: Removes all build artifacts — use with caution"
     },
     // =====================================================================
-    // Pre-Debug Helper Tasks
+    // Pre-Debug Helper Tasks. The debuggers read .vscode/.debug.env (envFile):
+    // a debugger's parent process cannot source setup.bash, so mdebugenv
+    // writes the sourced overlay (ROS, install/ or devel/, venv, GPU) out.
     // =====================================================================
     {
       "label": "⚙️ Source & Build (Debug, pre-launch)",
       "type": "shell",
-      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && cbuild --debug && (__smart_source || true)'",
+      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && mkbuild --debug && mdebugenv'",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -284,7 +281,21 @@
       "problemMatcher": [
         "$gcc"
       ],
-      "detail": "Auto-detect ROS version → build (Debug) → source workspace",
+      "detail": "Build for the detected layout (ROS colcon / CMake / none) with Debug symbols, then write the debugger environment",
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "⚙️ Debugger env (pre-launch)",
+      "type": "shell",
+      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && mdebugenv'",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "detail": "Write .vscode/.debug.env from the sourced workspace without building",
       "presentation": {
         "reveal": "silent",
         "panel": "shared"
@@ -293,7 +304,7 @@
     {
       "label": "⚡ Source & Build Package (Debug, pre-launch)",
       "type": "shell",
-      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && cbuild --debug --pkg ${input:packageName} && (__smart_source || true)'",
+      "command": "bash -lc 'source \"$WORKSPACE_PATH/config/util_aliases.sh\" && cbuild --debug --pkg ${input:packageName} && mdebugenv'",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -301,7 +312,7 @@
       "problemMatcher": [
         "$gcc"
       ],
-      "detail": "⚡ Fast: Build ONLY the specified package before debugging (turnaround optimization)",
+      "detail": "⚡ Fast: build ONLY the specified ROS package, then write the debugger environment",
       "presentation": {
         "reveal": "silent",
         "panel": "shared"

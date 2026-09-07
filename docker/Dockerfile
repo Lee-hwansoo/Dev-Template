@@ -11,7 +11,9 @@ ARG BASE_IMAGE=ubuntu:22.04
 ARG WORKSPACE_PATH=/workspace
 ARG ROS_DISTRO=humble
 ARG APT_SNAPSHOT_DATE=latest
-ARG APT_SNAPSHOT_FALLBACK=true
+# Fail closed: a pinned date whose snapshot server is unreachable stops the
+# build unless the caller opts into rolling mirrors explicitly.
+ARG APT_SNAPSHOT_FALLBACK=false
 ARG ROS_SNAPSHOT_DATE=latest
 ARG STRICT_GPG_CHECK=true
 ARG UV_VERSION=0.10.10
@@ -330,6 +332,11 @@ ENV IMAGE_TAG=${IMAGE_TAG} \
     COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME} \
     SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 COPY src ${WORKSPACE_PATH}/src
+# A repository-root CMake project (cbuild's first choice) and its cmake/
+# modules: without them the builder saw a PYTHON tree and shipped no binary.
+# Bracket globs, because an absent optional input must not fail COPY.
+COPY CMakeLists.tx[t] ${WORKSPACE_PATH}/
+COPY cmak[e] ${WORKSPACE_PATH}/cmake/
 COPY dependencies ${WORKSPACE_PATH}/dependencies
 COPY config ${WORKSPACE_PATH}/config
 COPY scripts ${WORKSPACE_PATH}/scripts
@@ -389,11 +396,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=bind,source=dependencies/,target=${WORKSPACE_PATH}/dependencies/ \
     if [ "$PROD_ENV" = ros ]; then \
         bash /tmp/util_apt_helper.sh setup-ros-repo ${ROS_DISTRO} && \
-        bash /tmp/util_apt_helper.sh install-packages runtime ${ROS_DISTRO}; \
+        bash /tmp/util_apt_helper.sh install-packages runtime ${ROS_DISTRO} && \
+        bash /tmp/util_apt_helper.sh purge-bootstrap ${ROS_DISTRO}; \
     else \
-        bash /tmp/util_apt_helper.sh install-packages runtime; \
+        bash /tmp/util_apt_helper.sh install-packages runtime && \
+        bash /tmp/util_apt_helper.sh purge-bootstrap; \
     fi && \
-    bash /tmp/util_apt_helper.sh purge-bootstrap && \
     if command -v sudo >/dev/null 2>&1; then chmod a-s "$(command -v sudo)"; fi
 COPY --from=prod-builder ${WORKSPACE_PATH}/install ${WORKSPACE_PATH}/install
 COPY --from=prod-builder /opt/uv/python /opt/uv/python

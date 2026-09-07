@@ -32,22 +32,24 @@ OK     := $(GREEN)[OK]$(NC)
 WARN   := $(YELLOW)[WARN]$(NC)
 ERROR  := $(RED)[ERROR]$(NC)
 
-# make gives file assignments priority over the environment, so snapshot a
-# `GPU_MODE=nvidia make start` override and restore it after the include.
-ifeq ($(origin GPU_MODE),environment)
-USER_GPU_MODE := $(GPU_MODE)
-endif
-# Capture detector overrides before file assignments hide their origin.
+# The .env files are DEFAULTS, read the way compose reads them: the command
+# line beats the environment, the environment beats .env, .env beats
+# .env.example, and a value's surrounding quotes are dropped. Rendered to `?=`
+# through the one .env parser (config/util_paths.sh): included as make syntax,
+# the file beat an explicit `APT_SNAPSHOT_DATE=… make bake-prod` and a quoted
+# UV_SYNC_FLAGS reached compose with its quotes. ENV_AMBIENT names every shell
+# exports; for those the file still wins, or the host locale lands in the image.
+ENV_AMBIENT := LANG|TZ|DEBIAN_FRONTEND
+ENV_MK      := .docker_cache/env.mk
+$(shell mkdir -p .docker_cache && bash -c 'source config/util_paths.sh >/dev/null 2>&1; devkit_env_render "$$@"' \
+	_ '$(ENV_AMBIENT)' $(wildcard .env) .env.example > $(ENV_MK) 2>/dev/null)
+-include $(ENV_MK)
 shell_quote = '$(subst ','"'"',$(1))'
+# Detector inputs the user set explicitly — from any layer, since `?=` keeps
+# their origin — are handed to the probe and key its cache.
 DETECT_INPUTS := ROS_DISTRO BASE_IMAGE UV_PYTHON WORKSPACE_PATH DOCKER_DEV_CACHE_DIR
 DETECT_OVERRIDES := $(strip $(foreach v,$(DETECT_INPUTS),\
 	$(if $(filter command line environment override,$(origin $(v))),$(call shell_quote,$(v)=$($(v))))))
-# Committed defaults, followed by local overrides.
--include .env.example
--include .env
-ifdef USER_GPU_MODE
-GPU_MODE := $(USER_GPU_MODE)
-endif
 
 # Template revision. VERSION is committed, so it travels with a fork even when
 # the project was created from the GitHub template button and carries none of
@@ -541,7 +543,7 @@ term:
 	@$(REQUIRE_CONTAINER); \
 	$(EXEC_USER_FLAG); \
 	TERM_BIN="$${TERMINAL:-terminator}"; \
-	if ! docker exec $$CONTAINER command -v "$$TERM_BIN" >/dev/null 2>&1; then \
+	if ! docker exec $$CONTAINER sh -c 'command -v "$$1"' _ "$$TERM_BIN" >/dev/null 2>&1; then \
 		echo -e "  $(ERROR) '$$TERM_BIN' is not installed in this image." >&2; \
 		echo -e "  $(INFO) Uncomment 'terminator # gui' in dependencies/apt.txt and run 'make build' (or set TERMINAL= in .env)."; \
 		exit 1; \
@@ -713,18 +715,18 @@ clean-cache:
 	fi
 	@# DOCKER_DEV_CACHE_DIR relocates ccache/uv caches (see .env.example).
 	@# Guards run on the RESOLVED path: '<ws>/cache/../../<ws>' carries the word
-	@# 'cache' and used to pass, aiming this rm -rf at the workspace itself.
+	@# 'cache' and used to pass, aiming this rm -rf at the workspace itself; so
+	@# did a parent directory of the workspace. Anything containing it is refused.
 	@CACHE_DIR="$(or $(DOCKER_DEV_CACHE_DIR),.docker_cache)"; \
 	if [ "$$CACHE_DIR" != .docker_cache ]; then \
 		case "$$CACHE_DIR" in \
 			/*) ;; \
 			*)  echo -e "  $(ERROR) DOCKER_DEV_CACHE_DIR must be an absolute path (got: $$CACHE_DIR)"; exit 1 ;; \
 		esac; \
-		eval "$$(bash -c 'source config/util_paths.sh >/dev/null 2>&1; \
-			printf "REAL_CACHE=%s\nREAL_WS=%s\n" "$$(devkit_resolve_path "$$1")" "$$(devkit_resolve_path "$$2")"' \
-			_ "$$CACHE_DIR" "$(HOST_WORKSPACE_PATH)")"; \
-		case "$$REAL_CACHE" in \
-			/|"$$REAL_WS") echo -e "  $(ERROR) '$$CACHE_DIR' resolves to '$$REAL_CACHE'; refusing to delete it."; exit 1 ;; \
+		REAL_CACHE="$$(bash -c 'source config/util_paths.sh >/dev/null 2>&1; devkit_resolve_path "$$1"' _ "$$CACHE_DIR")"; \
+		REAL_WS="$$(bash -c 'source config/util_paths.sh >/dev/null 2>&1; devkit_resolve_path "$$1"' _ "$(HOST_WORKSPACE_PATH)")"; \
+		case "$$REAL_WS/" in \
+			"$${REAL_CACHE%/}/"*) echo -e "  $(ERROR) '$$CACHE_DIR' resolves to '$$REAL_CACHE', which contains this workspace; refusing to delete it."; exit 1 ;; \
 		esac; \
 		case "$$REAL_CACHE" in \
 			*cache*) ;; \

@@ -124,18 +124,31 @@ launch_count="$(find "$TARGET_DIR" -path "*/.venv" -prune -o -type f -name '*.py
 
 log_info "Source exposure: ${#py_files[@]} python module(s), ${launch_count} launch script(s)."
 
+# An entry point is invoked by NAME — an executable bit or a shebang (ROS
+# install(PROGRAMS), rosrun, a console script): deleting its .py leaves a .pyc
+# nothing calls. Those stay as source; DEVKIT_FAIL_ON_SOURCE then decides.
+is_entry_point() { [ -x "$1" ] || { IFS= read -r first < "$1" && [ "${first#\#!}" != "$first" ]; }; }
+entry_points=(); modules=()
+for f in ${py_files[@]+"${py_files[@]}"}; do
+    if is_entry_point "$f"; then entry_points+=("$f"); else modules+=("$f"); fi
+done
+
 case "${DEVKIT_STRIP_SOURCE:-}" in
     1|true|yes|on)
-        if [ "${#py_files[@]}" -gt 0 ]; then
+        if [ "${#entry_points[@]}" -gt 0 ]; then
+            log_warn "${#entry_points[@]} executable python entry point(s) keep their source (called by name, a .pyc would not be):"
+            for f in "${entry_points[@]}"; do log_detail "${f#"$TARGET_DIR"/}"; done
+        fi
+        if [ "${#modules[@]}" -gt 0 ]; then
             # -b writes foo.pyc beside foo.py (legacy layout), so deleting the
             # source still leaves an importable module.
-            if python3 -m compileall -b -q "${py_files[@]}" >/dev/null 2>&1; then
+            if python3 -m compileall -b -q "${modules[@]}" >/dev/null 2>&1; then
                 stripped=0
-                for f in "${py_files[@]}"; do
+                for f in "${modules[@]}"; do
                     [ -f "${f%.py}.pyc" ] && { rm -f "$f"; stripped=$((stripped + 1)); }
                 done
                 find "$TARGET_DIR" -path "*/.venv" -prune -o -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
-                log_ok "Stripped ${stripped}/${#py_files[@]} module(s) to bytecode (obfuscation, not encryption)."
+                log_ok "Stripped ${stripped}/${#modules[@]} module(s) to bytecode (obfuscation, not encryption)."
             else
                 log_error "Byte-compilation failed; refusing to delete source."
                 missing=$((missing + 1))
@@ -154,6 +167,8 @@ if [ "$remaining" -gt 0 ]; then
     case "${DEVKIT_FAIL_ON_SOURCE:-}" in
         1|true|yes|on)
             log_error "DEVKIT_FAIL_ON_SOURCE is set — failing the build."
+            [ "${#entry_points[@]}" -eq 0 ] \
+                || log_detail "Executable entry points cannot be stripped; ship them as source, wrap them in a non-Python launcher, or drop DEVKIT_FAIL_ON_SOURCE."
             missing=$((missing + 1)) ;;
     esac
 fi

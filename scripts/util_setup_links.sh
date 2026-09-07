@@ -105,10 +105,17 @@ if sub_files:
                 all_commands.extend(data)
     with open(output_file, 'w') as file:
         json.dump(all_commands, file, indent=2)
+elif os.path.exists(output_file) and not os.path.exists(os.path.join(build_dir, 'CMakeCache.txt')):
+    # Our aggregate outlived its last input (the package was removed): drop it,
+    # or the editor keeps deleted files and stale flags. A build/ configured by
+    # plain CMake (CMakeCache.txt) owns its own database and is left alone.
+    os.remove(output_file)
 "; then
         log_warn "Failed to aggregate compile_commands.json. Check package build outputs for invalid JSON."
     fi
 fi
 
 COMPILE_COMMANDS_SRC="${WS_ROOT}/build/compile_commands.json"
+# The root link follows the database's life: a dangling one is removed.
+[ -e "$COMPILE_COMMANDS_SRC" ] || { [ -L "${WS_ROOT}/compile_commands.json" ] && rm -f "${WS_ROOT}/compile_commands.json"; }
 safe_link "$COMPILE_COMMANDS_SRC" "${WS_ROOT}/compile_commands.json" "Compile commands"

@@ -31,6 +31,25 @@ case "${1:-}" in
     *) echo "verify_repo.sh: unknown option: $1" >&2; exit 2 ;;
 esac
 
+# Hermetic under `make verify`: the Makefile's bare `export` (compose needs it)
+# hands every make variable to this script — COMPOSE_PROJECT_NAME made the
+# clean-cache probes abort on the developer's running container,
+# HOST_WORKSPACE_PATH aimed their path guard at the real tree, IMAGE_TAG beat a
+# probe's .env. Drop exactly what make defined (its own settings and every key
+# the .env files carry), keep the ambient locale, and the two entry points agree.
+if [ -n "${MAKELEVEL:-}" ]; then
+    _keep_lang="${LANG-}" _keep_lc="${LC_ALL-}" _keep_tz="${TZ-}"
+    # Listed from a CLEAN environment: with the exports present, make reports
+    # every `?=` setting as origin "environment" and would list none of them.
+    for _mk_var in $(env -i PATH="$PATH" HOME="${HOME:-/}" make -pn help 2>/dev/null \
+                     | awk '/^# makefile/ { getline; sub(/[[:space:]]*[:?+]*=.*/, ""); if ($0 ~ /^[A-Za-z_][A-Za-z0-9_]*$/) print }'); do
+        unset "$_mk_var" 2>/dev/null || true
+    done
+    unset MAKEFLAGS MFLAGS MAKELEVEL MAKE_TERMOUT MAKE_TERMERR
+    [ -z "$_keep_lang" ] || export LANG="$_keep_lang"; [ -z "$_keep_lc" ] || export LC_ALL="$_keep_lc"; [ -z "$_keep_tz" ] || export TZ="$_keep_tz"
+    unset _mk_var _keep_lang _keep_lc _keep_tz
+fi
+
 FAILED=0
 log_ok()  { echo -e "  \033[0;32m[OK]\033[0m $*"; }
 log_err() { echo -e "  \033[0;31m[ERROR]\033[0m $*" >&2; FAILED=$((FAILED+1)); }
@@ -44,6 +63,23 @@ log_info(){ echo -e "  \033[0;34m[INFO]\033[0m $*"; }
 # and the core utilities wherever this host keeps them. Hardcoding /usr/bin:/bin
 # broke every such probe on a host that keeps bash in /usr/local/bin.
 probe_min_path="$(dirname "$(command -v bash)"):$(dirname "$(command -v sed)"):/usr/bin:/bin"
+
+# upstream_checks — the template's OWN content: README wording, starter examples,
+# the doc map. A fork replaces those (GETTING_STARTED's ownership table) and
+# must still pass, so they run only where the project still carries the
+# template's name, or on request (DEVKIT_UPSTREAM=1; =0 forces them off). Kit
+# BEHAVIOUR is checked everywhere.
+upstream_checks() {
+    case "${DEVKIT_UPSTREAM:-}" in 1) return 0 ;; 0) return 1 ;; esac
+    [ "$(sed -n 's/^name = "\(.*\)"/\1/p' src/pyproject.toml 2>/dev/null)" = devkit ]
+}
+
+# docker_live — a usable docker daemon on this host. The few probes that need a
+# real container run only here (the macOS runner has none) and say so.
+docker_live() {
+    [ -n "${DOCKER_LIVE:-}" ] || { DOCKER_LIVE=no; command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && DOCKER_LIVE=yes; }
+    [ "$DOCKER_LIVE" = yes ]
+}
 
 probe_dir() {
     local dir name
@@ -80,7 +116,7 @@ for f in \
     dependencies/apt.txt dependencies/apt_ros.txt \
     VERSION .clang-format \
     docs/GETTING_STARTED.md docs/DEVELOPMENT.md docs/DEPENDENCIES.md docs/DEPLOY.md docs/DIAGNOSTICS.md \
-    src/example/starter_node.cpp src/example/starter_node.py src/example/test_starter_node.py
+    $(upstream_checks && echo src/example/starter_node.cpp src/example/starter_node.py src/example/test_starter_node.py)
 do
     [ -f "$f" ] || log_err "Missing required file: $f"
 done
@@ -130,6 +166,20 @@ ln -s "${ROOT_DIR}/config/util_logging.sh" "$link_probe/config/util_logging.sh" 
 : > "$link_probe/config/colcon.meta"
 ( WORKSPACE_PATH="$link_probe" bash "$link_probe/scripts/util_setup_links.sh" ) >/dev/null 2>&1 || true
 link_target="$(readlink "$link_probe/colcon.meta" 2>/dev/null || echo '<none>')"
+# The aggregated compile_commands.json follows its inputs: written from the
+# per-package files, REMOVED with the last of them (the editor kept a deleted
+# file's flags), and a plain-CMake build/ (CMakeCache.txt) keeps its own.
+link_run() { ( WORKSPACE_PATH="$link_probe" bash "$link_probe/scripts/util_setup_links.sh" ) >/dev/null 2>&1 || true; }
+mkdir -p "$link_probe/build/pkg"; printf '[{"file":"removed.cpp","command":"cc","directory":"/w"}]\n' > "$link_probe/build/pkg/compile_commands.json"
+link_run
+grep -q 'removed.cpp' "$link_probe/build/compile_commands.json" 2>/dev/null && [ -L "$link_probe/compile_commands.json" ] \
+    || log_err "util_setup_links.sh did not aggregate a package's compile_commands.json (or link it at the root)."
+rm -rf "$link_probe/build/pkg"; link_run
+{ [ ! -e "$link_probe/build/compile_commands.json" ] && [ ! -L "$link_probe/compile_commands.json" ]; } \
+    || log_err "after the last package is removed, the aggregated compile_commands.json (or its root link) is left behind with stale entries."
+: > "$link_probe/build/CMakeCache.txt"; printf '[]\n' > "$link_probe/build/compile_commands.json"; link_run
+[ -f "$link_probe/build/compile_commands.json" ] \
+    || log_err "util_setup_links.sh deleted a compile_commands.json that plain CMake (CMakeCache.txt) wrote."
 case "$link_target" in
     /*) log_err "util_setup_links.sh writes an ABSOLUTE link (${link_target}); across a bind mount it dangles on the other side." ;;
     '<none>') log_err "util_setup_links.sh created no colcon.meta link; cbuild --meta would find nothing." ;;
@@ -194,6 +244,11 @@ for wf in .github/workflows/*.yml; do
     grep -qE '^[[:space:]]+run: (sudo )?rm -rf /usr/share/dotnet|^[[:space:]]+run: make verify$' "$wf" && [ "${wf##*/}" != verify.yml ] \
         && wf_bad+=("${wf##*/}: hand-written gate step; use ./.github/actions/gate")
 done
+# A fork that did what GETTING_STARTED says — adopted a name, removed the
+# starters, replaced README — must still pass: verify.yml runs the suite on
+# such a copy (the suite cannot run itself here without recursing).
+grep -q 'rm -rf src/example' .github/workflows/verify.yml && grep -q 'make adopt NAME=' .github/workflows/verify.yml \
+    || wf_bad+=("verify.yml: no fork probe (adopt + rm -rf src/example + replaced README + make verify)")
 [ "$(grep -c 'uses: ./.github/actions/gate' .github/workflows/images.yml .github/workflows/project.yml | awk -F: '{s+=$2} END{print s}')" -ge 6 ] \
     || wf_bad+=("fewer image jobs use the gate action than exist (images.yml 5 + project.yml 1)")
 [ ${#wf_bad[@]} -eq 0 ] && log_ok "Workflows: read-only token, checkout@v5+, image jobs gated by ./.github/actions/gate." \
@@ -303,17 +358,43 @@ for tagged in $(awk -F'#' '/#[^#]*(dev|gui)([[:space:],]|$)/ && !/^[[:space:]]*#
         apt_errors=1
     fi
 done
-[ "$apt_errors" -eq 0 ] && log_ok "APT tag-filter contract holds (no-distro selection excludes ros-*, runtime excludes dev/gui)."
+# '!<distro>' drops a line for that distro alone: tf2-ros-py exists from
+# Galactic, and the manifest written against Humble broke every Foxy build.
+apt_tag_probe="$(probe_dir)"
+printf 'a-${ROS_DISTRO}-x # runtime,ros2,!foxy\nb-${ROS_DISTRO}-y # runtime,ros2\n' > "$apt_tag_probe/apt_ros.txt"; : > "$apt_tag_probe/apt.txt"
+apt_tag_foxy="$(DEVKIT_DRY_RUN=1 DEVKIT_DEPS_DIR="$apt_tag_probe" bash scripts/util_apt_helper.sh install-packages runtime foxy 2>/dev/null | tr '\n' ' ')"
+apt_tag_humble="$(DEVKIT_DRY_RUN=1 DEVKIT_DEPS_DIR="$apt_tag_probe" bash scripts/util_apt_helper.sh install-packages runtime humble 2>/dev/null | tr '\n' ' ')"
+{ [ "$apt_tag_foxy" = "b-foxy-y " ] && [ "$apt_tag_humble" = "a-humble-x b-humble-y " ]; } \
+    || { log_err "the '!<distro>' tag does not exclude per distro (foxy: '${apt_tag_foxy}', humble: '${apt_tag_humble}')."; apt_errors=1; }
+rm -rf "$apt_tag_probe"
+grep -qE '^ros-\$\{ROS_DISTRO\}-tf2-ros-py #.*!foxy' dependencies/apt_ros.txt \
+    || { log_err "apt_ros.txt requests tf2-ros-py on foxy, where the package does not exist (Galactic+): tag it '!foxy'."; apt_errors=1; }
+# …and CI resolves the whole selection against each distro's own index, foxy included.
+grep -q 'ros-lists-resolve:' .github/workflows/images.yml && grep -qE "distro: foxy,\s+snapshot: final" .github/workflows/images.yml \
+    || { log_err "images.yml has no ros-lists-resolve job covering foxy (snapshot final); a package missing from one distro's index is found four minutes into a build."; apt_errors=1; }
+[ "$apt_errors" -eq 0 ] && log_ok "APT tag-filter contract holds (no-distro selection excludes ros-*, runtime excludes dev/gui, '!<distro>' excludes per distro)."
 
 # =============================================================================
 # [gpu-env-persist] GPU environment persistence: `docker exec` shells do not run the
 #     entrypoint, so setup_gpu.sh must leave its env in GPU_ENV_FILE.
 # =============================================================================
 gpu_env_probe="$(probe_dir)"
+# …and a NEW shell reads the image default (/etc/profile.d copy of the first
+# mode) and then the user's file: a switch cpu → intel left the cpu-only
+# variables (QT_XCB_FORCE_SOFTWARE_OPENGL, llvmpipe) standing, so the file must
+# reset every owned variable before it exports the new mode's.
+gpu_switch_ok=0
+if ( GPU_ENV_FILE="${gpu_env_probe}/default.sh" HOME="$gpu_env_probe" bash -c 'source scripts/setup_gpu.sh cpu' >/dev/null 2>&1 ) \
+   && ( GPU_ENV_FILE="${gpu_env_probe}/user.sh" HOME="$gpu_env_probe" bash -c 'source scripts/setup_gpu.sh intel' >/dev/null 2>&1 ); then
+    gpu_after="$(bash -c "source '${gpu_env_probe}/default.sh'; source '${gpu_env_probe}/user.sh'; echo \"\${QT_XCB_FORCE_SOFTWARE_OPENGL:-unset} \${LIBGL_ALWAYS_SOFTWARE:-unset} \${DEVKIT_GPU_MODE_ACTIVE:-unset}\"" 2>/dev/null)"
+    [ "$gpu_after" = "unset 0 intel" ] && gpu_switch_ok=1
+fi
 if ( GPU_ENV_FILE="${gpu_env_probe}/gpu_env.sh" HOME="$gpu_env_probe" \
      bash -c 'source scripts/setup_gpu.sh cpu' >/dev/null 2>&1 ) \
-   && grep -q "LIBGL_ALWAYS_SOFTWARE" "${gpu_env_probe}/gpu_env.sh" 2>/dev/null; then
-    log_ok "setup_gpu.sh persists the GPU environment for non-entrypoint shells."
+   && grep -q "LIBGL_ALWAYS_SOFTWARE" "${gpu_env_probe}/gpu_env.sh" 2>/dev/null && [ "$gpu_switch_ok" -eq 1 ]; then
+    log_ok "setup_gpu.sh persists the GPU environment for non-entrypoint shells, and a mode switch clears the previous mode there too."
+elif [ "$gpu_switch_ok" -eq 0 ]; then
+    log_err "a persisted GPU file does not reset the previous mode: after cpu → intel a new shell saw '${gpu_after:-<no file>}' (expected 'unset 0 intel')."
 else
     log_err "setup_gpu.sh did not write GPU_ENV_FILE; 'make shell' sessions would lose GPU settings."
 fi
@@ -363,6 +444,116 @@ for entry_gen in "humble 2" "noetic 1"; do
 done
 [ "$entry_errors" -eq 0 ] \
     && log_ok "Build and quality entry points are functions on both ROS generations — callable from docker build and 'make exec'."
+
+# =============================================================================
+# [config-precedence] One order for every public setting, whichever door it
+#      comes through: command line > environment > .env > .env.example, with
+#      LANG/TZ/DEBIAN_FRONTEND file-first. Included as make syntax, the files
+#      beat the environment (`APT_SNAPSHOT_DATE=… make bake-prod` built
+#      'latest'), a quoted UV_SYNC_FLAGS reached compose quoted, and an
+#      explicit HOST_XAUTHORITY was replaced by the detector's placeholder.
+#      Duplicate keys follow Compose too: the last assignment in a file wins.
+# =============================================================================
+prec_errors=0
+prec_probe="$(probe_dir config scripts docker dependencies)"
+cp Makefile "$prec_probe/"
+printf 'IMAGE_TAG=fromexample\nAPT_SNAPSHOT_DATE=latest\nLANG=C.UTF-8\nUV_SYNC_FLAGS=\nDESC=plain\nDEFAULT_DUP=first\nDEFAULT_DUP=last\n' > "$prec_probe/.env.example"
+printf 'IMAGE_TAG=shadowed\nIMAGE_TAG=fromenv\nUV_SYNC_FLAGS="--extra cpu"\nUV_SYNC_FLAGS="--extra gpu"\nDESC=a value # a comment\nSIF_FILE='"'"'/tmp/x y.sif'"'"'\n' > "$prec_probe/.env"
+# prec_value <VAR> [env…] — the value make resolves for VAR in the probe tree.
+prec_value() {
+    local var="$1"; shift
+    ( cd "$prec_probe" && env "$@" make -pn help 2>/dev/null | sed -n "s/^${var} = //p" | head -n 1 )
+}
+while IFS='|' read -r label want var envs; do
+    # shellcheck disable=SC2086  # deliberate word split: the env assignments
+    got="$(prec_value "$var" $envs)"
+    [ "$got" = "$want" ] \
+        || { log_err "config precedence, ${label}: ${var}='${got}', expected '${want}'."; prec_errors=1; }
+done <<'CASES'
+.env beats .env.example|fromenv|IMAGE_TAG|DEVKIT_UNUSED=1
+.env uses its last duplicate assignment|--extra gpu|UV_SYNC_FLAGS|DEVKIT_UNUSED=1
+.env.example uses its last duplicate assignment|last|DEFAULT_DUP|DEVKIT_UNUSED=1
+the environment beats .env|fromshell|IMAGE_TAG|IMAGE_TAG=fromshell
+the environment beats .env.example|20260801T000000Z|APT_SNAPSHOT_DATE|APT_SNAPSHOT_DATE=20260801T000000Z
+the file beats an ambient LANG|C.UTF-8|LANG|LANG=ko_KR.UTF-8
+a quoted value loses its quotes|--extra gpu|UV_SYNC_FLAGS|DEVKIT_UNUSED=1
+an unquoted ' # …' tail is a comment|a value|DESC|DEVKIT_UNUSED=1
+a single-quoted value keeps its spaces|/tmp/x y.sif|SIF_FILE|DEVKIT_UNUSED=1
+CASES
+[ "$(cd "$prec_probe" && make -pn help IMAGE_TAG=fromcli 2>/dev/null | sed -n 's/^IMAGE_TAG = //p' | head -n 1)" = fromcli ] \
+    || { log_err "config precedence: the make command line does not beat .env."; prec_errors=1; }
+# The one parser, read from a script too.
+[ "$(bash -c 'source config/util_paths.sh; devkit_env_value UV_SYNC_FLAGS "$1"' _ "$prec_probe/.env")" = "--extra gpu" ] \
+    || { log_err "devkit_env_value reads a quoted value differently from make."; prec_errors=1; }
+# HOST_XAUTHORITY: an explicit existing file is emitted verbatim, a missing one fails, unset detects.
+: > "$prec_probe/my.xauth"
+prec_xauth() { ( cd "$prec_probe" && env "$@" HOST_CACHE_DIR="$prec_probe/cache" bash scripts/check_env.sh --makefile 2>&1 ); }
+grep -q "^HOST_XAUTHORITY := $prec_probe/my.xauth$" <<< "$(prec_xauth HOST_XAUTHORITY="$prec_probe/my.xauth")" \
+    || { log_err "an explicit HOST_XAUTHORITY is not the one the detector emits."; prec_errors=1; }
+printf 'HOST_XAUTHORITY=%s\n' "$prec_probe/my.xauth" >> "$prec_probe/.env"
+grep -q "^HOST_XAUTHORITY := $prec_probe/my.xauth$" <<< "$(prec_xauth DEVKIT_ENV_FILE="$prec_probe/.env")" \
+    || { log_err "a HOST_XAUTHORITY set in .env is not the one the detector emits."; prec_errors=1; }
+prec_rc=0; prec_out="$(prec_xauth HOST_XAUTHORITY="$prec_probe/absent.xauth")" || prec_rc=$?
+{ [ "$prec_rc" -ne 0 ] && grep -q 'HOST_XAUTHORITY.*not a file' <<< "$prec_out"; } \
+    || { log_err "a HOST_XAUTHORITY that names a missing file is downgraded to the placeholder instead of failing (rc=${prec_rc})."; prec_errors=1; }
+rm -rf "$prec_probe"
+[ "$prec_errors" -eq 0 ] \
+    && log_ok "Config precedence: command line > environment > .env > .env.example (last duplicate wins; LANG/TZ file-first), quotes dropped, HOST_XAUTHORITY honoured."
+
+# =============================================================================
+# [device-groups] A GPU node exposed into the container carries the HOST's gid
+#      (root:render 0660 on native Linux); the account setpriv --init-groups
+#      switches to must be in a group with that gid or it sees the node and
+#      cannot open it. The entrypoint's function, executed against stubs that
+#      record what usermod/groupadd are handed.
+# =============================================================================
+devgrp_errors=0
+devgrp_probe="$(probe_dir)"
+mkdir -p "$devgrp_probe/bin" "$devgrp_probe/dev"
+: > "$devgrp_probe/dev/renderD128"; : > "$devgrp_probe/dev/card0"; : > "$devgrp_probe/dev/dxg"; : > "$devgrp_probe/dev/video0"
+# stat: renderD128 → 44 (a known group), card0 → 999 (no group yet), dxg → 0, video0 → 27 (already a member)
+printf '#!/bin/sh\nfor a; do :; done\ncase "$a" in *renderD128) echo 44;; *card0) echo 999;; *video0) echo 27;; *) echo 0;; esac\n' > "$devgrp_probe/bin/stat"
+printf '#!/bin/sh\ncase "$1" in -u) echo 0;; -G) echo "1000 27";; esac\n' > "$devgrp_probe/bin/id"
+printf '#!/bin/sh\n[ "$2" = 44 ] && echo "render:x:44:"\n' > "$devgrp_probe/bin/getent"
+printf '#!/bin/sh\necho "groupadd $*" >> "%s/calls"\n' "$devgrp_probe" > "$devgrp_probe/bin/groupadd"
+printf '#!/bin/sh\necho "usermod $*" >> "%s/calls"\n' "$devgrp_probe" > "$devgrp_probe/bin/usermod"
+chmod +x "$devgrp_probe/bin/"*
+awk '/^grant_device_groups\(\)/{f=1} f{print} f && /^}/{exit}' docker/entrypoint.sh > "$devgrp_probe/fn.sh"
+( cd "$devgrp_probe" && PATH="$devgrp_probe/bin:$probe_min_path" CONTAINER_USER=user \
+  bash -c 'log_ok() { :; }; log_warn() { :; }; source ./fn.sh; grant_device_groups dev/renderD128 dev/card0 dev/dxg dev/video0 dev/absent' ) >/dev/null 2>&1 || true
+devgrp_calls="$( { cat "$devgrp_probe/calls" 2>/dev/null || true; } | tr '\n' ';')"
+[ "$devgrp_calls" = "usermod -aG render user;groupadd -g 999 devkit-dev-999;usermod -aG devkit-dev-999 user;" ] \
+    || { log_err "grant_device_groups handed '${devgrp_calls:-nothing}' to usermod/groupadd (expected: render for gid 44, a new devkit-dev-999 for gid 999, nothing for gid 0 or a group the user already has)."; devgrp_errors=1; }
+grep -qE '^grant_device_groups$' docker/entrypoint.sh \
+    || { log_err "docker/entrypoint.sh defines grant_device_groups but never calls it before the privilege drop."; devgrp_errors=1; }
+rm -rf "$devgrp_probe"
+[ "$devgrp_errors" -eq 0 ] && log_ok "Device groups: the container user joins the group of every exposed GPU node before privileges drop."
+
+# =============================================================================
+# [dds-config] config/cyclonedds.xml must change something and say what it
+#      changes: AllowMulticast=default was a no-op under a comment describing
+#      the opposite, and nothing told a multi-interface host how to pin the
+#      LAN interface — CycloneDDS picks one arbitrarily and discovery then
+#      fails silently.
+# =============================================================================
+dds_errors=0
+dds_multicast="$(python3 - <<'PYDDS' 2>/dev/null || echo 'parse failed'
+import xml.etree.ElementTree as ET
+ns = {'c': 'https://cdds.io/config'}
+root = ET.parse('config/cyclonedds.xml').getroot()
+el = root.find('.//c:General/c:AllowMulticast', ns)
+print(el.text.strip() if el is not None and el.text else 'missing')
+PYDDS
+)"
+case "$dds_multicast" in
+    spdp|false|true) ;;
+    *) log_err "cyclonedds.xml AllowMulticast is '${dds_multicast}': 'default' changes nothing, and the file must parse."; dds_errors=1 ;;
+esac
+grep -q '<NetworkInterfaceAddress>' config/cyclonedds.xml && grep -q 'NetworkInterface name=' config/cyclonedds.xml \
+    || { log_err "cyclonedds.xml must show interface pinning for CycloneDDS 0.7-0.8 and 0.9+."; dds_errors=1; }
+grep -qiE 'bridge' config/cyclonedds.xml && grep -qiE 'host|mirrored' config/cyclonedds.xml \
+    || { log_err "cyclonedds.xml's Peers comment does not say which network modes share the loopback it relies on."; dds_errors=1; }
+[ "$dds_errors" -eq 0 ] && log_ok "DDS config: AllowMulticast=${dds_multicast} takes effect, interface pinning is offered, the Peers comment names its network modes."
 
 # =============================================================================
 # [detector-cache] The cache write must be atomic and a failed probe fatal: a
@@ -546,7 +737,7 @@ rm -rf "$distro_probe"
 grep -rqE 'melodic|kinetic' Makefile scripts config docker --exclude=verify_repo.sh \
     && { log_err "a pre-20.04 ROS 1 name (melodic/kinetic) is back in the code; only noetic is ROS 1 here."; distro_errors=1; }
 # Both places a reader looks: the badge and the support-matrix row.
-{ grep -qiE 'badge/ROS-.*noetic.*legacy' README.md && grep -qiE '^\|.*noetic.*레거시' README.md; } \
+! upstream_checks || { grep -qiE 'badge/ROS-.*noetic.*legacy' README.md && grep -qiE '^\|.*noetic.*레거시' README.md; } \
     || { log_err "README does not mark ROS 1 noetic as the legacy tier in both the badge and the support matrix."; distro_errors=1; }
 [ "$distro_errors" -eq 0 ] \
     && log_ok "Every supported ROS distro has a base image, an unknown one is refused, and ROS 1 is noetic only, marked legacy ($(wc -w <<< "$apt_distros") distros)."
@@ -939,7 +1130,7 @@ submit_launcher_for() {   # submit_launcher_for [job-id]
 # The property, not a phrasing: the README must say MPI is unsupported. srun
 # spreads the tasks across nodes — that part is verified — but nothing wires a
 # transport between them.
-grep -qiE 'MPI.*(미지원|unsupported)' README.md \
+! upstream_checks || grep -qiE 'MPI.*(미지원|unsupported)' README.md \
     || { log_err "README does not state that MPI is unsupported; srun spawns the tasks but no transport is wired between them."; submit_errors=1; }
 rm -rf "$submit_probe"
 [ "$submit_errors" -eq 0 ] \
@@ -1039,7 +1230,7 @@ done
 # iterates checks nothing.
 hostdep_probe="$(probe_dir)"
 mkdir -p "$hostdep_probe/bin"
-for hostdep_bin in sh bash sed awk grep cut tr cat head tail env dirname basename make ls sort \
+for hostdep_bin in sh bash sed awk grep cut tr cat head tail env dirname basename make ls sort mkdir \
                    $hostdep_tools docker; do
     hostdep_path="$(command -v "$hostdep_bin" 2>/dev/null || true)"
     [ -n "$hostdep_path" ] && ln -sf "$hostdep_path" "$hostdep_probe/bin/$hostdep_bin"
@@ -1154,7 +1345,7 @@ macos_svc="$( unset GPU_MODE; eval "$macos_resolver" >/dev/null 2>&1; printf '%s
     || { log_err "a macOS host resolves to '${macos_svc:-<nothing>}', not ros-cpu; the selected profile requests devices macOS cannot pass through."; macos_errors=1; }
 # …and the support matrix must say so, rather than letting a reader assume
 # Metal/MPS works because the GPU section does not mention macOS.
-grep -qiE 'macOS GPU.*(미지원|unsupported)' README.md \
+! upstream_checks || grep -qiE 'macOS GPU.*(미지원|unsupported)' README.md \
     || { log_err "README does not state that macOS GPU acceleration is unsupported (CPU fallback only)."; macos_errors=1; }
 [ "$macos_errors" -eq 0 ] \
     && log_ok "A macOS host resolves to cpu even with nvidia-smi on PATH, and the README says Metal/MPS is unsupported."
@@ -1350,15 +1541,19 @@ chmod +x "$rmguard_probe/bin/rm"
 rmguard_case() {
     local label="$1" want="$2"; shift 2
     : > "$rmguard_probe/rm.log"
-    ( cd "$rmguard_probe/ws" && PATH="$rmguard_probe/bin:$PATH" make clean-cache "$@" ) >/dev/null 2>&1 || true
+    local out; out="$( cd "${rmguard_ws:-$rmguard_probe/ws}" && PATH="$rmguard_probe/bin:$PATH" make clean-cache "$@" 2>&1 || true )"
     # The recipe removes other things too, so only a call naming the guarded
     # path counts as "the guard let it through". ${*##…} strips per word and
-    # would leave FORCE=1 glued to the front.
-    local got=refused target="" arg
+    # would leave FORCE=1 glued to the front. And "refused" must be the GUARD's
+    # verdict, in its own words: an earlier abort (a running container seen
+    # through a leaked COMPOSE_PROJECT_NAME) also leaves the log empty.
+    local got=aborted target="" arg
     for arg in "$@"; do case "$arg" in DOCKER_DEV_CACHE_DIR=*) target="${arg#*=}" ;; esac; done
-    grep -qF -- "$target" "$rmguard_probe/rm.log" 2>/dev/null && got=deleted
+    if grep -qF -- "$target" "$rmguard_probe/rm.log" 2>/dev/null; then got=deleted
+    elif grep -qE 'refusing to delete|does not look like a cache|must be an absolute path' <<< "$out"; then got=refused
+    fi
     [ "$got" = "$want" ] \
-        || { log_err "clean-cache on ${label}: ${got}, expected ${want}."; rmguard_errors=1; }
+        || { log_err "clean-cache on ${label}: ${got}, expected ${want}$( [ "$got" = aborted ] && printf ' (recipe stopped before the guard: %s)' "$(head -n 1 <<< "$out")" )."; rmguard_errors=1; }
 }
 rmguard_case "a path that resolves back to the workspace" refused \
     FORCE=1 "DOCKER_DEV_CACHE_DIR=$rmguard_probe/ws/cache/../../ws"
@@ -1368,6 +1563,26 @@ rmguard_case "a real cache directory" deleted \
     "DOCKER_DEV_CACHE_DIR=$rmguard_probe/realcache"
 rmguard_case "a non-cache path the user forced" deleted \
     FORCE=1 "DOCKER_DEV_CACHE_DIR=$rmguard_probe/elsewhere"
+# A parent of the workspace whose name carries 'cache' passed both guards and
+# `rm -rf` would have taken the workspace with it. And the resolved paths went
+# through `eval` of an unquoted assignment, so a space split a cache path in two.
+mkdir -p "$rmguard_probe/cachedir/ws" "$rmguard_probe/real cache"
+cp Makefile "$rmguard_probe/cachedir/ws/"
+for rmguard_link in scripts config docker dependencies; do
+    ln -s "${ROOT_DIR}/${rmguard_link}" "$rmguard_probe/cachedir/ws/${rmguard_link}"
+done
+rmguard_ws="$rmguard_probe/cachedir/ws" rmguard_case "a parent directory of the workspace" refused \
+    FORCE=1 "DOCKER_DEV_CACHE_DIR=$rmguard_probe/cachedir"
+rmguard_ws="$rmguard_probe/cachedir/ws" rmguard_case "the root directory" refused FORCE=1 "DOCKER_DEV_CACHE_DIR=/"
+rmguard_case "a cache path containing a space" deleted "DOCKER_DEV_CACHE_DIR=$rmguard_probe/real cache"
+# The suite itself must not carry make's exports into these probes: the scrub
+# at the top, run against a leaked environment, and the live environment now.
+rmguard_scrub="$(MAKELEVEL=1 COMPOSE_PROJECT_NAME=leaked HOST_WORKSPACE_PATH=/leaked IMAGE_TAG=leaked LANG="${LANG:-C.UTF-8}" \
+    bash -c "$(sed -n '/^if \[ -n "\${MAKELEVEL:-}" \]; then$/,/^fi$/p' scripts/verify_repo.sh); echo \"\${COMPOSE_PROJECT_NAME:-clean} \${HOST_WORKSPACE_PATH:-clean} \${IMAGE_TAG:-clean} \${LANG:-lost}\"" 2>/dev/null)"
+[ "$rmguard_scrub" = "clean clean clean ${LANG:-C.UTF-8}" ] \
+    || { log_err "the make-export scrub leaves '${rmguard_scrub}' (expected 'clean clean clean <LANG>'): 'make verify' and 'bash scripts/verify_repo.sh' would disagree."; rmguard_errors=1; }
+[ -z "${COMPOSE_PROJECT_NAME:-}${HOST_WORKSPACE_PATH:-}${MAKELEVEL:-}" ] \
+    || { log_err "this run inherits make's exports (COMPOSE_PROJECT_NAME/HOST_WORKSPACE_PATH/MAKELEVEL); the probes above are not hermetic."; rmguard_errors=1; }
 
 # …and the sync fence must refuse BEFORE anything writes into the directory it
 # is protecting: it used to run after `vcs import` had already populated it.
@@ -1398,6 +1613,18 @@ rmguard_sync "a target that resolves outside the workspace" refused \
 rmguard_sync "the same target, explicitly allowed" ran \
     SYNC_TARGET_DIR="src/thirdparty/../../../outside" DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET=1
 rmguard_sync "a target inside the workspace" ran SYNC_TARGET_DIR="src/thirdparty"
+# The workspace ITSELF passed the "inside the workspace" test ('<ws>/' matches
+# '<ws>/*'), and the .git walk then reset this repository. Spelled four ways,
+# and the external opt-in must not unlock it either.
+mkdir -p "$rmguard_probe/sync/ws/.git" "$rmguard_probe/sync/ws/src"
+ln -s "$rmguard_probe/sync/ws" "$rmguard_probe/sync/ws/src/rootlink"
+rmguard_sync "the workspace itself (.)" refused SYNC_TARGET_DIR="."
+rmguard_sync "the workspace itself (src/..)" refused SYNC_TARGET_DIR="src/.."
+rmguard_sync "a symlink back to the workspace" refused SYNC_TARGET_DIR="src/rootlink"
+rmguard_sync "an ancestor of the workspace, externally allowed" refused \
+    SYNC_TARGET_DIR="$rmguard_probe/sync" DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET=1
+rmguard_sync "the workspace itself, externally allowed" refused \
+    SYNC_TARGET_DIR="." DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET=1
 rm -rf "$rmguard_probe"
 [ "$rmguard_errors" -eq 0 ] \
     && log_ok "Destructive guards resolve the path first: a workspace round-trip, a false FORCE and an external sync target are all refused."
@@ -1900,10 +2127,25 @@ snap_rc() { local rc=0; ( PATH="$snap_probe:$probe_min_path" env "$@" bash scrip
     || { log_err "configure-snapshot accepts a date that is not YYYYMMDDTHHMMSSZ; apt would be pointed at a mirror path that does not exist."; repro_errors=1; }
 [ "$(SNAP_DATE=20260101T000000Z snap_rc)" = 1 ] \
     || { log_err "configure-snapshot proceeds while snapshot.ubuntu.com is unreachable; the build would silently fall back to rolling mirrors."; repro_errors=1; }
-[ "$(SNAP_DATE=20260101T000000Z snap_rc APT_SNAPSHOT_FALLBACK=1)" = 0 ] \
+[ "$(SNAP_DATE=20260101T000000Z snap_rc APT_SNAPSHOT_FALLBACK=1 DEVKIT_APT_STATE_DIR="$snap_probe/state")" = 0 ] \
     || { log_err "APT_SNAPSHOT_FALLBACK=1 no longer lets a build past an unreachable snapshot server."; repro_errors=1; }
 [ "$(SNAP_DATE=latest snap_rc)" = 0 ] \
     || { log_err "configure-snapshot latest is not a no-op."; repro_errors=1; }
+# The opt-out is not the default anywhere the build arg is declared or passed…
+grep -qxF 'ARG APT_SNAPSHOT_FALLBACK=false' docker/Dockerfile \
+    || { log_err "the Dockerfile defaults APT_SNAPSHOT_FALLBACK on; a pinned build whose snapshot server is down would silently use rolling mirrors."; repro_errors=1; }
+grep -qE '^\s+APT_SNAPSHOT_FALLBACK: \$\{APT_SNAPSHOT_FALLBACK:-false\}' docker-compose.common.yml \
+    || { log_err "compose does not pass APT_SNAPSHOT_FALLBACK (default false) as a build arg; the .env knob would be dead for 'make build'."; repro_errors=1; }
+# …and a fallback that WAS taken is written into the artifact: the helper leaves
+# a marker and the release manifest reports apt_snapshot_applied=false.
+[ "$(cat "$snap_probe/state/apt-snapshot-fallback" 2>/dev/null)" = 20260101T000000Z ] \
+    || { log_err "a snapshot fallback leaves no marker behind; the manifest could not tell a pinned build from a fallen-back one."; repro_errors=1; }
+snap_manifest() { local name="$1"; shift; ( cd "$snap_probe" && env "$@" APT_SNAPSHOT_DATE=20260101T000000Z WS_ROOT="$snap_probe" \
+    bash "${ROOT_DIR}/scripts/util_release_metadata.sh" "$snap_probe/$name.json" >/dev/null 2>&1; cat "$snap_probe/$name.json" 2>/dev/null ) ; }
+grep -q '"apt_snapshot_applied":false' <<< "$(snap_manifest fallen DEVKIT_APT_STATE_DIR="$snap_probe/state")" \
+    || { log_err "the release manifest does not report apt_snapshot_applied=false after a fallback."; repro_errors=1; }
+grep -q '"apt_snapshot_applied":true' <<< "$(snap_manifest pinned DEVKIT_APT_STATE_DIR="$snap_probe/nostate")" \
+    || { log_err "the release manifest does not report apt_snapshot_applied=true for a pinned build that held."; repro_errors=1; }
 rm -rf "$snap_probe"
 # The timestamp reaches the image build as a build arg (the manifest's build_date).
 grep -qxF 'SOURCE_DATE_EPOCH=1700000000' <<< "$(bake_argv prod dev SOURCE_DATE_EPOCH=1700000000)" \
@@ -2015,12 +2257,24 @@ esac
 src_probe="$(probe_dir)"; mkdir -p "$src_probe/pkg/lib/python3/site-packages/pkg" "$src_probe/pkg/share/pkg/launch"
 printf 'SECRET=1\n' > "$src_probe/pkg/lib/python3/site-packages/pkg/core.py"
 printf 'x\n'        > "$src_probe/pkg/share/pkg/launch/a.launch.py"
+# Entry points are called by NAME: an executable node (ROS install(PROGRAMS))
+# and a shebang script without the bit. The strip deleted both and exited 0,
+# leaving a .pyc nothing invokes.
+mkdir -p "$src_probe/pkg/lib/pkg"
+printf '#!/usr/bin/env python3\nprint(1)\n' > "$src_probe/pkg/lib/pkg/node.py"; chmod 755 "$src_probe/pkg/lib/pkg/node.py"
+printf '#!/usr/bin/env python3\nprint(2)\n' > "$src_probe/pkg/lib/pkg/tool.py"
 DEVKIT_STRIP_SOURCE=1 bash scripts/check_deps.sh "$src_probe" >/dev/null 2>&1 || true
 if [ -f "$src_probe/pkg/lib/python3/site-packages/pkg/core.py" ]; then
     log_err "DEVKIT_STRIP_SOURCE=1 did not remove plaintext source from the install tree."; repro_errors=1
 elif [ ! -f "$src_probe/pkg/share/pkg/launch/a.launch.py" ]; then
     log_err "Source strip removed a launch file; 'ros2 launch' reads those as source."; repro_errors=1
+elif [ ! -x "$src_probe/pkg/lib/pkg/node.py" ] || [ ! -f "$src_probe/pkg/lib/pkg/tool.py" ]; then
+    log_err "Source strip deleted an executable/shebang entry point; the .pyc it leaves is never invoked by name."; repro_errors=1
 fi
+# With the no-source policy on top, the conflict must FAIL, naming the file.
+src_rc=0; src_out="$(DEVKIT_STRIP_SOURCE=1 DEVKIT_FAIL_ON_SOURCE=1 bash scripts/check_deps.sh "$src_probe" 2>&1)" || src_rc=$?
+{ [ "$src_rc" -ne 0 ] && grep -q 'lib/pkg/node.py' <<< "$src_out"; } \
+    || { log_err "DEVKIT_FAIL_ON_SOURCE=1 with an unstrippable entry point exits ${src_rc} (must fail and name the file)."; repro_errors=1; }
 rm -rf "$src_probe"
 grep -q 'cmake --install' config/util_aliases.sh \
     || { log_err "mbuild must install into install/ for prod builds; the runtime image never copies build/."; repro_errors=1; }
@@ -2173,6 +2427,43 @@ while IFS= read -r ide_launch; do
     grep -qF "$ide_launch" docs/DEBUGGING.md \
         || { log_err "debug configuration '${ide_launch}' is not documented in docs/DEBUGGING.md."; vscode_errors=1; }
 done <<< "$ide_launch_names"
+# The debuggers' environment is the SOURCED workspace, not a copy: every launch
+# reads .vscode/.debug.env (envFile) and carries no static env/environment
+# block (colcon's per-package prefixes, ROS 1's devel/ and the GPU library
+# path all drifted from the copies); every pre-launch task ends in mdebugenv,
+# which writes that file; and no ${input:…} is defined without a reader or
+# read without a definition (three dead inputs sat in these files).
+ide_env_report="$(python3 - <<'PYIDE' 2>/dev/null || echo 'parse failed'
+import json, re, pathlib
+def load(p): return json.loads(re.sub(r'(?m)^\s*//.*$', '', pathlib.Path(p).read_text()))
+launch, tasks = load('.vscode/launch.json'), load('.vscode/tasks.json')
+task_by_label = {t['label']: t for t in tasks['tasks']}
+bad = []
+for c in launch['configurations']:
+    if c.get('request') != 'launch': continue
+    if c.get('envFile') != '${workspaceFolder}/.vscode/.debug.env': bad.append(f"{c['name']}: no envFile")
+    if 'env' in c or 'environment' in c: bad.append(f"{c['name']}: static env block")
+    pre = c.get('preLaunchTask')
+    if not pre: bad.append(f"{c['name']}: no preLaunchTask (nothing writes .debug.env)")
+    elif pre not in task_by_label: bad.append(f"{c['name']}: preLaunchTask '{pre}' is not a task")
+    elif not task_by_label[pre]['command'].rstrip("'\" ").endswith('mdebugenv'): bad.append(f"task '{pre}' does not end in mdebugenv")
+for name, doc in (('launch.json', launch), ('tasks.json', tasks)):
+    defined = {i['id'] for i in doc.get('inputs', [])}
+    used = set(re.findall(r'\$\{input:([A-Za-z]+)\}', pathlib.Path('.vscode/' + name).read_text()))
+    for i in sorted(defined - used): bad.append(f"{name}: input '{i}' is defined but never read")
+    for i in sorted(used - defined): bad.append(f"{name}: input '{i}' is read but not defined")
+print('\n'.join(bad) if bad else 'ok')
+PYIDE
+)"
+[ "$ide_env_report" = ok ] || { log_err "IDE debug configuration: ${ide_env_report//$'\n'/; }"; vscode_errors=1; }
+# mdebugenv, executed: the file it writes is what envFile can read.
+ide_env_probe="$(probe_dir config scripts)"; mkdir -p "$ide_env_probe/.vscode"
+( cd "$ide_env_probe" && WORKSPACE_PATH="$ide_env_probe" bash -c 'source config/util_aliases.sh >/dev/null 2>&1; mdebugenv' ) >/dev/null 2>&1 || true
+{ grep -qE '^PATH=' "$ide_env_probe/.vscode/.debug.env" && ! grep -qvE '^[A-Za-z_][A-Za-z0-9_]*=' "$ide_env_probe/.vscode/.debug.env"; } \
+    || { log_err "mdebugenv did not write a KEY=VALUE .vscode/.debug.env with PATH in it."; vscode_errors=1; }
+rm -rf "$ide_env_probe"
+grep -qE '^[[:space:]]+mkbuild$' config/util_aliases.sh \
+    || { log_err "mksync no longer builds through mkbuild; the IDE pre-launch and mksync would dispatch differently."; vscode_errors=1; }
 for ide_script in $(grep -ohE '(WS_SCRIPTS\}?|scripts)/[A-Za-z0-9_]+\.sh' .vscode/*.json .devcontainer/*.json 2>/dev/null \
                     | sed 's|.*/||' | sort -u); do
     [ -f "scripts/${ide_script}" ] \
@@ -2397,6 +2688,30 @@ grep -qxF 'CUDA_VERSION=12.4' <<< "$sif_argv" \
     || { log_err "apptainer_bake.sh no longer forwards CUDA_VERSION — baked SIFs would silently ship without CUDA."; sif_errors=1; }
 grep -qxF 'PROD_ENV=ros' <<< "$sif_argv" && grep -qxF 'prod-runtime' <<< "$sif_argv" \
     || { log_err "a prod bake for ENV=ros does not build '--target prod-runtime --build-arg PROD_ENV=ros'."; sif_errors=1; }
+# The SIF's CUDA footprint follows PROD_FULL_CUDA alone: FULL_CUDA is the dev
+# image's knob and make exports it, so it used to shadow the SIF's own answer.
+grep -qxF 'FULL_CUDA=false' <<< "$(bake_argv prod dev FULL_CUDA=true PROD_FULL_CUDA=false)" \
+    || { log_err "a bake lets the dev image's FULL_CUDA override PROD_FULL_CUDA=false."; sif_errors=1; }
+grep -qxF 'FULL_CUDA=true' <<< "$(bake_argv prod dev FULL_CUDA=false PROD_FULL_CUDA=1)" \
+    || { log_err "PROD_FULL_CUDA=1 does not reach the bake as FULL_CUDA=true."; sif_errors=1; }
+grep -qxF 'FULL_CUDA=false' <<< "$(bake_argv prod dev FULL_CUDA=true)" \
+    || { log_err "with PROD_FULL_CUDA unset a bake inherits FULL_CUDA=true instead of the documented default false."; sif_errors=1; }
+# The dev snapshot is `COPY .`: what the kit itself generates beside the tree
+# (catkin's devel/, the bake's own *.oci.tar) must not ride into the next
+# snapshot. Statically, and against a real build context where docker runs.
+for ctx_pat in 'devel/' '*.oci.tar' '!dependencies/*.tar.gz'; do
+    grep -qxF "$ctx_pat" .dockerignore \
+        || { log_err ".dockerignore lacks '${ctx_pat}': a dev snapshot would carry (or drop) it."; sif_errors=1; }
+done
+if docker_live; then
+    ctx_probe="$(probe_dir)"; mkdir -p "$ctx_probe/devel" "$ctx_probe/dependencies" "$ctx_probe/src"
+    cp .dockerignore "$ctx_probe/"; : > "$ctx_probe/devel/setup.bash"; : > "$ctx_probe/old.oci.tar"; : > "$ctx_probe/dependencies/dep.tar.gz"; : > "$ctx_probe/src/main.py"
+    printf 'FROM busybox\nCOPY . /ctx\nCMD find /ctx -type f\n' > "$ctx_probe/Dockerfile"
+    ctx_files="$( (docker build -q -t devkit-verify-ctx "$ctx_probe" >/dev/null 2>&1 && docker run --rm devkit-verify-ctx 2>/dev/null; docker rmi -f devkit-verify-ctx >/dev/null 2>&1) | grep -vE '^/ctx/(Dockerfile|\.dockerignore)$' | sort | tr '\n' ' ')"
+    [ "$ctx_files" = "/ctx/dependencies/dep.tar.gz /ctx/src/main.py " ] \
+        || { log_err "a real build context with this .dockerignore holds '${ctx_files}' (expected only dependencies/dep.tar.gz and src/main.py)."; sif_errors=1; }
+    rm -rf "$ctx_probe"
+fi
 grep -qxF 'PROD_ENV=dev' <<< "$(bake_argv prod dev)" \
     || { log_err "a prod bake for ENV=dev does not pass PROD_ENV=dev; the ROS builder base would be used."; sif_errors=1; }
 # …and every ENV the bake accepts needs its builder base, or `FROM
@@ -2595,17 +2910,27 @@ printf '#!/bin/sh\necho ii\n' > "$purge_probe/dpkg-query"
 printf '#!/bin/sh\nfor a; do :; done\nprintf "%%s\\nReverse Depends:\\n" "$a"\n[ "$a" != curl ] || echo "  ros-humble-libcurl-vendor"\n' > "$purge_probe/apt-cache"
 printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/argv"\n' "$purge_probe" > "$purge_probe/apt-get"
 chmod +x "$purge_probe/dpkg-query" "$purge_probe/apt-cache" "$purge_probe/apt-get"
-( PATH="$purge_probe:$probe_min_path" bash scripts/util_apt_helper.sh purge-bootstrap ) >/dev/null 2>&1 || true
+# …and what the runtime manifest requested by name (`gnupg # runtime` here —
+# an app's own call to it is a dependency apt cannot see) is kept even with no
+# reverse dependency. The ROS distro selects apt_ros.txt as it does for install.
+mkdir -p "$purge_probe/deps"
+printf 'gnupg # runtime\nlsb-release # dev\n' > "$purge_probe/deps/apt.txt"
+printf 'dirmngr=1.0 # runtime ros2\n' > "$purge_probe/deps/apt_ros.txt"
+( PATH="$purge_probe:$probe_min_path" DEVKIT_DEPS_DIR="$purge_probe/deps" \
+  bash scripts/util_apt_helper.sh purge-bootstrap humble ) >/dev/null 2>&1 || true
 purge_argv="$(tr '\n' ' ' < "$purge_probe/argv" 2>/dev/null || echo '<apt-get never called>')"
-case " $purge_argv " in
-    *" curl "*) log_err "purge-bootstrap purges curl while an installed package depends on it (argv: ${purge_argv})."; sec_errors=1 ;;
-esac
-for purge_want in gnupg dirmngr lsb-release; do
+for purge_keep in curl gnupg dirmngr; do
     case " $purge_argv " in
-        *" $purge_want "*) ;;
-        *) log_err "purge-bootstrap keeps '${purge_want}' although nothing depends on it (argv: ${purge_argv})."; sec_errors=1 ;;
+        *" $purge_keep "*) log_err "purge-bootstrap purges '${purge_keep}' although an installed package depends on it or the runtime manifest requested it (argv: ${purge_argv})."; sec_errors=1 ;;
     esac
 done
+case " $purge_argv " in
+    *" lsb-release "*) ;;
+    *) log_err "purge-bootstrap keeps 'lsb-release' although nothing depends on it and only '# dev' asked for it (argv: ${purge_argv})."; sec_errors=1 ;;
+esac
+awk '/AS prod-runtime$/{inside=1} inside && /^FROM / && !/AS prod-runtime$/{inside=0}
+     inside && /purge-bootstrap \$\{ROS_DISTRO\}/{found=1} END {exit found ? 0 : 1}' docker/Dockerfile \
+    || { log_err "docker/Dockerfile: the ROS prod-runtime does not pass ROS_DISTRO to purge-bootstrap; a '# runtime' entry in apt_ros.txt would not be spared."; sec_errors=1; }
 rm -rf "$purge_probe"
 # `make term` must probe with a binary the image actually ships: xset lives in
 # x11-xserver-utils (not installed) and made the target report "no display" on a
@@ -2616,7 +2941,8 @@ grep -q 'xset q' Makefile \
 # has. It ran as root with `-u <config>` — -u is --no-dbus, the path became a
 # positional argument and terminator exited before drawing; `docker exec -d`
 # reports 0 for a detached process, so nothing ever said so.
-term_recipe="$(make -n term 2>/dev/null | grep -E 'docker exec -d' || true)"
+term_dry_run="$(make -n term 2>/dev/null || true)"
+term_recipe="$(grep -E 'docker exec -d' <<< "$term_dry_run" || true)"
 [ -n "$term_recipe" ] && ! grep -qvE 'USER_FLAG' <<< "$term_recipe" \
     || { log_err "'make term' launches a terminal without the EXEC_USER_FLAG the other attach targets use; every pane would be a root shell."; sec_errors=1; }
 grep -qE 'terminator -g ' <<< "$term_recipe" && ! grep -qE 'terminator -u' <<< "$term_recipe" \
@@ -2631,8 +2957,22 @@ grep -qE '^# terminator # gui' dependencies/apt.txt \
     || { log_err "dependencies/apt.txt no longer offers the commented 'terminator # gui' line; there is no way left to opt in."; sec_errors=1; }
 grep -qE '^[^#]*curl [^#]*github\.com' docker/Dockerfile \
     && { log_err "docker/Dockerfile downloads from GitHub into the image (the D2Coding font once did); fonts are opt-in via dependencies/."; sec_errors=1; }
-make -n term 2>/dev/null | grep -q 'command -v "$TERM_BIN"' && make -n term 2>/dev/null | grep -q 'dependencies/apt.txt' \
-    || { log_err "'make term' does not probe for the terminal binary and point at dependencies/apt.txt; with terminator opt-in it would silently launch nothing."; sec_errors=1; }
+# The probe must run INSIDE a shell: `command` is a builtin, and `docker exec
+# <c> command -v x` exec'd it as a program — "not found" (127) in every image,
+# so `make term` refused even with terminator installed. The exact probe the
+# recipe uses is lifted from the dry run and executed in a real minimal
+# container where one is available.
+term_probe="$(sed -n "s/.*docker exec \$CONTAINER \(sh -c '[^']*' _\) \"\$TERM_BIN\".*/\1/p" <<< "$term_dry_run")"
+[ -n "$term_probe" ] && grep -q 'dependencies/apt.txt' <<< "$term_dry_run" \
+    || { log_err "'make term' does not probe for the terminal binary through 'sh -c' and point at dependencies/apt.txt (found: '${term_probe:-no sh -c probe}')."; sec_errors=1; }
+term_live=""
+if [ -n "$term_probe" ] && docker_live; then
+    term_live=" (run in ubuntu:22.04)"
+    eval "docker run --rm ubuntu:22.04 $term_probe bash" >/dev/null 2>&1 \
+        || { log_err "the 'make term' binary probe reports an installed program (bash) as missing in a real container."; sec_errors=1; }
+    eval "docker run --rm ubuntu:22.04 $term_probe devkit-no-such-binary" >/dev/null 2>&1 \
+        && { log_err "the 'make term' binary probe reports a missing program as installed in a real container."; sec_errors=1; }
+fi
 grep -qE '(^|[[:space:]])x11-utils([[:space:]\\]|$)' docker/Dockerfile \
     || { log_err "x11-utils dropped from the image; 'make term' has no way left to probe the display."; sec_errors=1; }
 grep -Eq '^[^#]*for E in.*"local:' Makefile \
@@ -2790,8 +3130,9 @@ fi
 # README advertises how many contracts this suite enforces, and the number went
 # stale twice (24 while 32 groups existed). Derived from the slug headers, which
 # are also what the docs cite.
-readme_contracts="$(grep -oE '[0-9]+개 계약' README.md | grep -oE '[0-9]+' | head -1)"
+readme_contracts="$(grep -oE '[0-9]+개 계약' README.md | grep -oE '[0-9]+' | head -1 || true)"
 slug_groups="$(grep -cE '^# \[[a-z][a-z-]+\]' scripts/verify_repo.sh)"
+upstream_checks || readme_contracts="$slug_groups"   # a fork's README describes the fork
 [ "${readme_contracts:-0}" = "$slug_groups" ] \
     && log_ok "README's contract count matches the suite (${slug_groups} groups)." \
     || log_err "README advertises ${readme_contracts:-no} contracts; the suite has ${slug_groups} check groups."
@@ -2802,7 +3143,13 @@ slug_groups="$(grep -cE '^# \[[a-z][a-z-]+\]' scripts/verify_repo.sh)"
 # One python3 call for both: a link that resolves and a command that exists.
 # `make release` outlived its target in the docs once, so the second half reads
 # only code spans and fences — prose like "make them pass" is not a claim.
-doc_problems="$(DEVKIT_PHONY="$phony_targets" python3 - <<'PYCHECK'
+# Keep the heredoc outside a command substitution: Apple's Bash 3.2 scans its
+# contents for a closing ')' and starts reading Python strings as shell code.
+doc_upstream=0
+upstream_checks && doc_upstream=1
+doc_probe="$(probe_dir)"
+if ! DEVKIT_UPSTREAM_CHECKS="$doc_upstream" DEVKIT_PHONY="$phony_targets" \
+    python3 - > "$doc_probe/problems" <<'PYCHECK'
 import os, pathlib, re
 
 def slug(h):
@@ -2818,9 +3165,12 @@ targets = set(os.environ.get('DEVKIT_PHONY', '').split())
 # Deprecated spellings still forward, so naming one in the docs is not a lie.
 targets |= {'check-host', 'env-check', 'completion', 'completion-install'}
 bad = []
-for f in [pathlib.Path('README.md'),
-          *sorted(pathlib.Path('.github').glob('*.md')),
-          *sorted(pathlib.Path('docs').glob('*.md'))]:
+# README is the fork's: its links and headings are checked upstream only.
+upstream = os.environ.get('DEVKIT_UPSTREAM_CHECKS') == '1'
+files = sorted(pathlib.Path('.github').glob('*.md')) + sorted(pathlib.Path('docs').glob('*.md'))
+if upstream:
+    files.insert(0, pathlib.Path('README.md'))
+for f in files:
     text = f.read_text()
     for m in re.finditer(r'\[[^\]]*\]\(([^)]+)\)', text):
         target = m.group(1)
@@ -2829,23 +3179,30 @@ for f in [pathlib.Path('README.md'),
         path, _, frag = target.partition('#')
         p = (f.parent / path) if path else f
         if not p.exists():
-            bad.append(f"{f} -> {target} (no such file)")
-        elif frag and frag not in [slug(l) for l in p.read_text().splitlines() if l.startswith('#')]:
-            bad.append(f"{f} -> {target} (no such heading)")
+            bad.append(f'{f} -> {target} (no such file)')
+        check_fragment = upstream or p.name != 'README.md'
+        if p.exists() and frag and check_fragment \
+                and frag not in [slug(l) for l in p.read_text().splitlines() if l.startswith('#')]:
+            bad.append(f'{f} -> {target} (no such heading)')
     # [ \t], not \s: two adjacent inline spans must not join into a phantom
     # "make" + "source …" across the newline between them.
     for m in re.finditer(r'\bmake[ \t]+([a-z][a-z0-9-]*)', code_only(text)):
         if m.group(1) not in targets:
-            bad.append(f"{f} -> make {m.group(1)} (no such target)")
+            bad.append(f'{f} -> make {m.group(1)} (no such target)')
 print(" | ".join(bad))
 PYCHECK
-)"
+then
+    log_err "documentation validator could not run."
+fi
+doc_problems="$(cat "$doc_probe/problems" 2>/dev/null || true)"
+rm -rf "$doc_probe"
 [ -z "$doc_problems" ] \
     || log_err "documentation is out of date: ${doc_problems}"
 # …and no guide may sit unreferenced, wherever it lives: GEMINI.md was reachable
 # from nothing, and moving a file between docs/ and .github/ must not drop it
 # out of this check the way scoping the loop to docs/*.md once did.
 doc_all="$(ls docs/*.md .github/*.md 2>/dev/null || true)"
+upstream_checks || doc_all=""   # a fork's README need not map the kit's guides
 for doc_file in $doc_all; do
     case "$doc_file" in .github/PULL_REQUEST_TEMPLATE.md) continue ;; esac  # GitHub loads it by name
     grep -rqF "$(basename "$doc_file")" README.md $(grep -v "^${doc_file}$" <<< "$doc_all") \
@@ -3077,6 +3434,48 @@ fi
 rm -rf "$mclean_probe"
 [ "$mclean_errors" -eq 0 ] \
     && log_ok "mclean empties build/, devel/, log/ and install/ (keeping the venv), and fails on what it could not remove."
+
+# =============================================================================
+# [prod-build-inputs] The production builder COPYs an explicit input set; the
+#      project-type detector (`__cmake_entry`) must see the same tree as a dev
+#      build. A repository-root CMake project resolved to PYTHON inside the
+#      builder — the root CMakeLists.txt was never copied — and shipped no
+#      binary. The COPY sources are parsed from the Dockerfile and applied to a
+#      fixture tree the way BuildKit applies them (bracket globs, optional).
+# =============================================================================
+pbi_errors=0
+pbi_probe="$(probe_dir)"
+mkdir -p "$pbi_probe/ctx/src" "$pbi_probe/ctx/cmake" "$pbi_probe/ctx/dependencies" "$pbi_probe/img"
+ln -s "${ROOT_DIR}/config" "$pbi_probe/ctx/config"; ln -s "${ROOT_DIR}/scripts" "$pbi_probe/ctx/scripts"
+: > "$pbi_probe/ctx/CMakeLists.txt"; : > "$pbi_probe/ctx/cmake/Deps.cmake"; : > "$pbi_probe/ctx/src/main.py"; : > "$pbi_probe/ctx/VERSION"
+# COPY <src…> <dst> lines of the prod-builder stage (no --from: those are stage copies).
+pbi_copies="$(awk '/AS prod-builder$/{inside=1; next} inside && /^FROM /{inside=0}
+                   inside && /^COPY / && !/--from/ {sub(/^COPY /, ""); print}' docker/Dockerfile)"
+[ -n "$pbi_copies" ] || { log_err "prod-builder has no COPY lines to parse."; pbi_errors=1; }
+while read -r pbi_line; do
+    [ -n "$pbi_line" ] || continue
+    set -- $pbi_line
+    pbi_dst="${!#}"; pbi_dst="${pbi_dst//\$\{WORKSPACE_PATH\}/$pbi_probe/img}"
+    while [ $# -gt 1 ]; do
+        for pbi_src in $pbi_probe/ctx/$1; do   # unquoted: the bracket glob expands, or stays literal (absent)
+            [ -e "$pbi_src" ] || continue
+            # COPY semantics: a directory source contributes its CONTENTS.
+            if [ -d "$pbi_src" ] && [ ! -L "$pbi_src" ]; then mkdir -p "$pbi_dst" && cp -R "$pbi_src/." "$pbi_dst"
+            else case "$pbi_dst" in */) mkdir -p "$pbi_dst" ;; *) mkdir -p "$(dirname "$pbi_dst")" ;; esac; cp -R "$pbi_src" "$pbi_dst"; fi
+        done
+        shift
+    done
+done <<< "$pbi_copies"
+pbi_type() { ( WORKSPACE_PATH="$1" bash -c 'source config/util_aliases.sh >/dev/null 2>&1; __detect_project_type; __cmake_entry' 2>/dev/null || true ) | tr '\n' ' ' | sed 's/ $//'; }
+pbi_ctx="$(pbi_type "$pbi_probe/ctx")"; pbi_img="$(pbi_type "$pbi_probe/img")"
+[ "$pbi_ctx" = "CPP $pbi_probe/ctx" ] \
+    || { log_err "the detector does not see a root CMake project as CPP at the root (got: ${pbi_ctx})."; pbi_errors=1; }
+[ "$pbi_img" = "CPP $pbi_probe/img" ] \
+    || { log_err "inside the production builder the same tree resolves to '${pbi_img}' — the COPY set drops a build input (root CMakeLists.txt / cmake/)."; pbi_errors=1; }
+[ -f "$pbi_probe/img/cmake/Deps.cmake" ] \
+    || { log_err "the production builder does not receive cmake/ modules a root CMakeLists.txt includes."; pbi_errors=1; }
+rm -rf "$pbi_probe"
+[ "$pbi_errors" -eq 0 ] && log_ok "Production builder inputs: a root CMake project resolves to CPP inside the builder as it does in a dev build."
 
 # =============================================================================
 # [dependency-presence] "Are there external repositories?" must have ONE answer.

@@ -59,7 +59,9 @@ verify_key_fingerprint() {
 #   builder  prod build stages : drops '# dev' and '# gui'
 #   runtime  deploy artifacts  : keeps ONLY '# runtime'
 # An empty distro skips apt_ros.txt entirely, which is what stops the non-ROS
-# stages from requesting ros-* on an image with no ROS repository.
+# stages from requesting ros-* on an image with no ROS repository. A '!<distro>'
+# tag drops the line for that distro alone: packages move between releases
+# (tf2_ros_py exists from Galactic), and ros1/ros2 cannot say so.
 # =============================================================================
 select_packages() {
     local filter="$1" distro="${2:-}"
@@ -97,6 +99,7 @@ select_packages() {
                 if (mode == "runtime" && comment !~ /(^|[[:space:],])runtime([[:space:],]|$)/) next
                 if (mode == "builder" && comment ~  /(^|[[:space:],])(dev|gui)([[:space:],]|$)/) next
                 if (other_tag != "none" && comment ~ "(^|[[:space:],])" other_tag "([[:space:],]|$)") next
+                if (distro != "" && comment ~ "(^|[[:space:],])!" distro "([[:space:],]|$)") next
                 gsub(/\$\{ROS_DISTRO\}|\$ROS_DISTRO/, distro, line)
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
                 if (line != "") print line
@@ -129,11 +132,16 @@ case "$COMMAND" in
         # init-apt's curl/gnupg/lsb-release have no job in a shipped stage, but
         # `purge -y` takes dependents along: ros-*-libcurl-vendor needs curl and
         # python3-rospkg needs lsb-release. Drop only what nothing installed
-        # still depends on (Depends/Pre-Depends; not Suggests or Breaks).
+        # still depends on (Depends/Pre-Depends; not Suggests or Breaks) and
+        # what the runtime manifest did not ask for by name — an app's `curl`
+        # call is a dependency apt cannot see. [distro] selects apt_ros.txt too.
+        requested="$(select_packages runtime "${1:-}" 2>/dev/null | sed 's/=.*//' || true)"
         drop=""; kept=""
         for pkg in curl gnupg dirmngr lsb-release; do
             dpkg-query -W -f='${db:Status-Abbrev}' "$pkg" 2>/dev/null | grep -q '^ii' || continue
-            if [ -n "$(apt-cache rdepends --installed --no-recommends --no-suggests --no-conflicts \
+            if grep -qx "$pkg" <<< "$requested"; then
+                kept="$kept $pkg(runtime)"
+            elif [ -n "$(apt-cache rdepends --installed --no-recommends --no-suggests --no-conflicts \
                            --no-breaks --no-replaces --no-enhances "$pkg" 2>/dev/null | sed '1,2d')" ]; then
                 kept="$kept $pkg"
             else
@@ -142,7 +150,7 @@ case "$COMMAND" in
         done
         # shellcheck disable=SC2086  # deliberate word split over the package list
         [ -z "$drop" ] || apt-get purge -y --auto-remove $drop
-        log_ok "Bootstrap tools purged:${drop:- none}.${kept:+ Kept, still depended on:$kept}"
+        log_ok "Bootstrap tools purged:${drop:- none}.${kept:+ Kept (depended on or requested):$kept}"
         ;;
     configure-snapshot)
         # Pin APT to a point-in-time Ubuntu snapshot so SOURCE_DATE_EPOCH builds are
@@ -166,6 +174,11 @@ case "$COMMAND" in
                 1|true|yes|on)
                     log_error "snapshot.ubuntu.com unreachable — APT_SNAPSHOT_FALLBACK set, using rolling mirrors."
                     log_error "WARNING: build reproducibility (SOURCE_DATE_EPOCH) is VOIDED for this build."
+                    # Leave the fact in the image: the release manifest reports
+                    # apt_snapshot_applied=false, so the artifact is never
+                    # mistaken for the pinned build it was asked to be.
+                    state_dir="${DEVKIT_APT_STATE_DIR:-/etc/devkit}"
+                    mkdir -p "$state_dir" && printf '%s\n' "$snap_date" > "$state_dir/apt-snapshot-fallback"
                     exit 0 ;;
                 *)
                     log_error "snapshot.ubuntu.com is unreachable (APT_SNAPSHOT_DATE=${snap_date})."
