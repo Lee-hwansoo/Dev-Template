@@ -132,6 +132,19 @@ probe_farm() {
     printf '%s' "$dir"
 }
 
+# make_probe [extra file…] — a tree a `make` can run in: the four directories a
+# recipe resolves, the Makefile and .env.example, and the path resolved
+# PHYSICALLY. Fourteen checks built this by hand and five of them skipped the
+# `pwd -P`, which is why a probe on a host with a symlinked TMPDIR (macOS:
+# /var → /private/var) compared its own path against what the recipe recorded
+# and disagreed.
+make_probe() {
+    local dir
+    dir="$(cd "$(probe_dir scripts config docker dependencies)" && pwd -P)"
+    cp "${ROOT_DIR}/Makefile" "${ROOT_DIR}/.env.example" "$@" "${dir}/"
+    printf '%s' "$dir"
+}
+
 # bake_argv <mode> <env> [VAR=value…] — the argv apptainer_bake.sh hands docker,
 # captured from a stub. Several groups read a --build-arg out of it.
 bake_argv() {
@@ -589,8 +602,7 @@ ok "APT tag-filter contract holds (no-distro selection excludes ros-*, runtime e
 # iGPU compose profile but are distinct vocabulary for the in-container `gpu`
 # helper (iris vs radeonsi), and mapping the variable itself to 'igpu' before
 # the export replaced the user's answer with the generic mesa path.
-gpumode_probe="$(cd "$(probe_dir scripts config docker dependencies)" && pwd -P)"
-cp Makefile "${ROOT_DIR}/.env.example" "$gpumode_probe/"
+gpumode_probe="$(make_probe)"
 # Appended, not --eval: that option needs GNU make 3.82 and macOS ships 3.81.
 printf '\n__svc: ; @$(RESOLVE_SVC_MODE); echo "$$TARGET_SVC"\n' >> "$gpumode_probe/Makefile"
 for gpumode_case in "intel igpu" "amd igpu" "cpu cpu" "nvidia nvidia"; do
@@ -809,8 +821,7 @@ ok "DDS config: AllowMulticast=${dds_multicast} takes effect, interface pinning 
 # dir) must stop make with the named error and leave NO cache file behind — not
 # a partial one, not a mktemp leftover; a good run leaves exactly one.
 group
-cache_probe="$(probe_dir scripts config docker dependencies)"
-cp Makefile "${ROOT_DIR}/.env.example" "$cache_probe/"
+cache_probe="$(make_probe)"
 cache_rc=0
 cache_out="$(cd "$cache_probe" && env -u DOCKER_DEV_CACHE_DIR make -n bake-prod DOCKER_DEV_CACHE_DIR=relative/cache 2>&1)" || cache_rc=$?
 { [ "$cache_rc" -ne 0 ] && grep -q 'Host environment detection failed' <<< "$cache_out"; } \
@@ -890,8 +901,7 @@ rm -rf "$cache_moved"
 # environment, so each keyed a hashed file of its own — `make setup` probed the
 # host twice and its ide-config child could resolve a different GPU profile
 # than the parent's `make status` read.
-cache_sub="$(cd "$(probe_dir scripts config docker dependencies)" && pwd -P)"
-cp Makefile "${ROOT_DIR}/.env.example" "${ROOT_DIR}"/docker-compose*.yml "$cache_sub/"
+cache_sub="$(make_probe "${ROOT_DIR}"/docker-compose*.yml)"
 mkdir -p "$cache_sub/.devcontainer"; printf '{ "service": "ros-cpu", "remoteUser": "user" }\n' > "$cache_sub/.devcontainer/devcontainer.json"
 ( cd "$cache_sub" && make setup ) >/dev/null 2>&1 || true
 cache_sub_files="$(find "$cache_sub/.docker_cache" -name 'detected-env*.mk' 2>/dev/null | wc -l)"
@@ -923,8 +933,7 @@ grep -q 'DEVKIT_DETECT_INCOMPLETE' <<< "$(awk '/^ide-config:$/{i=1} i{print} i &
 # an unwritable .docker_cache dropped every .env setting silently.
 grep -q 'mv "$$tmp" "$(ENV_MK)"' Makefile \
     || log_err "Makefile writes $(ENV_MK) in place; a concurrent make reads it empty (the failure path is probed below)."
-cache_ro="$(cd "$(probe_dir scripts config docker dependencies)" && pwd -P)"
-cp Makefile "${ROOT_DIR}/.env.example" "$cache_ro/"; printf 'COMPOSE_PROJECT_NAME=realproj\n' > "$cache_ro/.env"
+cache_ro="$(make_probe)"; printf 'COMPOSE_PROJECT_NAME=realproj\n' > "$cache_ro/.env"
 mkdir -p "$cache_ro/.docker_cache"; chmod 555 "$cache_ro/.docker_cache"
 cache_ro_rc=0; cache_ro_out="$( cd "$cache_ro" && make -n help 2>&1 )" || cache_ro_rc=$?
 { [ "$cache_ro_rc" -ne 0 ] && grep -qi 'docker_cache' <<< "$cache_ro_out"; } \
@@ -934,8 +943,7 @@ rm -rf "$cache_probe"
 # `make status` is the diagnostic: it must report the wiring even when the
 # preflight gate fails, because a broken docker is exactly when it is run. The
 # gate still stops build/start.
-cache_status="$(cd "$(probe_dir scripts config docker dependencies)" && pwd -P)"
-cp Makefile "${ROOT_DIR}/.env.example" "${ROOT_DIR}"/docker-compose*.yml "$cache_status/"
+cache_status="$(make_probe "${ROOT_DIR}"/docker-compose*.yml)"
 mkdir -p "$cache_status/bin"
 printf '#!/bin/sh\ncase "$1 $2" in "info --format") exit 1 ;; "info ") printf "Client:\\n"; exit 1 ;; esac\ncase "$1" in compose) echo 2.30.0 ;; buildx) echo v0.20.0 ;; esac\nexit 0\n' > "$cache_status/bin/docker"
 chmod +x "$cache_status/bin/docker"
@@ -1355,8 +1363,7 @@ for ide_prefix in basic ros; do
 done
 # A host without compose (a SLURM submit node) has nothing to attach to:
 # ide-config skips there, so `make setup` still finishes its other work.
-ide_skip="$(probe_dir scripts config docker dependencies)"
-cp Makefile "${ROOT_DIR}/.env.example" "$ide_skip/"; mkdir -p "$ide_skip/bin"
+ide_skip="$(make_probe)"; mkdir -p "$ide_skip/bin"
 printf '#!/bin/sh\nexit 1\n' > "$ide_skip/bin/docker"; chmod +x "$ide_skip/bin/docker"
 ide_skip_rc=0
 ide_skip_out="$(cd "$ide_skip" && PATH="$ide_skip/bin:$probe_min_path" make ide-config 2>&1)" || ide_skip_rc=$?
@@ -2100,8 +2107,7 @@ ok "A bake derives its base image and interpreter from ROS_DISTRO (.env or comma
 #      cache compose mounted stopped being the one `clean-cache` deletes.
 # =============================================================================
 group
-pathset_probe="$(probe_dir scripts config docker dependencies)"
-cp Makefile "${ROOT_DIR}/.env.example" "$pathset_probe/"
+pathset_probe="$(make_probe)"
 printf 'COMPOSE_PROJECT_NAME=myproject\nWORKSPACE_PATH=/devkit-probe-ws\nDOCKER_DEV_CACHE_DIR=%s/relocated\n' \
     "$pathset_probe" > "$pathset_probe/.env"
 # A detector-running target, so the include order is the one under test.
@@ -2242,8 +2248,7 @@ grep -q 'still owns' Makefile \
     || log_err "'make adopt' renames the project without checking for containers/volumes under the old name; they become unreachable, venv included."
 # `clean-all` is documented as a full reset: the baked artifacts sit in the
 # workspace root and a 100 MB *.oci.tar survived every one of them.
-rmguard_all="$(cd "$(probe_dir scripts config docker dependencies)" && pwd -P)"
-cp Makefile "${ROOT_DIR}/.env.example" "${ROOT_DIR}"/docker-compose*.yml "$rmguard_all/"
+rmguard_all="$(make_probe "${ROOT_DIR}"/docker-compose*.yml)"
 mkdir -p "$rmguard_all/bin"; printf '#!/bin/sh\nexit 0\n' > "$rmguard_all/bin/docker"; chmod +x "$rmguard_all/bin/docker"
 : > "$rmguard_all/probe-dev-prod-amd64.oci.tar"; : > "$rmguard_all/probe-dev-prod-amd64.sif.sha256"
 ( cd "$rmguard_all" && PATH="$rmguard_all/bin:$probe_min_path" make clean-all FORCE=1 ) >/dev/null 2>&1 || true
@@ -2648,8 +2653,7 @@ done
 # leaves: build/, devel/ (ROS 1), log/, install/ output, the venv, and the
 # three convenience links (dangling, as they are on the host).
 group
-clean_probe="$(probe_dir scripts config docker dependencies)"
-cp Makefile "${ROOT_DIR}/.env.example" "$clean_probe/"
+clean_probe="$(make_probe)"
 clean_tree() {
     mkdir -p "$1/build/x" "$1/devel/x" "$1/log" "$1/install/.venv/bin" "$1/install/share/p"
     : > "$1/build/x/o"; : > "$1/devel/x/f"; : > "$1/log/l"; : > "$1/install/.venv/bin/python3"; : > "$1/install/share/p/f"
@@ -3491,9 +3495,9 @@ grep -q 'name = "torch"' src/uv.lock 2>/dev/null \
     && log_err "src/uv.lock still resolves torch; the lock was not regenerated after the extras became an example."
 # The description is user text. Spliced straight into a TOML basic string, a
 # quote produced description = "Robot "A"" — and adopt reported success.
-adopt_probe="$(probe_dir scripts config docker dependencies)"
+adopt_probe="$(make_probe)"
 mkdir -p "$adopt_probe/src"
-cp Makefile "${ROOT_DIR}/.env.example" "$adopt_probe/"
+
 cp "${ROOT_DIR}/src/pyproject.toml" "$adopt_probe/src/"
 cp "${ROOT_DIR}/.env.example" "$adopt_probe/.env"
 adopt_desc_case() {   # adopt_desc_case <description>
