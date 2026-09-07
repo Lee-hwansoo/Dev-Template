@@ -1,46 +1,26 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<!--
-    config/cyclonedds.xml — CYCLONEDDS_URI points here when RMW_IMPLEMENTATION
-    is rmw_cyclonedds_cpp (config/init_ros_env.sh). Every setting below is
-    one that changes CycloneDDS's behaviour; the file used to set
-    AllowMulticast to its own default and describe the opposite.
--->
+<!-- Used by init_ros_env.sh when rmw_cyclonedds_cpp is selected. -->
 <CycloneDDS xmlns="https://cdds.io/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <Domain id="any">
+    <Domain Id="any">
         <General>
-            <!--
-                spdp: multicast for participant discovery only, unicast for
-                everything else. Where multicast works (host / mirrored
-                networking, a LAN) discovery stays automatic; where it does
-                not (a Docker bridge, most VPNs) the Peers below still find
-                local participants, and data never depended on multicast.
-            -->
+            <!-- Multicast for participant discovery only; all other traffic uses unicast. -->
             <AllowMulticast>spdp</AllowMulticast>
             <!--
-                Interface pinning, OPT-IN. With several interfaces of equal
-                quality (WSL2: eth0/eth1/docker0) CycloneDDS picks one
-                arbitrarily, and a robot on the LAN is then never discovered —
-                silently. Set the LAN interface's address when nodes must reach
-                other machines. Syntax is version-bound: 0.7 (Foxy) accepts only
-                NetworkInterfaceAddress; 0.8+ (Humble and newer) also accepts
-                <Interfaces><NetworkInterface name="eth1"/></Interfaces>, which
-                0.7 rejects — this shared file keeps the form both understand.
-
-                <NetworkInterfaceAddress>192.168.0.108</NetworkInterfaceAddress>
+                Optional: pin the LAN interface if automatic selection is wrong.
+                CycloneDDS 0.7-0.8:
+                <NetworkInterfaceAddress>eth1</NetworkInterfaceAddress>
+                CycloneDDS 0.9+:
+                <Interfaces><NetworkInterface name="eth1"/></Interfaces>
             -->
         </General>
         <Discovery>
             <Peers>
                 <!--
-                    Unicast discovery peers, tried alongside multicast. localhost
-                    pairs participants that share the loopback: processes in one
-                    container, and host and container under network_mode host or
-                    WSL2 mirrored networking. On a default bridge network the
-                    container's loopback is its own — add the host's or the other
-                    machine's address here for that case, or for robots over a
-                    VPN or an isolated subnet.
+                    localhost reaches only a shared loopback (same container,
+                    host networking, or WSL2 mirrored networking). For bridge,
+                    VPN, or LAN discovery, add a reachable peer address.
                 -->
-                <Peer address="localhost"/>
+                <Peer Address="localhost"/>
             </Peers>
             <ParticipantIndex>auto</ParticipantIndex>
         </Discovery>

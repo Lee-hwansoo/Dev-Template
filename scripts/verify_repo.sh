@@ -550,7 +550,7 @@ case "$dds_multicast" in
     *) log_err "cyclonedds.xml AllowMulticast is '${dds_multicast}': 'default' changes nothing, and the file must parse."; dds_errors=1 ;;
 esac
 grep -q '<NetworkInterfaceAddress>' config/cyclonedds.xml && grep -q 'NetworkInterface name=' config/cyclonedds.xml \
-    || { log_err "cyclonedds.xml offers no interface-pinning stanza (NetworkInterfaceAddress for 0.7/Foxy, the 0.8+ form noted)."; dds_errors=1; }
+    || { log_err "cyclonedds.xml must show interface pinning for CycloneDDS 0.7-0.8 and 0.9+."; dds_errors=1; }
 grep -qiE 'bridge' config/cyclonedds.xml && grep -qiE 'host|mirrored' config/cyclonedds.xml \
     || { log_err "cyclonedds.xml's Peers comment does not say which network modes share the loopback it relies on."; dds_errors=1; }
 [ "$dds_errors" -eq 0 ] && log_ok "DDS config: AllowMulticast=${dds_multicast} takes effect, interface pinning is offered, the Peers comment names its network modes."
