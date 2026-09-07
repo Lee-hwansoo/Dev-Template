@@ -1,6 +1,7 @@
 # =============================================================================
 # .dockerignore — what never enters the build context. The prod builders COPY
-# src/, dependencies/, config/, scripts/ and VERSION; everything else is noise.
+# src/, dependencies/, config/, scripts/, VERSION and a root CMakeLists.txt +
+# cmake/ when present; everything else is noise.
 # =============================================================================
 
 # AI

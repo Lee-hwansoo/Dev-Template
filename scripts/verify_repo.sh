@@ -3199,6 +3199,48 @@ deps_repos "repositories:
 grep -qi 'vcstool is missing' <<< "$(deps_missing_tool)" \
     || { log_err "a flow-style .repos reads as empty; a populated file would report 'nothing to import' and exit 0."; deps_errors=1; }
 deps_repos "repositories:
+# =============================================================================
+# [prod-build-inputs] The production builder COPYs an explicit input set; the
+#      project-type detector (`__cmake_entry`) must see the same tree as a dev
+#      build. A repository-root CMake project resolved to PYTHON inside the
+#      builder — the root CMakeLists.txt was never copied — and shipped no
+#      binary. The COPY sources are parsed from the Dockerfile and applied to a
+#      fixture tree the way BuildKit applies them (bracket globs, optional).
+# =============================================================================
+pbi_errors=0
+pbi_probe="$(probe_dir)"
+mkdir -p "$pbi_probe/ctx/src" "$pbi_probe/ctx/cmake" "$pbi_probe/ctx/dependencies" "$pbi_probe/img"
+ln -s "${ROOT_DIR}/config" "$pbi_probe/ctx/config"; ln -s "${ROOT_DIR}/scripts" "$pbi_probe/ctx/scripts"
+: > "$pbi_probe/ctx/CMakeLists.txt"; : > "$pbi_probe/ctx/cmake/Deps.cmake"; : > "$pbi_probe/ctx/src/main.py"; : > "$pbi_probe/ctx/VERSION"
+# COPY <src…> <dst> lines of the prod-builder stage (no --from: those are stage copies).
+pbi_copies="$(awk '/AS prod-builder$/{inside=1; next} inside && /^FROM /{inside=0}
+                   inside && /^COPY / && !/--from/ {sub(/^COPY /, ""); print}' docker/Dockerfile)"
+[ -n "$pbi_copies" ] || { log_err "prod-builder has no COPY lines to parse."; pbi_errors=1; }
+while read -r pbi_line; do
+    [ -n "$pbi_line" ] || continue
+    set -- $pbi_line
+    pbi_dst="${!#}"; pbi_dst="${pbi_dst//\$\{WORKSPACE_PATH\}/$pbi_probe/img}"
+    while [ $# -gt 1 ]; do
+        for pbi_src in $pbi_probe/ctx/$1; do   # unquoted: the bracket glob expands, or stays literal (absent)
+            [ -e "$pbi_src" ] || continue
+            # COPY semantics: a directory source contributes its CONTENTS.
+            if [ -d "$pbi_src" ] && [ ! -L "$pbi_src" ]; then mkdir -p "$pbi_dst" && cp -R "$pbi_src/." "$pbi_dst"
+            else case "$pbi_dst" in */) mkdir -p "$pbi_dst" ;; *) mkdir -p "$(dirname "$pbi_dst")" ;; esac; cp -R "$pbi_src" "$pbi_dst"; fi
+        done
+        shift
+    done
+done <<< "$pbi_copies"
+pbi_type() { ( WORKSPACE_PATH="$1" bash -c 'source config/util_aliases.sh >/dev/null 2>&1; __detect_project_type; __cmake_entry' 2>/dev/null || true ) | tr '\n' ' ' | sed 's/ $//'; }
+pbi_ctx="$(pbi_type "$pbi_probe/ctx")"; pbi_img="$(pbi_type "$pbi_probe/img")"
+[ "$pbi_ctx" = "CPP $pbi_probe/ctx" ] \
+    || { log_err "the detector does not see a root CMake project as CPP at the root (got: ${pbi_ctx})."; pbi_errors=1; }
+[ "$pbi_img" = "CPP $pbi_probe/img" ] \
+    || { log_err "inside the production builder the same tree resolves to '${pbi_img}' — the COPY set drops a build input (root CMakeLists.txt / cmake/)."; pbi_errors=1; }
+[ -f "$pbi_probe/img/cmake/Deps.cmake" ] \
+    || { log_err "the production builder does not receive cmake/ modules a root CMakeLists.txt includes."; pbi_errors=1; }
+rm -rf "$pbi_probe"
+[ "$pbi_errors" -eq 0 ] && log_ok "Production builder inputs: a root CMake project resolves to CPP inside the builder as it does in a dev build."
+
   a:
     type: git
     url: https://example.invalid/a.git

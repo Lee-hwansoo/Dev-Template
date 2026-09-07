@@ -332,6 +332,11 @@ ENV IMAGE_TAG=${IMAGE_TAG} \
     COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME} \
     SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 COPY src ${WORKSPACE_PATH}/src
+# A repository-root CMake project (cbuild's first choice) and its cmake/
+# modules: without them the builder saw a PYTHON tree and shipped no binary.
+# Bracket globs, because an absent optional input must not fail COPY.
+COPY CMakeLists.tx[t] ${WORKSPACE_PATH}/
+COPY cmak[e] ${WORKSPACE_PATH}/cmake/
 COPY dependencies ${WORKSPACE_PATH}/dependencies
 COPY config ${WORKSPACE_PATH}/config
 COPY scripts ${WORKSPACE_PATH}/scripts

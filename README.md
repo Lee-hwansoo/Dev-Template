@@ -95,7 +95,7 @@ mksync
 | **`make status`** | **진단 리포트**: 프로젝트 설정, 감지된 호스트 배선, 실행 중 컨테이너 (`check` 를 먼저 수행) |
 | **`make test / lint`** | **품질 루프**: 프로젝트 테스트 실행 / 스타일·린트 검사 (`FIX=1`로 자동 수정). 러너는 워크스페이스 형태(ROS·CMake·순수 Python)에서 자동 결정 |
 | **`make ci / ci-on / ci-off`** | **CI 스위치**: GitHub Actions 워크플로의 상태 표시 / 일괄 켜기 / 일괄 끄기 (`gh` 로그인 필요; `make status`에도 한 줄) |
-| **`make verify`** | **무결성 검증**: 문법·Makefile·호스트 감지·APT 태그 필터·셸 환경 동등성·GPG 핀·정리 의미론·SIF 파이프라인·IDE 설정·보안 기본값 등 **59개 계약**을 실행으로 검증 |
+| **`make verify`** | **무결성 검증**: 문법·Makefile·호스트 감지·APT 태그 필터·셸 환경 동등성·GPG 핀·정리 의미론·SIF 파이프라인·IDE 설정·보안 기본값 등 **60개 계약**을 실행으로 검증 |
 | **`make bake-prod`** | **Apptainer SIF 추출**: 원격 HPC/SLURM 배포용 단일 바이너리 이미지 생성 |
 | **`make run-sif`** | **HPC / SLURM 실행**: SIF 이미지를 로컬에서 구동하거나 원격 SLURM 클러스터로 배치 투고 |
 | **`make stop / down`** | **컨테이너 중지**: 선택한 `ENV`의 컨테이너 중지 / 제거 |
@@ -172,7 +172,7 @@ mksync
 
 ## ✅ 지원 범위 (Support Matrix)
 
-무엇이 **실행으로 확인**되었고 무엇이 아직 아닌지를 구분합니다. 근거는 세 가지입니다 — `make verify`(59개 계약),
+무엇이 **실행으로 확인**되었고 무엇이 아직 아닌지를 구분합니다. 근거는 세 가지입니다 — `make verify`(60개 계약),
 `.github/workflows/` 의 잡(정의만 되고 아직 실행되지 않은 것은 그렇게 표시), 그리고 아래의 **참조 호스트** 실측입니다.
 
 > **참조 호스트**: WSL2 (커널 6.18, Ubuntu 24.04) · NVIDIA RTX 4060 Ti · Docker + nvidia-container-toolkit · X11 `:0`.
@@ -203,7 +203,7 @@ mksync
 | Dockerfile apt 목록이 20.04 · 22.04 · 24.04 에서 해석 | ✅ 실행 검증 | CI(실행됨) `images.yml` apt-lists-resolve |
 | ROS 저장소·GPG (humble, 라이브 및 스냅샷 키; noetic) | ✅ 실행 검증 | CI(실행됨) `images.yml` apt-key-paths |
 | **ROS 1 noetic** (레거시 티어 — EOL 2025-05, 동작은 유지·검증되나 새 기능은 ROS 2 에만) | ✅ 실행 검증 — 계약(`build-entrypoints`·`workspace-overlay`)과 apt 키 경로 | CI(실행됨) · `make verify` |
-| 계약 스위트 59개 · Dockerfile 린트 | ✅ 실행 검증 | CI(실행됨) `verify.yml` contracts |
+| 계약 스위트 60개 · Dockerfile 린트 | ✅ 실행 검증 | CI(실행됨) `verify.yml` contracts |
 | 개발 컨테이너 스모크 (빌드 · 기동 · ROS 2 파이썬) | ✅ 실행 검증 | CI(실행됨) `images.yml` runtime-smoke · 참조 호스트 |
 | WSL2 호스트: 감지 · 빌드 · 실행 (ROS 2) | ✅ 실행 검증 | 참조 호스트 |
 | NVIDIA GPU 패스스루 (`nvidia-smi`, `libcuda`) | ✅ 실행 검증 — **WSL2 경로만**. 네이티브 Linux 는 장치 노드가 달라(`/dev/nvidia*`) 별개 | 참조 호스트 |
