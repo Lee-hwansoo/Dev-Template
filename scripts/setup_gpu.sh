@@ -228,7 +228,7 @@ case "$__gpu_req_mode" in
             __x_num="${DISPLAY#:}"; __x_num="${__x_num%%.*}"
             __gpu_row "X11" "DISPLAY=${DISPLAY}  socket=$([ -S "/tmp/.X11-unix/X${__x_num}" ] && echo ok || echo MISSING)"
             __xa="${XAUTHORITY:-$HOME/.Xauthority}"
-            __gpu_row "Xauthority" "${__xa}  $([ -s "$__xa" ] && echo ok || echo 'empty/missing → run: make xauth')"
+            __gpu_row "Xauthority" "${__xa}  $([ -s "$__xa" ] && echo ok || echo "empty/missing$([ -e /dev/dxg ] && printf ' — normal on WSLg, which authenticates through /mnt/wslg' || printf ' → run: make xauth')")"
         else
             __gpu_row "X11" "DISPLAY not set"
         fi
@@ -294,7 +294,12 @@ case "$__gpu_req_mode" in
             [ -n "${!__v:-}" ] && __gpu_var "$__v" "${!__v}"
         done
         [ -n "${LD_LIBRARY_PATH:-}" ] && __gpu_row "LD_LIBRARY_PATH" "$LD_LIBRARY_PATH"
-        __gpu_row "persisted" "${GPU_ENV_FILE}$([ -f "$GPU_ENV_FILE" ] && echo '  (ok)' || echo '  (not written — run: gpu auto)')"
+        # Two sources: this shell's own file, and the copy the entrypoint puts
+        # in /etc/profile.d for `docker exec`. Reporting only the first said
+        # "not written" in every container, where the second is the live one.
+        if [ -f "$GPU_ENV_FILE" ]; then __gpu_row "persisted" "${GPU_ENV_FILE}  (ok)"
+        elif [ -f /etc/profile.d/devkit-gpu.sh ]; then __gpu_row "persisted" "/etc/profile.d/devkit-gpu.sh  (ok, from the entrypoint)"
+        else __gpu_row "persisted" "${GPU_ENV_FILE}  (not written — run: gpu auto)"; fi
         echo ""
         return 0 2>/dev/null || exit 0
         ;;

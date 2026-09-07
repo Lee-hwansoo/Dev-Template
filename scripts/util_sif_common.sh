@@ -90,6 +90,13 @@ sif_forward_env() {
 sif_gpu_flags() {
     GPU_FLAGS=()
     [ "${GPU_MODE:-auto}" != cpu ] || return 0
+    # amd asks for --rocm, which SLURM.md advertises; every other explicit mode
+    # (igpu, intel) has no apptainer flag at all, and answering --nv for them
+    # asked the runtime for hardware the job never requested.
+    case "${GPU_MODE:-auto}" in
+        amd)          GPU_FLAGS=(--rocm); return 0 ;;
+        igpu|intel)   return 0 ;;
+    esac
     if [ -n "${CUDA_VISIBLE_DEVICES:-}" ] || [ "${GPU_MODE:-}" = nvidia ]; then
         GPU_FLAGS=(--nv)
     elif [ -z "${SLURM_JOB_ID:-}" ] && command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then

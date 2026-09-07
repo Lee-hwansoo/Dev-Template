@@ -85,7 +85,7 @@ if [ "$IS_MACOS" = "false" ]; then
         if command -v docker >/dev/null 2>&1; then
             if docker_runtimes="$(timeout 10 docker info --format '{{range $r, $_ := .Runtimes}}{{$r}} {{end}}' 2>/dev/null)"; then
                 case " $docker_runtimes " in *" nvidia "*) HAS_TOOLKIT="true" ;; esac
-            elif [ "$1" = "--makefile" ]; then
+            elif [ "${1:-}" = "--makefile" ]; then
                 log_error "Docker is installed but its daemon is unreachable, so the NVIDIA runtime cannot be probed." >&2
                 log_detail "Start Docker (or Docker Desktop's WSL integration) and retry; caching 'no runtime' now would silently pin this project to the iGPU/CPU profile." >&2
                 exit 2

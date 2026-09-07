@@ -333,7 +333,11 @@ mkenv() {
         share=(--system-site-packages); py="${SYS_PYTHON_EXE}"; label="Shared"
     fi
     if command -v uv >/dev/null 2>&1; then
-        uv venv "$venv_dir" --python "$py" "${share[@]}" --seed \
+        # --seed brings pip, setuptools and wheel: 18 MB of package manager the
+        # runtime never calls, and the whole content of a prod pip manifest.
+        local seed=(--seed)
+        [ "${DEVKIT_BUILD_TYPE:-dev}" != prod ] || seed=()
+        uv venv "$venv_dir" --python "$py" "${share[@]}" ${seed[@]+"${seed[@]}"} \
             --prompt "$prompt" "${DEVKIT_REMAINING_ARGS[@]}" || return 1
     else
         # The fallback must honour --share too, or a noetic workspace (where it
@@ -351,6 +355,9 @@ activate() {
         source "${venv_dir}/bin/activate"
         # Re-entrant already: activate calls `deactivate nondestructive` first.
         # Same paren normalisation as config/init_bash.sh.
+        # ${…:-}: an activate written by `python3 -m venv` before 3.11 sets no
+        # VIRTUAL_ENV_PROMPT, and this line then aborted a `set -u` shell.
+        VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT:-}"
         VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT#\(}"; VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT%\) }"
         log_ok "Activated virtualenv: ${venv_dir}"
     else

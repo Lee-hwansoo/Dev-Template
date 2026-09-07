@@ -129,7 +129,7 @@ PYLINT
     UNPINNED="$(grep -v '^    ! ' <<< "$UNPINNED" || true)"
     if [ -n "$LAYOUT" ]; then
         log_warn "Lines this pin check could not read:"
-        echo "$LAYOUT"
+        echo "$LAYOUT" >&2
         # Fail closed: unread is not the same as pinned.
         [ "${DEVKIT_REQUIRE_PINNED:-0}" != "1" ] || {
             log_error "DEVKIT_REQUIRE_PINNED=1 and the .repos file could not be fully read."
@@ -236,7 +236,10 @@ print_section "Overlay Application"
 if [ -d "$OVERLAY_DIR" ]; then
     log_info "Applying overlays from ${OVERLAY_DIR} ..."
     while IFS= read -r -d '' item; do
-        cp -a -- "$item" "$TARGET_DIR/"
+        # A raw cp error ("cannot overwrite non-directory with directory") named
+        # neither file and left rosdep unrun; say which overlay collides.
+        cp -a -- "$item" "$TARGET_DIR/" \
+            || { log_error "Overlay '${item##*/}' collides with an existing entry of a different kind in ${TARGET_DIR}."; exit 1; }
     done < <(
         find "$OVERLAY_DIR" -mindepth 1 -maxdepth 1 \
             ! \( -name "CATKIN_IGNORE" -o -name "COLCON_IGNORE" -o -name "*.md" \) -print0

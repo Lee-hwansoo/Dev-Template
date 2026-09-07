@@ -375,9 +375,30 @@ apt_tag_foxy="$(DEVKIT_DRY_RUN=1 DEVKIT_DEPS_DIR="$apt_tag_probe" bash scripts/u
 apt_tag_humble="$(DEVKIT_DRY_RUN=1 DEVKIT_DEPS_DIR="$apt_tag_probe" bash scripts/util_apt_helper.sh install-packages runtime humble 2>/dev/null | tr '\n' ' ')"
 { [ "$apt_tag_foxy" = "b-foxy-y " ] && [ "$apt_tag_humble" = "a-humble-x b-humble-y " ]; } \
     || { log_err "the '!<distro>' tag does not exclude per distro (foxy: '${apt_tag_foxy}', humble: '${apt_tag_humble}')."; apt_errors=1; }
+# With NO distro the stage has no ROS repository, so a ros1/ros2 line — or a
+# ${ROS_DISTRO} name, which expands to nothing — must be dropped rather than
+# requested from Ubuntu as 'pkg--x'.
+printf 'plain-pkg # runtime\nros-${ROS_DISTRO}-thing # runtime\ntagged # runtime,ros2\n' > "$apt_tag_probe/apt.txt"
+apt_tag_nodistro="$(DEVKIT_DRY_RUN=1 DEVKIT_DEPS_DIR="$apt_tag_probe" bash scripts/util_apt_helper.sh install-packages runtime 2>/dev/null | tr '\n' ' ' || true)"
+[ "$apt_tag_nodistro" = "plain-pkg " ] \
+    || { log_err "a no-distro selection keeps ROS-only entries (got: '${apt_tag_nodistro}'); the stage has no ROS repository."; apt_errors=1; }
 rm -rf "$apt_tag_probe"
 grep -qE '^ros-\$\{ROS_DISTRO\}-tf2-ros-py #.*!foxy' dependencies/apt_ros.txt \
     || { log_err "apt_ros.txt requests tf2-ros-py on foxy, where the package does not exist (Galactic+): tag it '!foxy'."; apt_errors=1; }
+# A distro built on the wrong Ubuntu release must be refused where the repo is
+# configured, by name: apt otherwise said "Unable to locate package" minutes
+# later, and only for the first package it happened to try.
+grep -qE 'noetic\|foxy\) want=focal' scripts/util_apt_helper.sh \
+    && grep -qE 'jazzy\|kilted\|rolling\) want=noble' scripts/util_apt_helper.sh \
+    || { log_err "setup-ros-repo does not check the distro against the base image's codename; apt reports it much later as a missing package."; apt_errors=1; }
+grep -qE '^[^#]*lsb_release' scripts/util_apt_helper.sh \
+    && { log_err "util_apt_helper.sh calls lsb_release again; it drags python3 into every 20.04/22.04 base for a string /etc/os-release carries."; apt_errors=1; }
+if docker_live; then
+    apt_codename_live="$( docker run --rm -v "${ROOT_DIR}/scripts/util_apt_helper.sh:/h.sh:ro" -e DEBIAN_FRONTEND=noninteractive \
+        ubuntu:22.04 bash -c 'bash /h.sh setup-ros-repo jazzy 2>&1; echo "rc=$?"' 2>/dev/null | tail -n 3 | tr '\n' ' ' || true )"
+    grep -q 'published for Ubuntu noble' <<< "$apt_codename_live" && ! grep -q 'rc=0' <<< "$apt_codename_live" \
+        || { log_err "on a jammy base, 'setup-ros-repo jazzy' does not refuse by name (got: ${apt_codename_live})."; apt_errors=1; }
+fi
 # …and CI resolves the whole selection against each distro's own index, foxy included.
 grep -q 'ros-lists-resolve:' .github/workflows/images.yml && grep -qE "distro: foxy,\s+snapshot: final" .github/workflows/images.yml \
     || { log_err "images.yml has no ros-lists-resolve job covering foxy (snapshot final); a package missing from one distro's index is found four minutes into a build."; apt_errors=1; }
@@ -1239,6 +1260,29 @@ rm -f "$submit_probe/argv"
 grep -qxF 'from-run-args' "$submit_probe/argv" 2>/dev/null \
     || { log_err "RUN_ARGS loses to the .env launch command (sbatch got: $(grep -E 'from-' "$submit_probe/argv" 2>/dev/null | tr '\n' ' '))."; submit_errors=1; }
 
+# GPU_MODE reaches the runtime as the flag it names: amd asks for --rocm (which
+# SLURM.md advertises), and the modes with no apptainer flag ask for nothing —
+# igpu/intel used to fall through to --nv and request hardware nobody asked for.
+for submit_gpu in "nvidia --nv" "amd --rocm" "igpu -" "intel -" "cpu -"; do
+    set -- $submit_gpu
+    submit_gpu_out="$( GPU_MODE="$1" bash -c 'source scripts/util_sif_common.sh >/dev/null 2>&1; sif_gpu_flags; printf %s "${GPU_FLAGS[*]:--}"' 2>/dev/null || true )"
+    [ "$submit_gpu_out" = "$2" ] \
+        || { log_err "GPU_MODE=$1 gives apptainer '${submit_gpu_out}', expected '$2'."; submit_errors=1; }
+done
+# …and every knob a script consumes is documented, this one included.
+grep -qF 'DEVKIT_VERIFY_SIF_HASH' docs/SLURM.md \
+    || { log_err "DEVKIT_VERIFY_SIF_HASH has a consumer in util_sif_common.sh but no documentation."; submit_errors=1; }
+
+# The "not found" message must name the artifact the mode WRITES: -share is a
+# dev-bake variant (mkenv --share) and prod never produces one, yet the probe
+# fell through to it and told the user to look for a file that cannot exist.
+submit_name="$(probe_dir)"
+submit_name_out="$( WORKSPACE_PATH="$submit_name" COMPOSE_PROJECT_NAME=probe \
+    bash scripts/apptainer_run.sh --mode prod --env dev 'true' 2>&1 || true )"
+grep -qE 'probe-dev-prod-[a-z0-9]+\.sif' <<< "$submit_name_out" && ! grep -q 'share' <<< "$submit_name_out" \
+    || { log_err "a missing prod artifact is reported as a name prod never writes: ${submit_name_out%%$'\n'*}"; submit_errors=1; }
+rm -rf "$submit_name"
+
 # The dangerous one: no sbatch must NOT mean "run it here".
 rm -f "$submit_probe/argv"
 submit_norc=0
@@ -1258,6 +1302,30 @@ rm -f "$submit_probe/norun/ran"
     || { log_err "SIF_MODE=slurm without sbatch ran the container locally (apptainer argv: $(tr '\n' ' ' < "$submit_probe/norun/ran"))."; submit_errors=1; }
 grep -qE '^[^#]*Falling back to local execution' scripts/apptainer_run.sh \
     && { log_err "apptainer_run.sh still falls back to local execution when sbatch is missing."; submit_errors=1; }
+
+# `--` must hand the command through as ARGV: a command whose name starts with
+# a dash can never run through `bash -c` (bash reads it as its own flag), and
+# the %q-joined form landed as [-c] [echo\ hi].
+submit_dash="$(probe_dir)"; mkdir -p "$submit_dash/bin"; : > "$submit_dash/art.sif"
+printf '#!/bin/sh\nprintf "[%%s]" "$@" > "%s/argv"\n' "$submit_dash" > "$submit_dash/bin/apptainer"
+chmod +x "$submit_dash/bin/apptainer"
+( PATH="$submit_dash/bin:$probe_min_path" WORKSPACE_PATH="$submit_dash" SIF_FILE="$submit_dash/art.sif" \
+  bash scripts/apptainer_run.sh --mode prod --env dev -- -c 'echo hi' ) >/dev/null 2>&1 || true
+submit_dash_argv="$(cat "$submit_dash/argv" 2>/dev/null || echo '<apptainer never ran>')"
+case "$submit_dash_argv" in
+    *'[-c][echo hi]') ;;
+    *) log_err "'-- -c <cmd>' does not reach the runtime as argv (got: ${submit_dash_argv##*.sif})."; submit_errors=1 ;;
+esac
+# …and a prod artifact with no command says what is missing instead of starting
+# a shell it does not have (--cleanenv strips APP_COMMAND; its entrypoint then
+# exits 2 and the run record said "interactive").
+rm -f "$submit_dash/argv"
+submit_bare_rc=0
+submit_bare_out="$( PATH="$submit_dash/bin:$probe_min_path" WORKSPACE_PATH="$submit_dash" SIF_FILE="$submit_dash/art.sif" \
+    bash scripts/apptainer_run.sh --mode prod --env dev 2>&1 )" || submit_bare_rc=$?
+{ [ "$submit_bare_rc" -eq 2 ] && grep -q 'No command to run' <<< "$submit_bare_out" && [ ! -f "$submit_dash/argv" ]; } \
+    || { log_err "'run-sif SIF_MODE=prod' with no command exits ${submit_bare_rc} and starts the artifact anyway."; submit_errors=1; }
+rm -rf "$submit_dash"
 
 # Inside an allocation the job must go through srun, or a --nodes=2 --ntasks=8
 # allocation silently runs ONE process on ONE node and the other 7 shares idle.
@@ -1477,6 +1545,10 @@ hostdep_det="$(probe_dir config scripts)"
 printf '#!/bin/sh\n[ "$1" = "-L" ] && { echo "NVIDIA-SMI has failed" >&2; exit 9; }\nexit 0\n' > "$hostdep_det/nvidia-smi"
 printf '#!/bin/sh\n[ "$1" = info ] && exit 1\nexit 0\n' > "$hostdep_det/docker"
 chmod +x "$hostdep_det/nvidia-smi" "$hostdep_det/docker"
+# Both call shapes: apptainer_bake.sh runs it with NO arguments and eval's the
+# result, so an unbound $1 there breaks every direct bake.
+( PATH="$hostdep_det:$probe_min_path" HOST_CACHE_DIR="$hostdep_det/cache" bash scripts/check_env.sh ) >/dev/null 2>&1 \
+    || { log_err "check_env.sh fails when called with no arguments; a direct 'scripts/apptainer_bake.sh' cannot resolve the host at all."; hostdep_errors=1; }
 hostdep_det_out="$( PATH="$hostdep_det:$probe_min_path" HOST_CACHE_DIR="$hostdep_det/cache" bash scripts/check_env.sh --makefile 2>/dev/null || true )"
 grep -qx 'HAS_NVIDIA := false' <<< "$hostdep_det_out" \
     || { log_err "an nvidia-smi that cannot talk to the driver still sets HAS_NVIDIA := true; 'auto' would pick the nvidia profile and the container would not start."; hostdep_errors=1; }
@@ -1765,6 +1837,26 @@ rmguard_ws="$rmguard_probe/cachedir/ws" rmguard_case "a parent directory of the 
     FORCE=1 "DOCKER_DEV_CACHE_DIR=$rmguard_probe/cachedir"
 rmguard_ws="$rmguard_probe/cachedir/ws" rmguard_case "the root directory" refused FORCE=1 "DOCKER_DEV_CACHE_DIR=/"
 rmguard_case "a cache path containing a space" deleted "DOCKER_DEV_CACHE_DIR=$rmguard_probe/real cache"
+# `clean-all` is documented as a full reset: the baked artifacts sit in the
+# workspace root and a 100 MB *.oci.tar survived every one of them.
+rmguard_all="$(cd "$(probe_dir scripts config docker dependencies)" && pwd -P)"
+cp Makefile "${ROOT_DIR}/.env.example" "${ROOT_DIR}"/docker-compose*.yml "$rmguard_all/"
+mkdir -p "$rmguard_all/bin"; printf '#!/bin/sh\nexit 0\n' > "$rmguard_all/bin/docker"; chmod +x "$rmguard_all/bin/docker"
+: > "$rmguard_all/probe-dev-prod-amd64.oci.tar"; : > "$rmguard_all/probe-dev-prod-amd64.sif.sha256"
+( cd "$rmguard_all" && PATH="$rmguard_all/bin:$probe_min_path" make clean-all FORCE=1 ) >/dev/null 2>&1 || true
+rmguard_left="$(cd "$rmguard_all" && ls *.oci.tar *.sha256 2>/dev/null | tr '\n' ' ' || true)"
+[ -z "$rmguard_left" ] \
+    || { log_err "'make clean-all' leaves the baked artifacts behind (${rmguard_left}); DEVELOPMENT.md calls it a full reset."; rmguard_errors=1; }
+rm -rf "$rmguard_all"
+# One truthiness rule for every switch: FIX/NO_CACHE/SHARE took only 1|true
+# while KEEP_VENV and the container's devkit_is_true also accept yes/on, so
+# `make lint FIX=yes` quietly linted without fixing.
+for rmguard_true in "lint FIX=yes:mlint --fix" "build NO_CACHE=on:--no-cache" "bake-dev SHARE=YES:--share"; do
+    rmguard_goal="${rmguard_true%%:*}"; rmguard_want="${rmguard_true#*:}"
+    # shellcheck disable=SC2086  # deliberate split into target + assignment
+    grep -qF -- "$rmguard_want" <<< "$( cd "$ROOT_DIR" && make -n $rmguard_goal 2>/dev/null || true )" \
+        || { log_err "'make ${rmguard_goal}' does not act on it; the truthy spellings differ per knob."; rmguard_errors=1; }
+done
 # The suite itself must not carry make's exports into these probes: the scrub
 # at the top, run against a leaked environment, and the live environment now.
 rmguard_scrub="$(MAKELEVEL=1 COMPOSE_PROJECT_NAME=leaked HOST_WORKSPACE_PATH=/leaked IMAGE_TAG=leaked LANG="${LANG:-C.UTF-8}" \
@@ -2444,6 +2536,35 @@ case "$(build_flags prod 1)" in
     install\ *|install) ;;
     *) log_err "ROS 1 prod cbuild does not run 'catkin_make install'; the runtime image copies install/ only."; repro_errors=1 ;;
 esac
+# The shipped runtime must not carry tools it only needed at build time. Each
+# of these was measured in a real prod image: `file` + libmagic-mgc 7.4 MB for
+# an ELF test four bytes can do, pip/setuptools/wheel 18 MB of a package manager
+# the runtime never calls (and the entire content of its pip manifest).
+grep -qE '^[^#]*(^|[[:space:]])file([[:space:]\\]|$)' <<< "$(awk '/AS prod-base$/{p=1} p && /^FROM / && !/AS prod-base$/{p=0} p' docker/Dockerfile)" \
+    && { log_err "prod-base installs 'file' (plus libmagic-mgc, 7.4 MB) for check_deps' ELF probe; four magic bytes settle it."; repro_errors=1; }
+grep -qE '^[^#]*file "\$binary"' scripts/check_deps.sh \
+    && { log_err "check_deps.sh calls file(1) again, which the shipped runtime would have to install."; repro_errors=1; }
+elf_probe="$(probe_dir)"; printf '\177ELF\002\001\001' > "$elf_probe/real.so"; printf 'text\n' > "$elf_probe/plain.txt"
+elf_seen="$( bash -c 'source scripts/check_deps.sh --help >/dev/null 2>&1; true'; \
+    bash -c "$(awk '/^is_elf\(\)/{print; exit}' scripts/check_deps.sh); is_elf '$elf_probe/real.so' && echo yes; is_elf '$elf_probe/plain.txt' && echo WRONG; true" 2>/dev/null || true )"
+[ "$elf_seen" = yes ] \
+    || { log_err "check_deps.sh's ELF test misreads a binary or a text file (got: '${elf_seen}')."; repro_errors=1; }
+rm -rf "$elf_probe"
+grep -qE '^[^#]*seed=\(\)' config/util_aliases.sh \
+    || { log_err "mkenv seeds pip/setuptools/wheel into a production venv too (18 MB the runtime never calls)."; repro_errors=1; }
+# …and the CUDA environment must not advertise a directory the image lacks.
+grep -qE '^[^#]*LD_LIBRARY_PATH=/usr/local/cuda' docker/Dockerfile \
+    && { log_err "the Dockerfile exports LD_LIBRARY_PATH=/usr/local/cuda/lib64 into every image; the CUDA packages install their own ld.so.conf.d entry."; repro_errors=1; }
+# A non-ROS artifact must not claim a ROS distro: base exported ROS_DISTRO into
+# every image and the dev-flavour manifest read 'humble' for a distro it does
+# not contain. The ROS stages set it; the manifest is told explicitly.
+awk '/AS base$/{p=1} p && /^FROM / && !/AS base$/{p=0} p && /^[[:space:]]*ROS_DISTRO=/{found=1} END{exit found ? 1 : 0}' docker/Dockerfile \
+    || { log_err "the 'base' stage exports ROS_DISTRO, so a non-ROS image and its release manifest name a distro they do not contain."; repro_errors=1; }
+grep -qE 'ROS_DISTRO="\$\(\[ "\$PROD_ENV" = ros \]' docker/Dockerfile \
+    || { log_err "the release manifest is not told which flavour it describes; a PROD_ENV=dev artifact records the ROS distro of the build arg."; repro_errors=1; }
+grep -qE '^ARG TARGETARCH$' docker/Dockerfile \
+    || { log_err "ARG TARGETARCH carries a default, which beats the value BuildKit sets from --platform."; repro_errors=1; }
+
 # Deployment goal: the shipped tree must not carry plaintext project source.
 src_probe="$(probe_dir)"; mkdir -p "$src_probe/pkg/lib/python3/site-packages/pkg" "$src_probe/pkg/share/pkg/launch"
 printf 'SECRET=1\n' > "$src_probe/pkg/lib/python3/site-packages/pkg/core.py"
@@ -2991,6 +3112,37 @@ if docker_live; then
         || { log_err "a real build context with this .dockerignore holds '${ctx_files}' (expected only dependencies/dep.tar.gz and src/main.py)."; sif_errors=1; }
     rm -rf "$ctx_probe"
 fi
+# A DIRECT script call must read the same two layers make renders: every knob
+# below was silently dropped, so a CUDA_VERSION or ROS_SNAPSHOT_DATE set in
+# .env produced an artifact without it and the host's own LANG/TZ leaked in.
+bake_env_probe="$(cd "$(probe_dir config scripts docker dependencies src)" && pwd -P)"
+cp "${ROOT_DIR}/.env.example" "$bake_env_probe/"
+printf 'CUDA_VERSION=12.8.0\nROS_SNAPSHOT_DATE=2026-01-01\nIMAGE_TAG=rel1\n' > "$bake_env_probe/.env"
+mkdir -p "$bake_env_probe/bin"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/argv"\nexit 1\n' "$bake_env_probe" > "$bake_env_probe/bin/docker"
+printf '#!/bin/sh\nexit 0\n' > "$bake_env_probe/bin/apptainer"
+chmod +x "$bake_env_probe/bin/docker" "$bake_env_probe/bin/apptainer"
+( cd "$bake_env_probe" && env -u CUDA_VERSION -u ROS_SNAPSHOT_DATE -u IMAGE_TAG -u LANG -u TZ \
+  PATH="$bake_env_probe/bin:$probe_min_path" WORKSPACE_PATH="$bake_env_probe" \
+  bash scripts/apptainer_bake.sh --mode prod --env ros ) >/dev/null 2>&1 || true
+bake_env_argv="$(tr '\n' ' ' < "$bake_env_probe/argv" 2>/dev/null || echo '<docker never called>')"
+for bake_env_want in CUDA_VERSION=12.8.0 ROS_SNAPSHOT_DATE=2026-01-01 IMAGE_TAG=rel1 LANG=C.UTF-8 TZ=UTC; do
+    case " $bake_env_argv " in
+        *" $bake_env_want "*) ;;
+        *) log_err "a direct apptainer_bake.sh call drops '${bake_env_want}' (argv: ${bake_env_argv})."; sif_errors=1 ;;
+    esac
+done
+rm -rf "$bake_env_probe"
+# The two long steps run through sif_run_and_record, which forwards TERM/INT/HUP
+# and waits: a signal to the bake alone left apptainer building into a temp file
+# the EXIT trap had already deleted, and it reappeared minutes later.
+grep -qE '^[^#]*sif_run_and_record "\$RUNTIME" build' scripts/apptainer_bake.sh \
+    || { log_err "apptainer_bake.sh runs the SIF conversion outside sif_run_and_record; a TERM orphans the build."; sif_errors=1; }
+# Both artifacts are published readable: mktemp makes 0600 and `docker save -o`
+# reuses that inode, so the archive whose whole purpose is to be handed on was
+# private to the baking user.
+grep -c 'chmod 644' scripts/apptainer_bake.sh | grep -qx 2 \
+    || { log_err "apptainer_bake.sh does not publish both the .sif and the .oci.tar readable (mktemp leaves them 0600)."; sif_errors=1; }
 grep -qxF 'PROD_ENV=dev' <<< "$(bake_argv prod dev)" \
     || { log_err "a prod bake for ENV=dev does not pass PROD_ENV=dev; the ROS builder base would be used."; sif_errors=1; }
 # …and every ENV the bake accepts needs its builder base, or `FROM

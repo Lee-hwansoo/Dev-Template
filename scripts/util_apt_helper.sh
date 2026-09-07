@@ -100,6 +100,10 @@ select_packages() {
                 if (mode == "builder" && comment ~  /(^|[[:space:],])(dev|gui)([[:space:],]|$)/) next
                 if (other_tag != "none" && comment ~ "(^|[[:space:],])" other_tag "([[:space:],]|$)") next
                 if (distro != "" && comment ~ "(^|[[:space:],])!" distro "([[:space:],]|$)") next
+                # With NO distro the stage has no ROS repository at all, so a
+                # ros1/ros2 line (or a ${ROS_DISTRO} name, which would expand to
+                # nothing) must be dropped rather than requested from Ubuntu.
+                if (distro == "" && (comment ~ /(^|[[:space:],])ros[12]([[:space:],]|$)/ || line ~ /\$\{?ROS_DISTRO\}?/)) next
                 gsub(/\$\{ROS_DISTRO\}|\$ROS_DISTRO/, distro, line)
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
                 if (line != "") print line
@@ -116,7 +120,16 @@ case "$COMMAND" in
         rm -f /etc/apt/apt.conf.d/docker-clean
         echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
         apt-get update -y
-        apt-get install -y --no-install-recommends curl ca-certificates gnupg lsb-release
+        # These four come from the ROLLING mirror, before configure-snapshot,
+        # because the snapshot itself is fetched over https with curl. They and
+        # the base image's own packages are therefore pinned by BASE_IMAGE (pin
+        # it by digest for a release — DEPLOY.md), not by APT_SNAPSHOT_DATE,
+        # which pins everything installed after this point. Installing them
+        # from the snapshot instead is not possible: apt refuses to downgrade
+        # the newer gpgv the base image already carries.
+        # lsb-release is deliberately NOT here — it drags python3 onto every
+        # 20.04/22.04 base for a codename /etc/os-release already carries.
+        apt-get install -y --no-install-recommends curl ca-certificates gnupg
         log_ok "APT initialized."
         ;;
     restore-docker-clean)
@@ -137,7 +150,10 @@ case "$COMMAND" in
         # call is a dependency apt cannot see. [distro] selects apt_ros.txt too.
         requested="$(select_packages runtime "${1:-}" 2>/dev/null | sed 's/=.*//' || true)"
         drop=""; kept=""
-        for pkg in curl gnupg dirmngr lsb-release; do
+        # dirmngr is NOT a candidate: it is gnupg's dependency, so it is judged
+        # while gnupg is still installed and was reported "kept" a moment before
+        # --auto-remove took it anyway. gpg/gpg-agent go the same way.
+        for pkg in curl gnupg lsb-release; do
             dpkg-query -W -f='${db:Status-Abbrev}' "$pkg" 2>/dev/null | grep -q '^ii' || continue
             if grep -qx "$pkg" <<< "$requested"; then
                 kept="$kept $pkg(runtime)"
@@ -149,6 +165,9 @@ case "$COMMAND" in
             fi
         done
         # shellcheck disable=SC2086  # deliberate word split over the package list
+        # --auto-remove finishes the job: gnupg's own dependency tree (dirmngr,
+        # gpg, gpg-agent, gpgconf, gpgsm) goes with it, which is why nothing
+        # below names them.
         [ -z "$drop" ] || apt-get purge -y --auto-remove $drop
         log_ok "Bootstrap tools purged:${drop:- none}.${kept:+ Kept (depended on or requested):$kept}"
         ;;
@@ -217,6 +236,23 @@ case "$COMMAND" in
             *)  log_error "Unknown ROS distro: '${distro}' (supported: humble iron jazzy kilted rolling foxy noetic)"
                 exit 2 ;;
         esac
+        # /etc/os-release, not lsb_release: that binary drags python3 into
+        # every 20.04/22.04 base for one string this file already has.
+        codename="$(. /etc/os-release && printf '%s' "${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}")"
+        [ -n "$codename" ] || { log_error "Cannot read the Ubuntu codename from /etc/os-release."; exit 1; }
+        # A distro built on the wrong Ubuntu release resolves nothing, and apt
+        # says so minutes later at install time. Refuse here, by name.
+        case "$distro" in
+            noetic|foxy) want=focal ;;
+            humble|iron) want=jammy ;;
+            jazzy|kilted|rolling) want=noble ;;
+            *) want="$codename" ;;
+        esac
+        [ "$codename" = "$want" ] || {
+            log_error "ROS ${distro} is published for Ubuntu ${want}, but this base is ${codename}."
+            log_error "Set ROS_DISTRO=${distro} and let BASE_IMAGE follow it (check_env.sh derives the pair), or pick the distro for ${codename}."
+            exit 1
+        }
         case "$distro" in noetic) family=ros ;; *) family=ros2 ;; esac
         # HTTP on purpose: packages.ros.org answers TLS with a *.osuosl.org
         # certificate, so https:// fails the hostname check and apt-get update
@@ -249,7 +285,7 @@ case "$COMMAND" in
         install -m 0644 "$tmp_key" /usr/share/keyrings/ros-archive-keyring.gpg
         rm -f "$tmp_key"
 
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] $repo $(lsb_release -cs) main" > "/etc/apt/sources.list.d/${family}.list"
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] $repo $codename main" > "/etc/apt/sources.list.d/${family}.list"
         apt-get update -y
         log_ok "ROS repository configured."
         ;;
@@ -362,9 +398,9 @@ case "$COMMAND" in
         cat <<'EOF'
 Usage: util_apt_helper.sh <command> [args...]
 
-  init-apt
+  init-apt                      Cache retention + the tools the snapshot fetch itself needs
   restore-docker-clean          Undo init-apt's cache retention (shipped stages)
-  purge-bootstrap               Drop init-apt's curl/gnupg/lsb-release where nothing depends on them
+  purge-bootstrap [distro]      Drop the bootstrap tools where nothing depends on or requested them
   configure-snapshot <latest|YYYYMMDDTHHMMSSZ>
   setup-ros-repo     <ros_distro>
   setup-cuda-repo    <cuda_version>

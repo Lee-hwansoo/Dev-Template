@@ -39,7 +39,6 @@ source_runtime_file() {
 source_runtime_file "$ROS_SETUP"
 source_runtime_file "$INSTALL_SETUP"
 source_runtime_file "$VENV_ACTIVATE"
-source_runtime_file "/etc/profile.d/devkit-gpu.sh"
 
 if [ -d "$WS_ROOT" ]; then
     cd "$WS_ROOT"

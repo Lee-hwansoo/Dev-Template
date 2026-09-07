@@ -140,6 +140,12 @@ docker run --rm img cat /etc/devkit/devkit-release.json | grep sha256
 매니페스트 한 줄을 그대로 `dependencies/apt_ros.txt`에 붙여넣으면(`ros-humble-rclcpp=16.0.10-1jammy.20260801`)
 해당 패키지가 그 시점으로 **사후 고정**됩니다.
 >
+> **스냅샷이 고정하는 범위**: `configure-snapshot` 이후에 설치되는 모든 패키지입니다. 베이스 이미지가
+> 이미 담고 있는 패키지와 스냅샷을 내려받는 데 필요한 도구 자체(`curl`·`ca-certificates`·`gnupg`)는
+> 롤링 미러에서 오며 — apt 는 베이스가 가진 더 새 버전을 내리지 않습니다 — **`BASE_IMAGE` 다이제스트 고정**이
+> 이들을 고정하는 수단입니다. 그래서 릴리스는 두 가지를 함께 고정합니다. 실제로 설치된 버전은
+> 매니페스트(`devkit-apt-manifest.txt`)에 전부 기록됩니다.
+
 > 스냅샷 서버가 불통이면 빌드는 **중단**됩니다 — 롤링 미러로 조용히 넘어가면 재현성이 무의미해지기 때문입니다.
 > 의도적으로 넘어가려면 `APT_SNAPSHOT_FALLBACK=1`을 명시하세요(`.env`·환경·`make` 인자 어디서든; 기본은 `false`).
 > 넘어간 빌드는 매니페스트에 `apt_snapshot_applied: false` 로 남아 고정 빌드로 오인되지 않습니다.

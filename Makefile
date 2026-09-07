@@ -125,10 +125,15 @@ endif
 -include $(DETECTED_ENV_FILE)
 endif
 
+# One truthiness rule for every switch: FIX/NO_CACHE/SHARE took only 1|true
+# while KEEP_VENV and the in-container devkit_is_true also accept yes/on, so
+# `make lint FIX=yes` quietly linted without fixing.
+is_true = $(filter 1 true TRUE True yes YES Yes on ON On,$(1))
+
 # Fail fast on input that would silently pick the wrong compose profile.
 # Scoped to every target consuming ENV — including down/clean-all, where
 # `make down ENV=ros2` would volume-delete the wrong profile without a word.
-ENV_EXEMPT := help h setup adopt verify ci ci-on ci-off clean clean-cache docker-clean update-gpg xauth gpus slurm-status slurm-cancel completion completion-install
+ENV_EXEMPT := help h adopt verify ci ci-on ci-off clean clean-cache docker-clean update-gpg xauth gpus slurm-status slurm-cancel completion completion-install
 ifneq ($(filter-out $(ENV_EXEMPT),$(or $(MAKECMDGOALS),help)),)
 ifeq ($(filter ros dev,$(ENV)),)
 $(error ENV must be 'ros' or 'dev' (got: '$(ENV)'))
@@ -489,7 +494,7 @@ build: check
 	$(call GUARD_HOST_ONLY)
 	@$(RESOLVE_SVC_MODE); \
 	echo -e "  $(INFO) Building image for $$TARGET_SVC..."; \
-	$(COMPOSE) --profile $$TARGET_SVC build $$TARGET_SVC $(if $(filter 1 true,$(NO_CACHE)),--no-cache,)
+	$(COMPOSE) --profile $$TARGET_SVC build $$TARGET_SVC $(if $(call is_true,$(NO_CACHE)),--no-cache,)
 
 ## @target start : Run container environment in background
 start: check
@@ -511,6 +516,8 @@ ide-config:
 		echo -e "  $(INFO) docker compose is not available here — VS Code attach config skipped."; exit 0; fi; \
 	$(RESOLVE_SVC_MODE); \
 	DC=.devcontainer/devcontainer.json; \
+	if [ ! -f "$$DC" ]; then \
+		echo -e "  $(INFO) $$DC is absent — VS Code attach config skipped."; exit 0; fi; \
 	mkdir -p .docker_cache && \
 	TMP=$$(mktemp .docker_cache/ide.XXXXXX) && \
 	trap 'rm -f "$$TMP" "$$DC.tmp"' EXIT && \
@@ -572,7 +579,7 @@ test:
 ## @target lint : Check style and lint rules inside the container (FIX=1 applies them)
 lint:
 	$(call GUARD_HOST_ONLY)
-	@$(MAKE) --no-print-directory exec CMD='mlint $(if $(filter 1 true,$(FIX)),--fix,)'
+	@$(MAKE) --no-print-directory exec CMD='mlint $(if $(call is_true,$(FIX)),--fix,)'
 
 ## @target term : Launch in-container Terminator GUI window (2x2 grid layout)
 # terminator is opt-in (dependencies/apt.txt), so the binary is probed first:
@@ -616,7 +623,7 @@ term:
 ## @target bake-dev : Bake development SIF snapshot (SHARE=1 for system site-packages)
 bake-dev:
 	$(call GUARD_HOST_ONLY)
-	@bash scripts/apptainer_bake.sh --mode dev --env $(ENV) $(if $(filter 1 true,$(SHARE)),--share,)
+	@bash scripts/apptainer_bake.sh --mode dev --env $(ENV) $(if $(call is_true,$(SHARE)),--share,)
 
 ## @target bake-prod : Bake production SIF artifact
 bake-prod:
@@ -802,7 +809,7 @@ clean-cache:
 # Containers first, cache second — clean-cache aborts while one is running.
 # Asks unless FORCE=1/CI=true. KEEP_VENV=1 keeps the venv and its volume, so a
 # rebuild reconnects instead of re-running mksync.
-clean-all: KEEP_VENV := $(if $(filter 1 true yes,$(KEEP_VENV)),1,0)
+clean-all: KEEP_VENV := $(if $(call is_true,$(KEEP_VENV)),1,0)
 clean-all:
 	$(call GUARD_HOST_ONLY)
 	$(call CONFIRM,This removes '$(COMPOSE_PROJECT_NAME)' containers / named volumes (build/install/log) / compose-built images and host build artifacts$(if $(filter 0,$(KEEP_VENV)), — including install/.venv))
@@ -821,7 +828,12 @@ clean-all:
 		$(COMPOSE) --profile "*" down --volumes --remove-orphans --rmi local; \
 	fi
 	@$(MAKE) --no-print-directory clean-cache
-	@echo -e "  $(OK) Full project reset complete (containers, volumes & cache)."
+	@# The bake artifacts live in the workspace root and DEVELOPMENT.md calls
+	@# this a full reset; leaving a 100 MB *.oci.tar behind is not one. The
+	@# image `bake-prod` tags locally goes with them.
+	@BAKED=$$(ls -1 *-prod*.sif *-dev*.sif *.oci.tar *.oci.tar.provenance *.sif.provenance *.sif.sha256 2>/dev/null || true); 	if [ -n "$$BAKED" ]; then 		rm -f $$BAKED && echo -e "  $(OK) Removed baked artifacts: $$(echo $$BAKED | tr '\n' ' ')"; 	fi
+	@for img in $$(docker images -q "$(COMPOSE_PROJECT_NAME)_*_prod" 2>/dev/null); do 		docker rmi -f "$$img" >/dev/null 2>&1 || true; 	done
+	@echo -e "  $(OK) Full project reset complete (containers, volumes, cache & baked artifacts)."
 
 ## @target docker-clean : Remove dangling Docker images, build cache & unused volumes
 # HOST-WIDE: `prune --volumes` also takes volumes of other, merely-stopped

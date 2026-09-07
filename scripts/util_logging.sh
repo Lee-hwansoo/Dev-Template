@@ -43,7 +43,10 @@ _log_resolve_file() {
     esac
     case "$LOG_FILE" in
         /*) __DEVKIT_LOG_PATH="$LOG_FILE" ;;
-        *)  __DEVKIT_LOG_PATH="${WORKSPACE_PATH:-/workspace}/${LOG_FILE}" ;;
+        # WS_ROOT first: WORKSPACE_PATH is the CONTAINER path and make exports
+        # it to host recipes too, so a relative LOG_FILE resolved under
+        # /workspace on the host and the file half silently disabled itself.
+        *)  __DEVKIT_LOG_PATH="${WS_ROOT:-${WORKSPACE_PATH:-/workspace}}/${LOG_FILE}" ;;
     esac
     # Best-effort: logging must never crash the caller, so an unusable path
     # silently disables the file half.
