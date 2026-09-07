@@ -307,12 +307,18 @@ for wf_fork in 'make adopt NAME=' 'rm -rf src/example docs' 'terminator # gui' '
     grep -qF "$wf_fork" .github/workflows/verify.yml \
         || wf_bad+=("verify.yml's fork probe does not exercise '${wf_fork}'; a contract on a fork-owned file would go unnoticed")
 done
-# Counted from the kit's own workflows: project.yml is the fork's file and may
-# be replaced wholesale, so it is not part of the sum.
-wf_gates="$(grep -c 'uses: ./.github/actions/gate' .github/workflows/images.yml 2>/dev/null || echo 0)"
-wf_heavy="$(grep -cE '^  [a-z0-9-]+:$' .github/workflows/images.yml 2>/dev/null || echo 0)"
-[ "$wf_gates" -ge 5 ] \
-    || wf_bad+=("only ${wf_gates} of images.yml's ${wf_heavy} jobs use ./.github/actions/gate")
+# Every job that BUILDS an image runs the gate (docker/compose/buildx versions,
+# and the disk reclaim the full builds need). Counted over both image tiers:
+# project.yml is the fork's file and may be replaced wholesale.
+wf_gates="$(grep -hc 'uses: ./.github/actions/gate' .github/workflows/images.yml .github/workflows/images-deep.yml 2>/dev/null | awk '{s+=$1} END{print s+0}')"
+wf_builders="$(grep -hcE '^  [a-z0-9-]+:$' .github/workflows/images.yml .github/workflows/images-deep.yml 2>/dev/null | awk '{s+=$1} END{print s+0}')"
+[ "${wf_gates:-0}" -ge 5 ] \
+    || wf_bad+=("only ${wf_gates} of the ${wf_builders} image jobs use ./.github/actions/gate")
+# The full-image jobs must NOT run on a push or a pull request: they cost
+# 15-45 minutes each and only added "Skipped" rows to every commit.
+wf_deep_on="$(python3 -c "import yaml,sys; d=yaml.safe_load(open('.github/workflows/images-deep.yml')); print(' '.join(sorted((d.get('on') or d.get(True)).keys())))" 2>/dev/null || true)"
+[ "$wf_deep_on" = "schedule workflow_dispatch" ] \
+    || wf_bad+=("images-deep.yml triggers on '${wf_deep_on}'; the full-image tier is cron and request only")
 [ ${#wf_bad[@]} -eq 0 ] && log_ok "Workflows: read-only token, checkout@v5+, image jobs gated by ./.github/actions/gate." \
     || { for b in "${wf_bad[@]}"; do log_err "$b"; done; }
 
@@ -453,8 +459,8 @@ if docker_live; then
         || { log_err "on a jammy base, 'setup-ros-repo jazzy' does not refuse by name (got: ${apt_codename_live})."; apt_errors=1; }
 fi
 # …and CI resolves the whole selection against each distro's own index, foxy included.
-grep -q 'ros-lists-resolve:' .github/workflows/images.yml && grep -qE "distro: foxy,\s+snapshot: final" .github/workflows/images.yml \
-    || { log_err "images.yml has no ros-lists-resolve job covering foxy (snapshot final); a package missing from one distro's index is found four minutes into a build."; apt_errors=1; }
+grep -qE "'ubuntu:20\.04\|foxy\|final'" .github/workflows/images.yml \
+    || { log_err "images.yml no longer resolves the package selection against foxy's own index (snapshot final); a package missing from one distro is found four minutes into a build."; apt_errors=1; }
 # `make lint` is the CI style gate, so "Lint clean" must mean a checker ran on
 # every tree the build can reach: a root-level project (cbuild's first choice)
 # was never linted, and C/C++ sources with no clang-format installed reported
@@ -1053,7 +1059,7 @@ esac
 # The entrypoint itself, run as this user in a probe workspace: it must reach
 # the command, keep its boot log, and its --env mode must hand the command a
 # resolved environment. The root-only parts (profile.d, bashrc bridge, the
-# privilege drop) are what runtime-smoke in images.yml exercises.
+# privilege drop) are what runtime-smoke in images-deep.yml exercises.
 ep_probe="$(probe_dir config scripts)"
 ep_rc=0
 ep_out="$(cd "$ep_probe" && env -i PATH="$probe_min_path" HOME="$ep_probe" WORKSPACE_PATH="$ep_probe" GPU_MODE=cpu \
@@ -3662,7 +3668,7 @@ for sif_env in $(sed -n 's/^sif_require_choice --env "\$ENV_NAME" \(.*\) || exit
 done
 grep -qE '^FROM builder-base-\$\{PROD_ENV\} AS prod-builder$' docker/Dockerfile \
     || { log_err "docker/Dockerfile: prod-builder no longer derives its base from PROD_ENV; the flavours would drift into two copies again."; sif_errors=1; }
-# setup-cuda-repo needs the network and root; images.yml apt-key-paths runs it.
+# setup-cuda-repo needs the network and root; the images.yml apt job runs it.
 grep -Eq '^[^#]*sources\.list\.d/cuda\.list' scripts/util_apt_helper.sh \
     || { log_err "util_apt_helper.sh setup-cuda-repo no longer configures the NVIDIA repository."; sif_errors=1; }
 # The managed interpreter must sit where ANY uid can traverse: a baked venv

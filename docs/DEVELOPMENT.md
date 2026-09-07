@@ -266,7 +266,7 @@ git diff HEAD upstream/main -- Makefile config/ scripts/ docker/ docker-compose*
 # 계약이기도 해서, 일부만 가져오면 4 단계의 `make verify` 가 가져오지 않은 파일을 가리키며 실패합니다.
 git checkout upstream/main -- Makefile config/ scripts/ docker/ docker-compose*.yml \
     dependencies/apt.txt dependencies/apt_ros.txt \
-    .github/workflows/verify.yml .github/workflows/images.yml .github/actions/ \
+    .github/workflows/verify.yml .github/workflows/images.yml .github/workflows/images-deep.yml .github/actions/ \
     .editorconfig .clang-format .gitattributes .dockerignore
 
 # 3b) 당신 것이지만 키트도 항목을 추가하는 세 파일은 손으로 병합합니다 —
@@ -298,8 +298,10 @@ make verify && make build && make test
 
 ## 🤖 CI (GitHub Actions)
 
-세 워크플로가 세 티어를 이룹니다. 흔한 push 가 컨테이너 빌드를 기다리지 않도록 빠른 티어를 분리했고,
-무거운 잡은 cron·수동 전용입니다. 셋 모두 `concurrency: cancel-in-progress` 로 같은 ref 의 이전 실행을 취소합니다.
+네 워크플로가 네 티어를 이룹니다. 흔한 push 가 컨테이너 빌드를 기다리지 않도록 빠른 티어를 분리했고,
+이미지를 통째로 굽는 잡은 별도 워크플로(`images-deep.yml`)에 모아 cron·수동 전용으로 두었습니다 — push 나 PR 의
+체크 목록에는 아예 나타나지 않습니다. 넷 모두 `concurrency: cancel-in-progress` 로 같은 ref 의 이전 실행을 취소합니다.
+커밋 하나가 만드는 체크는 최대 5 개입니다(`verify` 2 · `images` 2 · `project` 1).
 
 > **호스트 OS 범위**: CI 는 **Ubuntu(네이티브 Linux)** 와 **macOS** 러너에서 돕니다. GitHub 에 WSL2 러너는 없으므로
 > WSL2 경로(`/proc/version` 판정·`/dev/dxg`·`/usr/lib/wsl`·WSLg 소켓)는 CI 가 아니라 README 지원 매트릭스의
@@ -310,9 +312,9 @@ make verify && make build && make test
 | 바뀐 경로 | 도는 것 | 벽시계 · 러너 시간 |
 | :--- | :--- | :--- |
 | 어디든 (`scripts/`, `config/`, `Makefile`, `docs/` …) | `verify.yml` 두 잡 | ~30 s · ~1 min |
-| `docker/**`, `dependencies/apt*.txt`, apt 헬퍼 두 파일 | + `images.yml` 의 push 잡 (키 경로 3 · dev apt 해석 3 · ROS apt 해석 4 · 스테이지 빌드 1) | ~1 min · ~6 min |
+| `docker/**`, `dependencies/apt*.txt`, apt 헬퍼 두 파일 | + `images.yml` 두 잡 (`apt`: 키 경로 3 · CUDA 저장소 · ROS 해석 4 · dev apt 해석 3 / `image-stages`: 스테이지 빌드) | ~7 min · ~9 min |
 | `src/**`, `dependencies/**` | + `project.yml` (dev 이미지 빌드 → `mksync` → lint → test) | ~2 min · ~2 min |
-| 어떤 푸시에도 | 무거운 넷(`runtime-smoke` · `arm64-image` · `sif-artifact` · `prod-artifact`)은 돌지 않음 — 월요일 cron 과 `workflow_dispatch` 만 | — |
+| 어떤 푸시에도 | `images-deep.yml`(`runtime-smoke` · `arm64-image` · `sif-artifact` · `prod-artifact`)은 돌지 않음 — 월요일 04:00 UTC cron 과 `gh workflow run images-deep` 만 | — |
 
 > 이 저장소는 공개라 Actions 분은 무제한입니다. 비공개로 바꾸면 macOS 분이 Linux 의 10 배로 계산되므로
 > `macos-host` 를 PR·main 푸시로 좁히는 것이 첫 조정입니다. 같은 브랜치에 연속 푸시하면 이전 실행은 취소됩니다.
@@ -332,11 +334,12 @@ make verify && make build && make test
 `workflow_dispatch` 도 막히므로 무거운 잡을 손으로 돌리려면 먼저 켭니다. `make verify` 의 [host-prereqs] 가 이 스위치를
 스텁 `gh` 위에서 실행으로 검증합니다.
 
-세 워크플로가 공유하는 것: 토큰은 `permissions: contents: read` 로 체크아웃만 읽고, 이미지 잡은 먼저
+네 워크플로가 공유하는 것: 토큰은 `permissions: contents: read` 로 체크아웃만 읽고, 이미지 잡은 먼저
 `.github/actions/gate`(계약 스위트, 필요하면 러너 디스크 정리)를 거칩니다. Dockerfile 을 **직접** 빌드하는 잡
 (`image-stages` · `arm64-image` · `prod-artifact`)은 BuildKit 레이어를 Actions 캐시(`type=gha`, 타겟별 scope)에
 남겨 다음 push 에서 바뀌지 않은 레이어를 다시 빌드하지 않습니다. `make build`·`make bake-prod` 를 거치는 잡
-(`runtime-smoke` · `sif-artifact` · `project.yml`)은 개발자가 실제로 밟는 경로 자체가 검증 대상이라 캐시를 두지 않습니다.
+(`images-deep.yml` 의 `runtime-smoke` · `sif-artifact`, 그리고 `project.yml`)은 개발자가 실제로 밟는 경로 자체가
+검증 대상이라 캐시를 두지 않습니다.
 
 ### `verify.yml` — 빠른 티어 (모든 push · PR, 이미지 빌드 없음)
 
@@ -345,22 +348,28 @@ make verify && make build && make test
 | `contracts` | ubuntu | `make verify`(계약 전체) · 이름을 adopt 하고 스타터·README 를 바꾼 **포크 복사본**에서도 통과 · tty·BASH_ENV 없는 `ubuntu:22.04` 컨테이너에서 `util_aliases.sh` 부트스트랩 · 네이티브 Linux 호스트 감지(`IS_WSL=false`, GPU 플래그, DXG 마운트 중립) · `docker build --check` 멀티스테이지 린트 |
 | `macos-host` | macos | 같은 `make verify` 를 bash 3.2 · BSD sed/awk/stat 위에서 · macOS 호스트 감지가 cpu 프로필로 해석 · 모든 스크립트가 `--help` 에 0 으로 응답 |
 
-### `images.yml` — 느린 티어 (키트의 이미지 파이프라인)
+### `images.yml` — 중간 티어 (이미지를 굽지 않는 검사)
 
 트리거: `docker/**` · `scripts/util_apt_helper.sh` · `scripts/util_cuda_apt.sh` · `dependencies/apt.txt` · `dependencies/apt_ros.txt` ·
 워크플로 자신 · 매주 월요일 03:00 UTC · 수동. 파생 프로젝트의 의존성(`src/pyproject.toml`, `.repos`)은 여기서 보지 않습니다 —
 그것은 `project.yml` 의 몫입니다.
 
-| 잡 | 언제 | 무엇을 증명하나 |
-| :--- | :--- | :--- |
-| `apt-key-paths` | push마다 | 컨테이너 안(tty 없음)에서 `setup-ros-repo` 실행 — noetic/20.04, humble/22.04, humble 스냅샷 키 — 와 CUDA 저장소 핀 |
-| `apt-lists-resolve` | push마다 | Dockerfile 의 apt 목록을 뽑아 20.04 · 22.04 · 24.04 에서 후보 유무만 확인 (빌드 없이 ~30 s) |
-| `ros-lists-resolve` | push마다 | `apt*.txt` 의 dev 선택 전체가 foxy(final) · noetic · humble · jazzy 각자의 apt 인덱스에서 해석되는지 (빌드 없이 ~1 min) |
-| `image-stages` | push마다 | `base`·`build-core` 실제 빌드 — BASH_ENV 배선, 관리 인터프리터의 non-root 실행, uid/gid 충돌 해소(macOS 501:20, 이름 충돌 시 원인 명시) |
-| `runtime-smoke` | cron · 수동 | 전체 ROS 이미지 → `make start` → 비-bash 프로세스에서 `import rclpy` → `mksync` 후 venv 활성·명명 → ROS venv 가 시스템 인터프리터인지 |
-| `arm64-image` | cron · 수동 | QEMU 로 arm64 `base` 빌드, 아키텍처 태그와 `sif_arch` 일치 |
-| `sif-artifact` | cron · 수동 | 실제 Apptainer 로 prod SIF 굽기 — sha256·provenance 사이드카, 호출 uid 의 venv 접근, `src/` 미포함, 실행 기록의 종료 코드 전파(0 과 7) |
-| `prod-artifact` | cron · 수동 (dev · ros 매트릭스) | `prod-runtime` 체인 — 임의 uid 에서 venv 유지, ROS 는 시스템 인터프리터·빈 `/opt/uv`, dev 는 부트스트랩 도구 부재, 매니페스트의 템플릿 버전 |
+| 잡 | 무엇을 증명하나 |
+| :--- | :--- |
+| `apt` | 한 잡 안에서 네 단계: 컨테이너 안(tty 없음)에서 `setup-ros-repo` — noetic/20.04, humble/22.04, humble 스냅샷 키 · CUDA 저장소 핀 · `apt*.txt` 의 dev 선택 전체가 foxy(final) · noetic · humble · jazzy 각자의 인덱스에서 해석 · Dockerfile 의 apt 목록이 20.04 · 22.04 · 24.04 에서 해석. 실패한 배포판은 단계 로그가 이름으로 말합니다 |
+| `image-stages` | `base`·`build-core` 실제 빌드 — BASH_ENV 배선, 관리 인터프리터의 non-root 실행, uid/gid 충돌 해소(macOS 501:20, 이름 충돌 시 원인 명시) |
+
+### `images-deep.yml` — 무거운 티어 (이미지를 통째로 굽는 잡)
+
+트리거: 매주 월요일 04:00 UTC · `gh workflow run images-deep`. push·PR 에는 나타나지 않습니다 — 잡마다
+15~45 분이 들고, 체크 목록에 "Skipped" 줄만 남기기 때문입니다. **이미지 관련 변경을 병합하기 전에 한 번 돌리세요.**
+
+| 잡 | 무엇을 증명하나 |
+| :--- | :--- |
+| `runtime-smoke` | 전체 ROS 이미지 → `make start` → 비-bash 프로세스에서 `import rclpy` → `mksync` 후 venv 활성·명명 → ROS venv 가 시스템 인터프리터인지 |
+| `arm64-image` | QEMU 로 arm64 `base` 빌드, 아키텍처 태그와 `sif_arch` 일치 |
+| `sif-artifact` | 실제 Apptainer 로 prod SIF 굽기 — sha256·provenance 사이드카, 호출 uid 의 venv 접근, `src/` 미포함, 실행 기록의 종료 코드 전파(0 과 7) |
+| `prod-artifact` | `prod-runtime` 체인(dev · ros) — 임의 uid 에서 venv 유지, ROS 는 시스템 인터프리터·빈 `/opt/uv`, dev 는 부트스트랩 도구 부재, 매니페스트의 템플릿 버전 |
 
 ### `project.yml` — 파생 프로젝트의 루프
 

@@ -202,20 +202,20 @@ mksync
 | 조합 | 상태 | 근거 |
 | :--- | :--- | :--- |
 | 이미지 스테이지 빌드 (`base`, `build-core`) | ✅ 실행 검증 | CI(실행됨) `images.yml` image-stages |
-| Dockerfile apt 목록이 20.04 · 22.04 · 24.04 에서 해석 | ✅ 실행 검증 | CI(실행됨) `images.yml` apt-lists-resolve |
-| `apt*.txt` 매니페스트가 foxy · noetic · humble · jazzy 인덱스에서 해석 | ✅ 실행 검증 | CI(실행됨) `images.yml` ros-lists-resolve |
-| ROS 저장소·GPG (humble, 라이브 및 스냅샷 키; noetic) | ✅ 실행 검증 | CI(실행됨) `images.yml` apt-key-paths |
+| Dockerfile apt 목록이 20.04 · 22.04 · 24.04 에서 해석 | ✅ 실행 검증 | CI(실행됨) `images.yml` apt |
+| `apt*.txt` 매니페스트가 foxy · noetic · humble · jazzy 인덱스에서 해석 | ✅ 실행 검증 | CI(실행됨) `images.yml` apt |
+| ROS 저장소·GPG (humble, 라이브 및 스냅샷 키; noetic) | ✅ 실행 검증 | CI(실행됨) `images.yml` apt |
 | **ROS 1 noetic** (레거시 티어 — EOL 2025-05, 동작은 유지·검증되나 새 기능은 ROS 2 에만) | ✅ 실행 검증 — 계약(`build-entrypoints`·`workspace-overlay`)과 apt 키 경로 | CI(실행됨) · `make verify` |
 | 계약 스위트 63개 · Dockerfile 린트 | ✅ 실행 검증 | CI(실행됨) `verify.yml` contracts |
-| 개발 컨테이너 스모크 (빌드 · 기동 · ROS 2 파이썬) | ✅ 실행 검증 | CI(실행됨) `images.yml` runtime-smoke · 참조 호스트 |
+| 개발 컨테이너 스모크 (빌드 · 기동 · ROS 2 파이썬) | ✅ 실행 검증 | CI(실행됨) `images-deep.yml` runtime-smoke · 참조 호스트 |
 | WSL2 호스트: 감지 · 빌드 · 실행 (ROS 2) | ✅ 실행 검증 | 참조 호스트 |
 | NVIDIA GPU 패스스루 (`nvidia-smi`, `libcuda`) | ✅ 실행 검증 — **WSL2 경로만**. 네이티브 Linux 는 장치 노드가 달라(`/dev/nvidia*`) 별개 | 참조 호스트 |
 | GUI · GL 가속 (X11, WSLg/D3D12) | ✅ 실행 검증 — **WSL2 경로만** | 참조 호스트 |
-| 프로덕션 런타임 이미지 (non-root, venv) — dev · ros | ✅ 실행 검증 | CI(실행됨) `images.yml` prod-artifact · 참조 호스트 |
-| SIF 변환 · 실행 · 작업 기록 | ✅ 실행 검증 | CI(실행됨) `images.yml` sif-artifact · 참조 호스트 |
+| 프로덕션 런타임 이미지 (non-root, venv) — dev · ros | ✅ 실행 검증 | CI(실행됨) `images-deep.yml` prod-artifact · 참조 호스트 |
+| SIF 변환 · 실행 · 작업 기록 | ✅ 실행 검증 | CI(실행됨) `images-deep.yml` sif-artifact · 참조 호스트 |
 | SLURM 제출 · 실행 · 종료 상태 기록 | ✅ 실행 검증 — 컨테이너 클러스터. **컨테이너 런타임만 스텁** | 참조 호스트 |
 | **다중 노드 SLURM** (`--nodes=2`, 노드별 태스크 배치) | ✅ 실행 검증 — 2노드 컨테이너 클러스터 | 참조 호스트 |
-| arm64 이미지: 빌드 · 실행 · 계정 생성 | ✅ 실행 검증 — **QEMU 에뮬레이션** | CI(실행됨) `images.yml` arm64-image · 참조 호스트 |
+| arm64 이미지: 빌드 · 실행 · 계정 생성 | ✅ 실행 검증 — **QEMU 에뮬레이션** | CI(실행됨) `images-deep.yml` arm64-image · 참조 호스트 |
 | 네이티브 Linux 호스트 감지 (`IS_WSL=false`, GPU 플래그, DXG 마운트 중립화) | ✅ 실행 검증 | CI(실행됨) `verify.yml` contracts |
 | macOS 호스트 (bash 3.2 · BSD sed/awk) | ✅ 실행 검증 | CI(실행됨) `verify.yml` macos-host |
 | macOS GPU (Metal/MPS) | ❌ **미지원** — CPU 폴백으로만 동작 | — |
