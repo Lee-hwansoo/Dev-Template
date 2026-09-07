@@ -4128,6 +4128,7 @@ grep -[a-zA-Z]*P 	grep -P, a GNU extension
 (^|[^-_[:alnum:]])timeout +[0-9]	a bare timeout; macOS has neither it nor gtimeout, so use devkit_timeout
 \$\(python3 -c[^)]*yaml	a value read out of PyYAML, which the macOS interpreter does not have (a guarded capability test is fine)
 readlink -f	readlink -f, which macOS does not support (use devkit_resolve_path)
+grep -[a-zA-Z]*E.*(\(\||\|\))	an empty branch in an ERE alternation; BSD grep answers "empty (sub)expression" and exits 2
 LEGACY_RULES
 if docker_live; then
     legacy_out="$(docker run --rm -v "${ROOT_DIR}:/w:ro" -w /w -e SOURCED_ONLY="$sourced_only" bash:3.2 bash -c '
@@ -4193,7 +4194,7 @@ if upstream_checks && [ -f docs/DEVELOPMENT.md ]; then
                 joined = $0
                 while (joined ~ /\\$/) { sub(/\\$/, "", joined); getline nxt; joined = joined nxt }
                 sub(/#.*/, "", joined); print joined }' docs/DEVELOPMENT.md \
-        | tr ' ' '\n' | grep -vE '^(git|checkout|upstream/main|HEAD|--|)$' | sort -u
+        | tr ' ' '\n' | grep -vE '^(git|checkout|upstream/main|HEAD|--)$' | grep -v '^$' | sort -u
     }
     merge_take="$(merge_paths 'git checkout upstream/main -- ')"
     merge_keep="$(merge_paths 'git checkout HEAD -- ')"
