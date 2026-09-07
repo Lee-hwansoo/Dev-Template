@@ -4713,6 +4713,31 @@ awk '/^FROM /{stage=$NF} /^ARG OPENCV_CUDA/{declared[stage]=1}
      /mksync/ && $0 !~ /^#/ {uses[stage]=1}
      END { for (s in uses) if (!declared[s]) { print s; rc=1 } exit rc }' docker/Dockerfile >/dev/null \
     || log_err "a stage runs mksync without declaring ARG OPENCV_CUDA; the builder compiles against the default."
+# …and the two places a default is spelled must agree: an ARG default that
+# drifts from .env.example makes a direct `docker build` produce a different
+# image than `make build` (uv 0.10.10 vs whatever the ARG still said). Every
+# shared key at once, so a new pin is covered the day it is added. Upstream
+# only: a fork is told to edit .env.example (ROS_DISTRO, UV_EXTRA) and has no
+# reason to touch the Dockerfile's default.
+if upstream_checks; then
+    pin_count=0
+    while IFS= read -r pin_line; do
+        pin_key="${pin_line%%=*}"; pin_val="${pin_line#*=}"
+        # The image bakes a fallback LABEL here; the project name lives in .env.
+        [ "$pin_key" = COMPOSE_PROJECT_NAME ] && continue
+        pin_arg="$(sed -n "s/^ARG ${pin_key}=//p" docker/Dockerfile | head -n 1)"
+        [ -n "$pin_arg" ] || continue
+        pin_count=$((pin_count + 1))
+        # Both sides unquoted: the Dockerfile writes ARG X="" where .env.example
+        # writes X= for the same "no value".
+        pin_arg="${pin_arg%\"}"; pin_arg="${pin_arg#\"}"
+        pin_val="${pin_val%\"}"; pin_val="${pin_val#\"}"
+        [ "$pin_arg" = "$pin_val" ] \
+            || log_err "${pin_key} is '${pin_arg}' in docker/Dockerfile but '${pin_val}' in .env.example; a direct docker build differs from 'make build'."
+    done < <(grep -E '^[A-Z0-9_]+=' .env.example)
+    [ "$pin_count" -ge 10 ] \
+        || log_err "the ARG/.env.example pin comparison found only ${pin_count} shared keys; the extraction broke."
+fi
 ok "Advertised build settings arrive inside the image, and nothing is passed that no stage declares."
 
 # =============================================================================
