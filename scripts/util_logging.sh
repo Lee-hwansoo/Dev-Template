@@ -65,7 +65,10 @@ _log_write() {
     local when=""
     if [ "${__DEVKIT_PRINTF_TIME:-}" = 1 ]; then printf -v when '%(%F %T)T' -1
     else when="$(date '+%F %T')"; fi
-    echo -e "${when} $3" >> "$__DEVKIT_LOG_PATH" 2>/dev/null
+    # Braces around the redirect too: a failure to OPEN the file is reported by
+    # the shell before 2>/dev/null applies, so an unwritable LOG_FILE printed
+    # "Permission denied" after every line the caller logged.
+    { echo -e "${when} $3" >> "$__DEVKIT_LOG_PATH"; } 2>/dev/null
     return 0
 }
 

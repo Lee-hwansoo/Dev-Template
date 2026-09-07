@@ -42,6 +42,11 @@ source "${WS_ROOT}/scripts/util_logging.sh" 2>/dev/null || true
 # survives in the log/ volume. Not exported — user shells must not interleave
 # into it. Truncated past 1 MB, since it accretes across every start.
 LOG_FILE="${LOG_FILE:-log/entrypoint.log}"
+# compose passes LOG_FILE through for every service, so the name arrives
+# already exported and the assignment above kept it that way: every user
+# shell then logged into root's boot file and every log_* call printed
+# 'Permission denied'.
+export -n LOG_FILE 2>/dev/null || true
 # Boot lines land in `docker logs` beside the application's own output, so they
 # say who is speaking. Not exported: a user shell must not inherit the tag.
 LOG_PREFIX="[Entrypoint]"
@@ -297,7 +302,14 @@ if [ -f "$REPOS_FILE" ] && [ -f "$SYNC_DEPS" ] && \
     bash "$SYNC_DEPS" || log_warn "Dependency sync failed. Re-run with: sync_deps"
     # This still runs as root, and the clone lands in the bind mount: hand it
     # over, or neither the container user nor the host can touch the tree.
-    sync_owner_if_root "$THIRD_PARTY"
+    # Unconditionally recursive: the directory itself arrives from the bind
+    # mount already user-owned (it is tracked, .gitkeep), so the ownership
+    # shortcut in sync_owner_if_root saw 'already correct' and left every
+    # cloned repository root-owned.
+    if [ "$(id -u)" = 0 ] && [ -n "${CONTAINER_USER:-}" ] && [ "${CONTAINER_USER}" != root ]; then
+        chown -R "${CONTAINER_USER}:$(id -g "${CONTAINER_USER}")" "$THIRD_PARTY" 2>/dev/null \
+            || log_warn "Could not synchronize ownership: $THIRD_PARTY"
+    fi
 fi
 
 # =============================================================================

@@ -41,13 +41,22 @@ ERROR  := $(RED)[ERROR]$(NC)
 # exports; for those the file still wins, or the host locale lands in the image.
 ENV_AMBIENT := LANG|TZ|DEBIAN_FRONTEND
 ENV_MK      := .docker_cache/env.mk
-$(shell mkdir -p .docker_cache && bash -c 'source config/util_paths.sh >/dev/null 2>&1; devkit_env_render "$$@"' \
-	_ '$(ENV_AMBIENT)' $(wildcard .env) .env.example > $(ENV_MK) 2>/dev/null)
+# Temp + mv, and fatal on failure: writing in place was read empty by a
+# concurrent make (a `make down` then targeted the project 'devkit'), and a
+# .docker_cache left root-owned by an in-container run dropped every .env
+# setting without a word.
+ENV_MK_STATUS := $(shell mkdir -p .docker_cache 2>/dev/null && tmp=$$(mktemp "$(ENV_MK).XXXXXX" 2>/dev/null) && \
+	{ bash -c 'source config/util_paths.sh >/dev/null 2>&1; devkit_env_render "$$@"' \
+		_ '$(ENV_AMBIENT)' $(wildcard .env) .env.example > "$$tmp" && mv "$$tmp" "$(ENV_MK)" && echo ok; } || \
+	{ rm -f "$$tmp" 2>/dev/null; echo fail; })
+ifeq ($(ENV_MK_STATUS),fail)
+$(error Cannot write $(ENV_MK), so .env would be ignored entirely. Check .docker_cache — an in-container run may own it as root ('sudo rm -rf .docker_cache'))
+endif
 -include $(ENV_MK)
 shell_quote = '$(subst ','"'"',$(1))'
 # Detector inputs the user set explicitly — from any layer, since `?=` keeps
 # their origin — are handed to the probe and key its cache.
-DETECT_INPUTS := ROS_DISTRO BASE_IMAGE UV_PYTHON WORKSPACE_PATH DOCKER_DEV_CACHE_DIR
+DETECT_INPUTS := ROS_DISTRO BASE_IMAGE UV_PYTHON WORKSPACE_PATH DOCKER_DEV_CACHE_DIR HOST_UID HOST_GID
 DETECT_OVERRIDES := $(strip $(foreach v,$(DETECT_INPUTS),\
 	$(if $(filter command line environment override,$(origin $(v))),$(call shell_quote,$(v)=$($(v))))))
 
@@ -55,7 +64,7 @@ DETECT_OVERRIDES := $(strip $(foreach v,$(DETECT_INPUTS),\
 # the project was created from the GitHub template button and carries none of
 # DevKit's history; the short commit is best-effort on top of it.
 DEVKIT_VERSION := $(shell cat VERSION 2>/dev/null || echo unknown)
-DEVKIT_COMMIT  := $(shell git -C $(CURDIR) rev-parse --short HEAD 2>/dev/null)
+DEVKIT_COMMIT  := $(shell git -C $(call shell_quote,$(CURDIR)) rev-parse --short HEAD 2>/dev/null)
 
 # `make adopt` inputs, honoured ONLY from the command line: NAME and DESC are
 # ordinary environment variables (WSL exports NAME=<hostname>) and make imports
@@ -78,7 +87,7 @@ export
 # Help/teardown/validation targets skip detection and never pay the
 # nvidia-smi / docker-info probe.
 # Bakes require detection to derive BASE_IMAGE and UV_PYTHON from ROS_DISTRO.
-DETECTOR_EXEMPT := help setup adopt verify ci ci-on ci-off stop down logs clean clean-cache clean-all docker-clean slurm-status slurm-cancel completion completion-install check-host env-check run-sif
+DETECTOR_EXEMPT := help h setup adopt verify ci ci-on ci-off stop down logs clean clean-cache clean-all docker-clean slurm-status slurm-cancel completion completion-install check-host env-check run-sif update-gpg stats top
 # A bare `make` runs the default target (help), so it must not pay for
 # detection either — substitute 'help' before filtering.
 NEEDS_DETECTOR  := $(filter-out $(DETECTOR_EXEMPT),$(or $(MAKECMDGOALS),help))
@@ -89,10 +98,19 @@ ifneq ($(NEEDS_DETECTOR),)
 # Included AFTER .env, so its `:=` wins — stale whenever .env is newer, or a
 # cache built before an edit overrides ROS_DISTRO forever. `shell test`, not
 # `wildcard`: make caches directory listings within a run.
+# Beyond mtimes the cache must still DESCRIBE this host: it records the
+# workspace it was written for (a copied checkout kept mounting the original)
+# and session-scoped paths (the X cookie and the ssh-agent socket change at
+# every login; compose then created root-owned directories at the dead paths
+# and agent forwarding was silently gone).
 DETECTED_ENV_FRESH := $(shell [ -f "$(DETECTED_ENV_FILE)" ] \
 	&& [ ! .env -nt "$(DETECTED_ENV_FILE)" ] \
 	&& [ ! .env.example -nt "$(DETECTED_ENV_FILE)" ] \
-	&& [ ! scripts/check_env.sh -nt "$(DETECTED_ENV_FILE)" ] && echo yes)
+	&& [ ! scripts/check_env.sh -nt "$(DETECTED_ENV_FILE)" ] \
+	&& [ ! config/util_paths.sh -nt "$(DETECTED_ENV_FILE)" ] \
+	&& grep -qxF 'HOST_WORKSPACE_PATH := $(CURDIR)' "$(DETECTED_ENV_FILE)" \
+	&& sed -n 's/^HOST_\(XAUTHORITY\|SSH_AUTH_SOCK\) := //p' "$(DETECTED_ENV_FILE)" \
+		| { while read -r p; do [ -z "$$p" ] || [ -e "$$p" ] || exit 1; done; } && echo yes)
 ifeq ($(DETECTED_ENV_FRESH),)
 # Write via temp + mv: a failed or interrupted probe must never leave a partial
 # cache behind, because the freshness guard above would then reuse it forever and
@@ -116,12 +134,12 @@ ifeq ($(filter ros dev,$(ENV)),)
 $(error ENV must be 'ros' or 'dev' (got: '$(ENV)'))
 endif
 GPU_MODE ?= auto
-# intel/amd are aliases for the shared iGPU profile (same vocabulary as the
-# in-container `gpu` helper). `override` so the mapping also applies to
-# command-line assignments (make GPU_MODE=intel ...).
-override GPU_MODE := $(if $(filter intel amd,$(GPU_MODE)),igpu,$(GPU_MODE))
-ifeq ($(filter auto nvidia igpu cpu,$(GPU_MODE)),)
-$(error GPU_MODE must be auto, nvidia, igpu or cpu (got: '$(GPU_MODE)'))
+# intel/amd share the iGPU COMPOSE PROFILE but stay distinct vocabulary for the
+# in-container `gpu` helper (iris vs radeonsi). Rewriting the variable itself to
+# 'igpu' replaced the user's answer before it was exported, so the container ran
+# the generic mesa path; the profile mapping lives in RESOLVE_SVC_MODE alone.
+ifeq ($(filter auto nvidia igpu intel amd cpu,$(GPU_MODE)),)
+$(error GPU_MODE must be auto, nvidia, igpu, intel, amd or cpu (got: '$(GPU_MODE)'))
 endif
 ifeq ($(filter dev prod slurm,$(SIF_MODE)),)
 $(error SIF_MODE must be 'dev', 'prod' or 'slurm' (got: '$(SIF_MODE)'))
@@ -152,6 +170,7 @@ endef
 # NVIDIA is only chosen when the container toolkit is actually usable.
 define RESOLVE_SVC_MODE
 SVC_MODE=$${GPU_MODE:-auto}; \
+	case "$$SVC_MODE" in intel|amd) SVC_MODE=igpu ;; esac; \
 	if [ "$$SVC_MODE" = "auto" ]; then \
 		if [ "$(HAS_NVIDIA)" = "true" ] && [ "$(HAS_TOOLKIT)" = "true" ]; then SVC_MODE=nvidia; \
 		elif [ "$(HAS_DRI)" = "true" ]; then SVC_MODE=igpu; \
@@ -345,7 +364,7 @@ status: check
 	@printf "  %-19s %s\n" "XDG runtime:"  "$(HOST_XDG_RUNTIME_DIR)"
 	@printf "  %-19s %s\n" "Xauthority:"   "$(HOST_XAUTHORITY)"
 	@printf "  %-19s %s\n" "ssh-agent:"    "$(if $(HOST_SSH_AUTH_SOCK),$(HOST_SSH_AUTH_SOCK),- (not forwarded))"
-	@printf "  %-19s %s\n" "git identity:" "$(HOST_GITCONFIG)"
+	@printf "  %-19s %s\n" "git identity:" "$(or $(GIT_CONFIG_PATH),$(HOST_GITCONFIG))"
 	@printf "  %-19s %s\n" "Container user:" "$(CONTAINER_USER) ($(HOST_UID):$(HOST_GID))"
 	@echo -e "\n$(BCYAN)[Running Containers]$(NC)  (project-wide; other targets act on ENV=$(ENV))"
 	@docker ps --filter "label=com.docker.compose.project=$(COMPOSE_PROJECT_NAME)" || true
@@ -486,7 +505,11 @@ stop:
 	@echo -e "  $(OK) Stopped $(ENV) containers (other ENV untouched)."
 
 ## @target restart : Restart environment containers
-restart: stop start
+restart:
+	$(call GUARD_HOST_ONLY)
+	@# Sequential sub-makes: as prerequisites, `make -j restart` started the new
+	@# containers before the old ones had stopped.
+	@$(MAKE) --no-print-directory stop && $(MAKE) --no-print-directory start
 
 ## @target shell : Enter container interactive shell
 shell:
@@ -622,6 +645,9 @@ gpus:
 		nvidia-smi; \
 	elif [ -d /dev/dri ] && compgen -G "/dev/dri/renderD*" >/dev/null; then \
 		echo -e "  $(INFO) Intel/AMD iGPU (DRI) active: $$(ls /dev/dri/renderD* 2>/dev/null)"; \
+	elif [ -e /dev/dxg ]; then \
+		echo -e "  $(INFO) WSL2 D3D12 GPU (/dev/dxg) active — the host GPU is reached through the Mesa bridge."; \
+		echo -e "  $(INFO) Run nvidia-smi.exe or Task Manager on Windows for utilisation."; \
 	else \
 		echo -e "  $(WARN) No dedicated NVIDIA GPU or DRI iGPU detected on host."; \
 	fi
@@ -663,6 +689,11 @@ down:
 
 ## @target clean : Delete build and install output directories
 clean:
+	$(call GUARD_HOST_ONLY)
+	@# Ask BEFORE deleting anything: the confirmation used to sit after the rm,
+	@# so a non-interactive `make clean KEEP_VENV=0` removed build/, devel/, log/
+	@# and install/* and only then refused with 'requires FORCE=1'.
+	$(if $(filter 0 false no,$(KEEP_VENV)),$(call CONFIRM,This also deletes install/.venv — recreating it needs a full 'mksync'))
 	@# devel/ is the ROS 1 (catkin_make) counterpart of install/: it lives next to
 	@# build/ on the workspace root and goes stale exactly the same way. With a
 	@# bind-mounted build/ (ROS_BUILD_VOL=./build) Docker created it as root,
@@ -680,7 +711,6 @@ clean:
 	@if [ -d install ]; then \
 		find install -mindepth 1 -maxdepth 1 ! -name '.venv' -exec rm -rf {} + 2>/dev/null || true; \
 	fi
-	$(if $(filter 0 false no,$(KEEP_VENV)),$(call CONFIRM,This also deletes install/.venv — recreating it needs a full 'mksync'))
 	@if [ -n "$(filter 0 false no,$(KEEP_VENV))" ]; then \
 		rm -rf install/.venv 2>/dev/null || true; \
 		echo -e "  $(OK) Build artifacts and virtualenv removed."; \
@@ -706,6 +736,7 @@ clean:
 
 ## @target clean-cache : Wipe .docker_cache (host detection cache & placeholders)
 clean-cache:
+	$(call GUARD_HOST_ONLY)
 	@RUNNING=$$(docker ps -q --filter "label=com.docker.compose.project=$(COMPOSE_PROJECT_NAME)" 2>/dev/null | wc -l); \
 	if [ "$$RUNNING" -gt 0 ]; then \
 		echo -e "  $(ERROR) $$RUNNING container(s) still running with .docker_cache bind-mounted."; \
@@ -773,6 +804,7 @@ clean-all:
 # HOST-WIDE: `prune --volumes` also takes volumes of other, merely-stopped
 # projects. Shows what is at stake and asks, unless FORCE=1 / CI=true.
 docker-clean:
+	$(call GUARD_HOST_ONLY)
 	@echo -e "  $(WARN) This prunes Docker data for EVERY project on this host, not just $(COMPOSE_PROJECT_NAME)."
 	@docker system df 2>/dev/null | sed 's/^/    /' || true
 	@ORPHANS=$$(docker volume ls -qf dangling=true 2>/dev/null); \

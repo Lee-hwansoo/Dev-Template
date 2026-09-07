@@ -116,13 +116,19 @@ devkit_env_value() {
 # (LANG, TZ… — exported by every shell) are re-emitted with `=` in reverse
 # order so the file still wins for them; a host locale must not reach an image.
 # '#' is escaped so a value never turns into a make comment.
+# A value is DATA, so make's three metacharacters are neutralised: '#' would
+# start a comment, '$' was expanded ('log/$USER.log' reached compose as
+# 'log/SER.log'), and a trailing backslash continued the line and swallowed
+# the next key. '$()' expands to nothing and ends the line.
+devkit_env_escape() { sed -e 's/#/\\#/g' -e 's/[$]/$$/g' -e 's/\\$/\\$()/'; }
+
 devkit_env_render() {
     local ambient="$1" file i; shift
     for file in "$@"; do
         # `?=` preserves file/environment precedence, but emitting every line
         # would make the FIRST duplicate win. Compose and devkit_env_value use
         # the last assignment within one file, so emit only that occurrence.
-        devkit_env_entries "$file" | sed 's/#/\\#/g' | awk -F'\t' '
+        devkit_env_entries "$file" | devkit_env_escape | awk -F'\t' '
             {
                 key[NR] = $1
                 value[NR] = substr($0, length($1) + 2)
@@ -134,7 +140,7 @@ devkit_env_render() {
             }'
     done
     for (( i = $#; i >= 1; i-- )); do
-        devkit_env_entries "${!i}" | sed 's/#/\\#/g' \
+        devkit_env_entries "${!i}" | devkit_env_escape \
             | awk -F'\t' -v re="^(${ambient})\$" '$1 ~ re { print $1 " = " $2 }'
     done
 }

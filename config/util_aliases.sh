@@ -439,10 +439,11 @@ mtest() {
                 log_error "No build directory — run 'mbuild' first."
                 return 1
             fi
-            # --test-dir keeps this working from any cwd; ctest is a no-op with a
-            # clear message when the project registers no tests.
+            # cd, not --test-dir: that flag arrived in CMake 3.20 and 20.04
+            # (noetic) ships 3.16, which IGNORES it and tests the cwd instead —
+            # mtest was green there without running the project's tests.
             __require_cmd ctest || return 1
-            ctest --test-dir "${WS_ROOT}/build" --output-on-failure "$@" ;;
+            ( cd "${WS_ROOT}/build" && ctest --output-on-failure "$@" ) ;;
         *)  __pytest "$@" ;;
     esac
 }

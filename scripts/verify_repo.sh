@@ -372,7 +372,47 @@ grep -qE '^ros-\$\{ROS_DISTRO\}-tf2-ros-py #.*!foxy' dependencies/apt_ros.txt \
 # …and CI resolves the whole selection against each distro's own index, foxy included.
 grep -q 'ros-lists-resolve:' .github/workflows/images.yml && grep -qE "distro: foxy,\s+snapshot: final" .github/workflows/images.yml \
     || { log_err "images.yml has no ros-lists-resolve job covering foxy (snapshot final); a package missing from one distro's index is found four minutes into a build."; apt_errors=1; }
+# mtest's CMake branch must RUN from build/: --test-dir arrived in CMake 3.20 and
+# 20.04 (noetic) ships 3.16, which ignores the flag and tests the CWD instead —
+# a green mtest that ran none of the project's tests. Against a ctest stub that
+# records the directory it was started in.
+mtest_probe="$(probe_dir config scripts)"
+mkdir -p "$mtest_probe/build" "$mtest_probe/bin"
+: > "$mtest_probe/CMakeLists.txt"
+printf '#!/bin/sh\nprintf "%%s|%%s\\n" "$(pwd -P)" "$*" > "%s/ctest.log"\n' "$mtest_probe" > "$mtest_probe/bin/ctest"
+chmod +x "$mtest_probe/bin/ctest"
+( cd "$mtest_probe" && PATH="$mtest_probe/bin:$probe_min_path" WORKSPACE_PATH="$mtest_probe" \
+  bash -c 'source config/util_aliases.sh >/dev/null 2>&1; mtest' ) >/dev/null 2>&1 || true
+mtest_seen="$(cat "$mtest_probe/ctest.log" 2>/dev/null || echo '<ctest never ran>')"
+mtest_want="$(cd "$mtest_probe/build" && pwd -P)"
+case "$mtest_seen" in
+    "${mtest_want}|"*) case "$mtest_seen" in
+            *--test-dir*) log_err "mtest passes --test-dir, which CMake 3.16 (noetic) ignores (${mtest_seen})."; apt_errors=1 ;;
+        esac ;;
+    *) log_err "mtest started ctest in '${mtest_seen%%|*}', not the build directory; on CMake 3.16 that runs the caller's cwd tests (${mtest_seen})."; apt_errors=1 ;;
+esac
+rm -rf "$mtest_probe"
 [ "$apt_errors" -eq 0 ] && log_ok "APT tag-filter contract holds (no-distro selection excludes ros-*, runtime excludes dev/gui, '!<distro>' excludes per distro)."
+
+# The user's GPU_MODE reaches the CONTAINER as written: intel and amd share the
+# iGPU compose profile but are distinct vocabulary for the in-container `gpu`
+# helper (iris vs radeonsi), and mapping the variable itself to 'igpu' before
+# the export replaced the user's answer with the generic mesa path.
+gpumode_probe="$(cd "$(probe_dir scripts config docker dependencies)" && pwd -P)"
+cp Makefile "${ROOT_DIR}/.env.example" "$gpumode_probe/"
+for gpumode_case in "intel igpu" "amd igpu" "cpu cpu" "nvidia nvidia"; do
+    set -- $gpumode_case
+    gpumode_out="$( cd "$gpumode_probe" && GPU_MODE="$1" make -pn help 2>/dev/null | sed -n 's/^GPU_MODE = //p' | head -n 1 || true )"
+    [ "$gpumode_out" = "$1" ] \
+        || { log_err "GPU_MODE=$1 reaches the container as '${gpumode_out}'; the in-container gpu helper would pick the wrong driver."; compose_errors=1; }
+    gpumode_svc="$( cd "$gpumode_probe" && GPU_MODE="$1" make --eval='__svc: ; @$(RESOLVE_SVC_MODE); echo "$$TARGET_SVC"' __svc 2>/dev/null | tail -n 1 || true )"
+    [ "${gpumode_svc##*-}" = "$2" ] \
+        || { log_err "GPU_MODE=$1 selects the compose service '${gpumode_svc}' (expected the -$2 profile)."; compose_errors=1; }
+done
+gpumode_rc=0; ( cd "$gpumode_probe" && GPU_MODE=bogus make -n build ) >/dev/null 2>&1 || gpumode_rc=$?
+[ "$gpumode_rc" -ne 0 ] \
+    || { log_err "GPU_MODE=bogus is accepted; compose would fall back to a profile nobody asked for."; compose_errors=1; }
+rm -rf "$gpumode_probe"
 
 # =============================================================================
 # [gpu-env-persist] GPU environment persistence: `docker exec` shells do not run the
@@ -480,6 +520,17 @@ a quoted value loses its quotes|--extra gpu|UV_SYNC_FLAGS|DEVKIT_UNUSED=1
 an unquoted ' # …' tail is a comment|a value|DESC|DEVKIT_UNUSED=1
 a single-quoted value keeps its spaces|/tmp/x y.sif|SIF_FILE|DEVKIT_UNUSED=1
 CASES
+# A value is DATA. `make -pn` prints the definition, so these two read what a
+# RECIPE resolves and what a child process inherits: '$' used to be expanded as
+# a make variable ('log/$USER.log' reached compose as 'log/SER.log') and a
+# trailing backslash continued the line, swallowing the key below it.
+printf 'ESC_DOLLAR=log/$USER.log\nESC_TAIL=C:\\data\\\nESC_NEXT=/runs\n' >> "$prec_probe/.env"
+prec_expanded="$(cd "$prec_probe" && make --eval='__esc: ; @printf "%s|%s|%s\n" '"'"'$(ESC_DOLLAR)'"'"' '"'"'$(ESC_TAIL)'"'"' '"'"'$(ESC_NEXT)'"'"'' __esc 2>/dev/null || true)"
+[ "$prec_expanded" = 'log/$USER.log|C:\data\|/runs' ] \
+    || { log_err "config precedence: a value carrying '\$' or a trailing backslash is mangled — a recipe resolves '${prec_expanded}' (expected 'log/\$USER.log|C:\data\|/runs')."; prec_errors=1; }
+prec_child="$(cd "$prec_probe" && make --eval='__esc2: ; @env | sed -n "s/^ESC_DOLLAR=//p"' __esc2 2>/dev/null || true)"
+[ "$prec_child" = 'log/$USER.log' ] \
+    || { log_err "config precedence: the value exported to a child process is '${prec_child}' (expected 'log/\$USER.log'); compose would build from the mangled string."; prec_errors=1; }
 [ "$(cd "$prec_probe" && make -pn help IMAGE_TAG=fromcli 2>/dev/null | sed -n 's/^IMAGE_TAG = //p' | head -n 1)" = fromcli ] \
     || { log_err "config precedence: the make command line does not beat .env."; prec_errors=1; }
 # The one parser, read from a script too.
@@ -594,6 +645,45 @@ advertised="$(printf '%s\n%s\n' "$adv_help" "$adv_motd" | sort -u | sed '/^$/d')
 defined="$(bash --norc -ic 'WORKSPACE_PATH='"$ROOT_DIR"' source config/util_aliases.sh >/dev/null 2>&1
     compgen -a; compgen -A function' 2>/dev/null | sort -u || true)"
 undefined="$(comm -23 <(echo "$advertised") <(echo "$defined") | grep -vE '^(help|noetic|share)$' || true)"
+# …and the cache must still DESCRIBE this host. A copy of the checkout kept
+# mounting the ORIGINAL directory as /workspace, and session-scoped paths (the
+# X cookie, the ssh-agent socket) survived a re-login, so compose created
+# root-owned directories at the dead paths.
+cache_moved="$(cd "$(probe_dir)" && pwd -P)"
+cp -R "$cache_probe/.docker_cache" "$cache_moved/" 2>/dev/null || true
+cp Makefile "${ROOT_DIR}/.env.example" "$cache_moved/"
+for cache_link in scripts config docker dependencies; do ln -s "${ROOT_DIR}/${cache_link}" "$cache_moved/${cache_link}"; done
+# The cache must look FRESH to the mtime guard, or this probe proves nothing.
+touch "$cache_moved/.docker_cache/"detected-env*.mk 2>/dev/null || true
+cache_ws="$(cd "$cache_moved" && env -u DOCKER_DEV_CACHE_DIR make -pn build 2>/dev/null | sed -n 's/^HOST_WORKSPACE_PATH :\?= //p' | head -n 1 || true)"
+[ "$cache_ws" = "$cache_moved" ] \
+    || { log_err "a cache copied from another checkout is reused: HOST_WORKSPACE_PATH is '${cache_ws}', not '${cache_moved}' — the container would mount the old tree."; cache_errors=1; }
+# A cache naming a path that has since disappeared (the X cookie and the
+# ssh-agent socket are new at every login) must be re-probed, not reused.
+( cd "$cache_moved" && env -u DOCKER_DEV_CACHE_DIR make -pn build ) >/dev/null 2>&1 || true
+cache_file="$(find "$cache_moved/.docker_cache" -name 'detected-env*.mk' 2>/dev/null | head -n 1)"
+if [ -n "$cache_file" ]; then
+    sed -i.bak "s|^HOST_XAUTHORITY := .*|HOST_XAUTHORITY := ${cache_moved}/gone.xauth|" "$cache_file" && rm -f "${cache_file}.bak"
+    touch "$cache_file"
+    cache_dead="$(cd "$cache_moved" && env -u DOCKER_DEV_CACHE_DIR make -pn build 2>/dev/null | sed -n 's/^HOST_XAUTHORITY := //p' | head -n 1 || true)"
+    [ "$cache_dead" != "${cache_moved}/gone.xauth" ] \
+        || { log_err "a cache naming a HOST_XAUTHORITY that no longer exists is reused; compose would re-create the dead path as a root-owned directory and X auth would be silently gone."; cache_errors=1; }
+else
+    log_err "the moved-checkout probe produced no detected-env*.mk to test."; cache_errors=1
+fi
+rm -rf "$cache_moved"
+# The .env include is written atomically and its failure is fatal: writing in
+# place, a concurrent make read it empty and acted on the wrong compose project;
+# an unwritable .docker_cache dropped every .env setting silently.
+grep -q 'mv "$$tmp" "$(ENV_MK)"' Makefile && grep -qF 'ifeq ($(ENV_MK_STATUS),fail)' Makefile \
+    || { log_err "Makefile writes $(ENV_MK) in place or ignores a failure; .env would be silently dropped."; cache_errors=1; }
+cache_ro="$(cd "$(probe_dir scripts config docker dependencies)" && pwd -P)"
+cp Makefile "${ROOT_DIR}/.env.example" "$cache_ro/"; printf 'COMPOSE_PROJECT_NAME=realproj\n' > "$cache_ro/.env"
+mkdir -p "$cache_ro/.docker_cache"; chmod 555 "$cache_ro/.docker_cache"
+cache_ro_rc=0; cache_ro_out="$( cd "$cache_ro" && make -n help 2>&1 )" || cache_ro_rc=$?
+{ [ "$cache_ro_rc" -ne 0 ] && grep -qi 'docker_cache' <<< "$cache_ro_out"; } \
+    || { log_err "an unwritable .docker_cache does not stop make (rc ${cache_ro_rc}); every .env setting would be ignored in silence."; cache_errors=1; }
+chmod 755 "$cache_ro/.docker_cache"; rm -rf "$cache_ro"
 if [ -z "$undefined" ]; then
     log_ok "Every advertised in-container shortcut resolves to an alias or function."
 else
@@ -671,10 +761,40 @@ grep -q '\[Entrypoint\]' "$ep_probe/log/entrypoint.log" 2>/dev/null \
     || { log_err "a boot with GPU_MODE=cpu did not persist ~/.gpu_env.sh; docker exec shells would lose the GPU settings."; bridge_errors=1; }
 ep_env="$(cd "$ep_probe" && env -i PATH="$probe_min_path" HOME="$ep_probe" WORKSPACE_PATH="$ep_probe" \
     bash "${ROOT_DIR}/docker/entrypoint.sh" --env sh -c 'echo "$WS_ROOT"' 2>/dev/null || true)"
+# LOG_FILE is the entrypoint's OWN boot log: compose passes the name through for
+# every service, so it arrived already exported and every user shell then logged
+# into root's file, printing "Permission denied" after each line.
+ep_leak="$(cd "$ep_probe" && env -i PATH="$probe_min_path" HOME="$ep_probe" WORKSPACE_PATH="$ep_probe" LOG_FILE=log/entrypoint.log \
+    bash "${ROOT_DIR}/docker/entrypoint.sh" sh -c 'echo "[${LOG_FILE-unset}]"' 2>/dev/null | tail -n 1)"
+[ "$ep_leak" = '[unset]' ] \
+    || { log_err "the entrypoint hands LOG_FILE=${ep_leak} to the command; every user shell would append to root's boot log."; bridge_errors=1; }
+# …and the file half of the logger never speaks, whatever the path is worth.
+ep_noise="$( LOG_FILE=/proc/devkit-nonexistent/x.log bash -c 'source scripts/util_logging.sh; log_info probe' 2>&1 >/dev/null )"
+[ -z "$ep_noise" ] \
+    || { log_err "an unwritable LOG_FILE makes every log line print '${ep_noise}'."; bridge_errors=1; }
 [ "$ep_env" = "$ep_probe" ] \
     || { log_err "'/entrypoint.sh --env <cmd>' hands the command no resolved environment (WS_ROOT='${ep_env}')."; bridge_errors=1; }
+# The first-run clone changes hands ENTIRELY. src/thirdparty is tracked, so the
+# bind mount hands it over already user-owned and the ownership shortcut in
+# sync_owner_if_root then skipped everything cloned beneath it.
+if docker_live; then
+    ep_own="$(probe_dir)"; mkdir -p "$ep_own/ws/src/thirdparty" "$ep_own/ws/dependencies" "$ep_own/ws/bin"
+    for ep_copy in config scripts docker; do cp -R "${ROOT_DIR}/${ep_copy}" "$ep_own/ws/${ep_copy}"; done
+    : > "$ep_own/ws/src/thirdparty/.gitkeep"
+    printf 'repositories:\n  a: {type: git, url: https://example.invalid/a.git, version: %s}\n' \
+        "0123456789abcdef0123456789abcdef01234567" > "$ep_own/ws/dependencies/dependencies.repos"
+    # vcs is called as `vcs import <dir>`: the clone lands under $2.
+    printf '#!/bin/sh\nmkdir -p "$2/cloned/.git"\n' > "$ep_own/ws/bin/vcs"; chmod +x "$ep_own/ws/bin/vcs"
+    ep_owner="$(docker run --rm -v "$ep_own/ws:/workspace" -w /workspace -e CONTAINER_USER=user -e WORKSPACE_PATH=/workspace \
+        -e PATH=/workspace/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/usr/bin:/bin --entrypoint bash ubuntu:22.04 \
+        -c 'useradd -m -u 1000 user 2>/dev/null; bash docker/entrypoint.sh sh -c "echo OWNER=\$(stat -c %U /workspace/src/thirdparty/cloned)"' 2>/dev/null \
+        | sed -n 's/^OWNER=//p' | tail -n 1 || true)"
+    [ "$ep_owner" = user ] \
+        || { log_err "after the first-run sync the cloned tree is owned by '${ep_owner:-nothing}' (expected user); neither the container user nor the host could write it."; bridge_errors=1; }
+    rm -rf "$ep_own"
+fi
 rm -rf "$ep_probe"
-[ "$bridge_errors" -eq 0 ] && log_ok "Runtime env reaches login, interactive and non-interactive shells; the entrypoint boots, logs and wraps a command as a user."
+[ "$bridge_errors" -eq 0 ] && log_ok "Runtime env reaches login, interactive and non-interactive shells; the entrypoint boots, logs, hands the sync over and wraps a command as a user."
 
 # =============================================================================
 # [ros-distro-set] The supported ROS distros are spelled in two files that
@@ -1230,7 +1350,7 @@ done
 # iterates checks nothing.
 hostdep_probe="$(probe_dir)"
 mkdir -p "$hostdep_probe/bin"
-for hostdep_bin in sh bash sed awk grep cut tr cat head tail env dirname basename make ls sort mkdir \
+for hostdep_bin in sh bash sed awk grep cut tr cat head tail env dirname basename make ls sort mkdir mktemp mv rm \
                    $hostdep_tools docker; do
     hostdep_path="$(command -v "$hostdep_bin" 2>/dev/null || true)"
     [ -n "$hostdep_path" ] && ln -sf "$hostdep_path" "$hostdep_probe/bin/$hostdep_bin"
@@ -2706,9 +2826,15 @@ done
 if docker_live; then
     ctx_probe="$(probe_dir)"; mkdir -p "$ctx_probe/devel" "$ctx_probe/dependencies" "$ctx_probe/src"
     cp .dockerignore "$ctx_probe/"; : > "$ctx_probe/devel/setup.bash"; : > "$ctx_probe/old.oci.tar"; : > "$ctx_probe/dependencies/dep.tar.gz"; : > "$ctx_probe/src/main.py"
+    # NESTED copies of what the file claims to exclude: docker matches a bare
+    # pattern against the context ROOT only, so a fork's src/app/.env and every
+    # src/**/.venv and __pycache__ rode into the context and into the snapshot.
+    mkdir -p "$ctx_probe/src/app/.venv/lib" "$ctx_probe/src/pkg/__pycache__" "$ctx_probe/src/app/build"
+    : > "$ctx_probe/src/app/.env"; : > "$ctx_probe/src/app/.venv/lib/big.so"; : > "$ctx_probe/src/pkg/__pycache__/m.pyc"
+    : > "$ctx_probe/src/pkg/n.swp"; : > "$ctx_probe/src/app/build/o.o"
     printf 'FROM busybox\nCOPY . /ctx\nCMD find /ctx -type f\n' > "$ctx_probe/Dockerfile"
     ctx_files="$( (docker build -q -t devkit-verify-ctx "$ctx_probe" >/dev/null 2>&1 && docker run --rm devkit-verify-ctx 2>/dev/null; docker rmi -f devkit-verify-ctx >/dev/null 2>&1) | grep -vE '^/ctx/(Dockerfile|\.dockerignore)$' | sort | tr '\n' ' ')"
-    [ "$ctx_files" = "/ctx/dependencies/dep.tar.gz /ctx/src/main.py " ] \
+    [ "$ctx_files" = "/ctx/dependencies/dep.tar.gz /ctx/src/app/build/o.o /ctx/src/main.py " ] \
         || { log_err "a real build context with this .dockerignore holds '${ctx_files}' (expected only dependencies/dep.tar.gz and src/main.py)."; sif_errors=1; }
     rm -rf "$ctx_probe"
 fi
@@ -3547,8 +3673,12 @@ deps_firstrun "$deps_probe/elsewhere" \
 # The first-run sync runs BEFORE the privilege drop, as root, into the bind
 # mount. The clone must be handed to the container user or nobody — not the
 # container user, not the host — can modify or remove it afterwards.
-awk '/bash "\$SYNC_DEPS"/ {seen=1} seen && /sync_owner_if_root "\$THIRD_PARTY"/ {ok=1} END {exit ok ? 0 : 1}' docker/entrypoint.sh \
-    || { log_err "docker/entrypoint.sh leaves the first-run sync target root-owned; sync_owner_if_root must follow the sync."; deps_errors=1; }
+# Recursively, and without the "already owned" shortcut: the target itself is
+# tracked (.gitkeep) so the bind mount hands it over user-owned already, and the
+# shortcut then skipped every repository cloned inside it. [env-bridge] proves
+# the result in a container; this keeps the call where the sync leaves it.
+awk '/bash "\$SYNC_DEPS"/ {seen=1} seen && /chown -R .*THIRD_PARTY/ {ok=1} END {exit ok ? 0 : 1}' docker/entrypoint.sh \
+    || { log_err "docker/entrypoint.sh does not chown -R the first-run sync target; the clone stays root-owned."; deps_errors=1; }
 rm -rf "$deps_probe"
 [ "$deps_errors" -eq 0 ] \
     && log_ok "One answer for 'are there external repositories': both YAML styles, an empty file, .gitkeep and a custom target; the first-run clone is handed to the user."
