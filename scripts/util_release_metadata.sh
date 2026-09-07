@@ -69,7 +69,9 @@ fi
 if command -v uv >/dev/null 2>&1 && [ -x "${WS_VENV_PY:-}" ]; then
     uv pip freeze --python "$WS_VENV_PY" | LC_ALL=C sort > "$PIP_MANIFEST"
 elif [ -x "${WS_VENV_PY:-}" ]; then
-    "${WS_VENV_PY}" -m pip freeze | LC_ALL=C sort > "$PIP_MANIFEST"
+    # --all, or the two tools differ on pip/setuptools/wheel and the same venv
+    # gets two different manifest digests depending on who wrote it.
+    "${WS_VENV_PY}" -m pip freeze --all | LC_ALL=C sort > "$PIP_MANIFEST"
 fi
 [ -f "$PIP_MANIFEST" ] && PIP_COUNT="$(wc -l < "$PIP_MANIFEST" 2>/dev/null || echo 0)"
 

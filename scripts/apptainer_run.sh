@@ -15,6 +15,8 @@ LOG_PREFIX="[Apptainer]"
 MODE="dev"
 ENV_NAME="${ENV:-ros}"
 APP_CMD=""
+# Set by `--`: the command as ARGV, for a command bash -c cannot take.
+APP_ARGV=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -27,7 +29,10 @@ while [ $# -gt 0 ]; do
             exit 0 ;;
         # `--` is the escape hatch for a command that itself starts with a dash;
         # without it a typo'd flag would silently become the container command.
-        --) shift; [ $# -eq 0 ] || printf -v APP_CMD '%q ' "$@"; break ;;
+        # `--` hands the command through as ARGV (APP_ARGV), because a command
+        # whose name starts with a dash can never be run by `bash -c`: bash
+        # reads it as its own flag.
+        --) shift; APP_ARGV=("$@"); break ;;
         -*) log_error "Unknown option: $1 (use '--' before a command starting with '-')"; exit 2 ;;
         *) if [ $# -eq 1 ]; then APP_CMD="$1"; else printf -v APP_CMD '%q ' "$@"; fi; break ;;
     esac
@@ -51,10 +56,16 @@ COMPOSE_PROJECT="$(sif_project_name)"
 ARTIFACT_MODE="$MODE"; [ "$MODE" = "slurm" ] && ARTIFACT_MODE="prod"
 if [ -z "${SIF_FILE:-}" ]; then
     arch="$(sif_arch)"
-    for candidate in "${ARTIFACT_MODE}-${arch}" "${ARTIFACT_MODE}-share-${arch}" "${ARTIFACT_MODE}" "${ARTIFACT_MODE}-share"; do
+    # -share exists for dev bakes only (mkenv --share); offering it for prod
+    # made the "not found" message name a file prod never produces.
+    candidates=("${ARTIFACT_MODE}-${arch}" "${ARTIFACT_MODE}")
+    [ "$ARTIFACT_MODE" != dev ] || candidates=("${ARTIFACT_MODE}-${arch}" "${ARTIFACT_MODE}-share-${arch}" "${ARTIFACT_MODE}" "${ARTIFACT_MODE}-share")
+    for candidate in "${candidates[@]}"; do
         SIF_FILE="${WS_ROOT}/${COMPOSE_PROJECT}-${ENV_NAME}-${candidate}.sif"
         [ -f "$SIF_FILE" ] && break
     done
+    # The message must name the FIRST candidate, the one a bake writes.
+    [ -f "$SIF_FILE" ] || SIF_FILE="${WS_ROOT}/${COMPOSE_PROJECT}-${ENV_NAME}-${candidates[0]}.sif"
 fi
 if [ ! -f "$SIF_FILE" ]; then
     log_error "SIF artifact not found: ${SIF_FILE}"
@@ -69,7 +80,8 @@ sif_forward_env
 # Dispatch to SLURM scheduler if requested
 if [ "$MODE" = "slurm" ]; then
     SLURM_SCRIPT="${WS_ROOT}/scripts/slurm_run.sh"
-    [ -n "$APP_CMD" ] || { log_error 'No job command. Pass RUN_ARGS or APP_COMMAND.'; exit 2; }
+    { [ -n "$APP_CMD" ] || [ "${#APP_ARGV[@]}" -gt 0 ]; } \
+        || { log_error 'No job command. Pass RUN_ARGS or APP_COMMAND.'; exit 2; }
     command -v sbatch >/dev/null || { log_error "sbatch not found. Use SIF_MODE=prod for local execution."; exit 1; }
     export DEVKIT_REPO_ROOT="$WS_ROOT"
     mkdir -p "$WS_ROOT/logs"
@@ -102,6 +114,11 @@ if [ "$MODE" = "slurm" ]; then
     # ${arr[@]+...}: empty-array "${arr[@]}" is fatal under set -u in
     # bash < 4.4 (RHEL 7/8 SLURM nodes).
     log_info "Submitting job (${SBATCH_OPTS[*]})..."
+    # slurm_run.sh already runs a multi-word argv directly, so `--` reaches the
+    # compute node as argv rather than through a shell.
+    if [ "${#APP_ARGV[@]}" -gt 0 ]; then
+        exec sbatch ${SBATCH_OPTS[@]+"${SBATCH_OPTS[@]}"} "$SLURM_SCRIPT" "$SIF_FILE" "${APP_ARGV[@]}"
+    fi
     exec sbatch ${SBATCH_OPTS[@]+"${SBATCH_OPTS[@]}"} "$SLURM_SCRIPT" "$SIF_FILE" ${APP_CMD:+"$APP_CMD"}
 fi
 
@@ -141,7 +158,7 @@ sif_gpu_flags
 sif_record_run "$SIF_FILE"
 
 log_info "Executing ${SIF_FILE} (mode=${MODE})..."
-if [ -n "${APP_CMD:-}" ]; then
+if [ -n "${APP_CMD:-}" ] || [ "${#APP_ARGV[@]}" -gt 0 ]; then
     # The entrypoint loads ROS/venv; the wrapper records the command's status.
     read -r -a ENTRY <<< "$(sif_entry_args "$RUNTIME" "$SIF_FILE")"
     if [ "${#ENTRY[@]}" -eq 0 ]; then
@@ -150,10 +167,23 @@ if [ -n "${APP_CMD:-}" ]; then
         exit 1
     fi
     RUN_RC=0
-    sif_run_and_record "$RUNTIME" exec "${RUN_OPTS[@]}" ${GPU_FLAGS[@]+"${GPU_FLAGS[@]}"} ${BIND_OPTS[@]+"${BIND_OPTS[@]}"} \
-        "$SIF_FILE" ${ENTRY[@]+"${ENTRY[@]}"} bash -c "${APP_CMD}" || RUN_RC=$?
+    if [ "${#APP_ARGV[@]}" -gt 0 ]; then
+        sif_run_and_record "$RUNTIME" exec "${RUN_OPTS[@]}" ${GPU_FLAGS[@]+"${GPU_FLAGS[@]}"} ${BIND_OPTS[@]+"${BIND_OPTS[@]}"} \
+            "$SIF_FILE" ${ENTRY[@]+"${ENTRY[@]}"} "${APP_ARGV[@]}" || RUN_RC=$?
+    else
+        sif_run_and_record "$RUNTIME" exec "${RUN_OPTS[@]}" ${GPU_FLAGS[@]+"${GPU_FLAGS[@]}"} ${BIND_OPTS[@]+"${BIND_OPTS[@]}"} \
+            "$SIF_FILE" ${ENTRY[@]+"${ENTRY[@]}"} bash -c "${APP_CMD}" || RUN_RC=$?
+    fi
     exit "$RUN_RC"
 else
+    # A prod artifact has no interactive shell: --cleanenv strips APP_COMMAND and
+    # its entrypoint exits 2 on an empty command, which was recorded as
+    # "interactive". Say what is missing instead, like the slurm branch does.
+    if [ "$ARTIFACT_MODE" = prod ]; then
+        log_error 'No command to run. Pass RUN_ARGS or APP_COMMAND (a production artifact has no interactive shell).'
+        sif_record_exit 2
+        exit 2
+    fi
     # An interactive shell: exec, so the terminal talks to the container
     # directly. Nothing to close — say so rather than leaving the record open.
     sif_record_exit interactive

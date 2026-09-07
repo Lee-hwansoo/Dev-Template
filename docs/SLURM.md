@@ -202,6 +202,7 @@ tail -f logs/*_12345.out
 | **`DEVKIT_SLURM_EXTRA_ARGS`** | *(없음)* | 위 목록에 없는 임의의 `sbatch` 플래그를 그대로 통과 (예: `--account=lab --qos=high --exclusive`) |
 | **`SLURM_DATA_ROOT`** / **`CONTAINER_DATA_ROOT`** | *(없음)* / `/workspace/data` | 읽기 전용 데이터셋 바인드: 호스트 경로 → 컨테이너 마운트 지점 |
 | **`SLURM_RUN_ROOT`** / **`CONTAINER_RUN_ROOT`** | *(없음)* / `/runs` | 쓰기 가능 산출물 바인드: 호스트 경로 → 컨테이너 마운트 지점 |
+| **`DEVKIT_VERIFY_SIF_HASH`** | `0` | `1` 이면 실행 기록을 열 때 SIF 를 다시 해싱해 신원을 확인합니다(수 GB 아티팩트는 수십 초). 기본값은 `bake` 가 남긴 `.sha256` 사이드카와 크기를 신뢰합니다 |
 
 > **기본값의 출처**: 위 기본값은 모두 `scripts/slurm_run.sh` 상단의 `#SBATCH` 지시자입니다. 클러스터 표준값을 고정하려면
 > 환경변수 대신 그 파일을 수정하세요.
@@ -251,7 +252,7 @@ make run-sif SIF_MODE=prod ENV=ros RUN_ARGS='ros2 run myproject train'
   ```
 
 ### Q3. GPU가 인식되지 않습니다 (`CUDA Available: False`).
-- 실행 시 `--nv` (NVIDIA) 또는 `--rocm` (AMD) 플래그 지원 환경인지 확인하세요.
+- 실행 시 `--nv`(NVIDIA, `GPU_MODE=nvidia` 또는 `CUDA_VISIBLE_DEVICES` 가 있을 때) 또는 `--rocm`(`GPU_MODE=amd`)이 붙습니다. `igpu`·`intel` 은 apptainer 플래그가 없어 아무것도 붙지 않습니다.
 - SLURM 배치 제출 시 `DEVKIT_SLURM_GRES=gpu:1` 옵션이 누락되지 않았는지 확인하세요.
 
 ### Q4. SLURM 로그 파일이 보이지 않거나 생성이 되지 않습니다.

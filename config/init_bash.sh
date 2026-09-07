@@ -68,8 +68,7 @@ if [ "${__DEVKIT_ENV_READY:-}" != "$WS_ROOT" ]; then
     if [ -f "${DEVKIT_VENV}/bin/activate" ] \
        && { [ -z "${VIRTUAL_ENV:-}" ] || [ "${VIRTUAL_ENV}" = "${DEVKIT_VENV}" ]; }; then
         source "${DEVKIT_VENV}/bin/activate"
-        # uv reports a bare name, CPython "(name) ": strip to one pair of parens
-        VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT#\(}"; VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT%\) }"
+        devkit_venv_prompt
     fi
 
     # GPU environment (after ROS, to keep LD_LIBRARY_PATH priority)
@@ -77,6 +76,11 @@ if [ "${__DEVKIT_ENV_READY:-}" != "$WS_ROOT" ]; then
 
     export __DEVKIT_ENV_READY="$WS_ROOT"
 fi
+
+# `make exec CMD='h'` and `bash -lc sync_deps` are the advertised automation
+# path, and bash expands aliases only in interactive shells unless asked: every
+# alias-shaped shortcut answered "command not found" there.
+shopt -s expand_aliases 2>/dev/null || true
 
 # Functions live PER PROCESS, so this stays outside the guard above: a child
 # shell inherits the marker but not the definitions.

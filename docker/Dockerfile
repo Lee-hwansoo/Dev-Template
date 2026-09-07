@@ -24,7 +24,10 @@ ARG CMAKE_CXX_STANDARD=17
 ARG LANG=C.UTF-8
 ARG TZ=UTC
 ARG DEBIAN_FRONTEND=noninteractive
-ARG TARGETARCH=amd64
+# No default: BuildKit sets TARGETARCH from --platform, and a default here
+# won that race — a direct `docker build --platform linux/arm64` took the
+# amd64 branch and asked for x86-only packages.
+ARG TARGETARCH
 ARG SYS_PYTHON_EXE=/usr/bin/python3
 ARG UV_SYNC_FLAGS=""
 ARG CMAKE_EXTRA_ARGS=""
@@ -60,8 +63,11 @@ ENV LANG=${LANG} \
     LC_ALL=${LANG} \
     TZ=${TZ} \
     DEBIAN_FRONTEND=${DEBIAN_FRONTEND} \
-    WORKSPACE_PATH=${WORKSPACE_PATH} \
-    ROS_DISTRO=${ROS_DISTRO}
+    WORKSPACE_PATH=${WORKSPACE_PATH}
+# ROS_DISTRO is NOT set here: a non-ROS image (PROD_ENV=dev, the basic-* compose
+# services) carried ROS_DISTRO=humble in its environment and in its release
+# manifest, describing a distro it does not contain. The ROS stages below set it,
+# and every consumer already defaults it.
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -143,6 +149,7 @@ ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     uv python install ${UV_PYTHON} && \
     chown -R "${CONTAINER_USER}:$(id -g "${CONTAINER_USER}")" /opt/uv && \
+    rm -rf /opt/uv/python/.lock /opt/uv/python/.temp && \
     chmod -R a+rX /opt/uv
 
 ENV PATH="/usr/lib/ccache:${WORKSPACE_PATH}/install/.venv/bin:$PATH" \
@@ -169,9 +176,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     --mount=type=bind,source=scripts/util_cuda_apt.sh,target=/tmp/util_cuda_apt.sh \
     bash /tmp/util_cuda_apt.sh dev
-ENV PATH=/usr/local/cuda/bin:${PATH} \
-    LD_LIBRARY_PATH=/usr/local/cuda/lib64 \
-    CUDA_HOME=/usr/local/cuda
+# PATH only. The CUDA packages install /etc/ld.so.conf.d/*cuda*.conf, so the
+# loader finds the libraries without LD_LIBRARY_PATH, and an image built with
+# no CUDA_VERSION was carrying CUDA_HOME and a lib path for a directory that
+# does not exist.
+ENV PATH=/usr/local/cuda/bin:${PATH}
 
 # ── Stage: dev-base-tools (Interactive CLI, GUI & Diagnostics) ────────────────
 FROM build-core AS dev-base-tools
@@ -350,7 +359,8 @@ WORKDIR ${WORKSPACE_PATH}
 RUN DEVKIT_BUILD_TYPE=prod DEVKIT_REQUIRE_PINNED=${DEVKIT_REQUIRE_PINNED} OPENCV_CUDA=${OPENCV_CUDA} bash -lc "source ${WORKSPACE_PATH}/config/util_aliases.sh && mksync" && \
     DEVKIT_STRIP_SOURCE=${DEVKIT_STRIP_SOURCE} DEVKIT_FAIL_ON_SOURCE=${DEVKIT_FAIL_ON_SOURCE} \
     bash ${WORKSPACE_PATH}/scripts/check_deps.sh ${WORKSPACE_PATH}/install && \
-    DEVKIT_BUILD_TYPE=prod bash ${WORKSPACE_PATH}/scripts/util_release_metadata.sh ${WORKSPACE_PATH}/release/devkit-release.json && \
+    DEVKIT_BUILD_TYPE=prod ROS_DISTRO="$([ "$PROD_ENV" = ros ] && echo "${ROS_DISTRO}" || echo none)" \
+        bash ${WORKSPACE_PATH}/scripts/util_release_metadata.sh ${WORKSPACE_PATH}/release/devkit-release.json && \
     if [ "$PROD_ENV" = ros ]; then find /opt/uv/python -mindepth 1 -delete; fi
 
 # ── Stage: production runtime (Minimal user-facing artifacts) ────────────────
@@ -370,7 +380,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     --mount=type=bind,source=scripts/util_cuda_apt.sh,target=/tmp/util_cuda_apt.sh \
     apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates bash file libstdc++6 && \
+    ca-certificates bash libstdc++6 && \
     bash /tmp/util_cuda_apt.sh runtime && \
     apt-get autoremove -y && \
     rm -rf /var/tmp/*
@@ -381,7 +391,7 @@ RUN --mount=type=bind,source=scripts/util_apt_helper.sh,target=/tmp/util_apt_hel
 WORKDIR ${WORKSPACE_PATH}
 ENTRYPOINT ["/entrypoint.sh"]
 
-# The tools `base` needed to bootstrap apt (init-apt: curl, gnupg, lsb-release)
+# The tools `base` needed to bootstrap apt (init-apt: curl, gnupg)
 # go once the last repository is set up: a shipped artifact has no key to
 # fetch. purge-bootstrap keeps whatever an installed package still depends on.
 FROM prod-base AS prod-runtime

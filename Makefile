@@ -32,6 +32,16 @@ OK     := $(GREEN)[OK]$(NC)
 WARN   := $(YELLOW)[WARN]$(NC)
 ERROR  := $(RED)[ERROR]$(NC)
 
+# Every recipe path here is relative (bash scripts/…, docker/Dockerfile), so a
+# `make -f ../Makefile` from a subdirectory failed on the first one with a raw
+# "No such file". `make -C <root>` is the supported form. The test is the
+# makefile's own NAME, not its directory: make's $(dir)/$(abspath) are
+# word-list functions, so a path with a space ('/Users/John Doe/…', which the
+# README advertises) came apart and the guard rejected every target.
+ifneq ($(firstword $(MAKEFILE_LIST)),Makefile)
+$(error Run make from the DevKit root, or 'make -C <root> <target>': this Makefile resolves its script paths relative to the working directory)
+endif
+
 # The .env files are DEFAULTS, read the way compose reads them: the command
 # line beats the environment, the environment beats .env, .env beats
 # .env.example, and a value's surrounding quotes are dropped. Rendered to `?=`
@@ -41,13 +51,24 @@ ERROR  := $(RED)[ERROR]$(NC)
 # exports; for those the file still wins, or the host locale lands in the image.
 ENV_AMBIENT := LANG|TZ|DEBIAN_FRONTEND
 ENV_MK      := .docker_cache/env.mk
-$(shell mkdir -p .docker_cache && bash -c 'source config/util_paths.sh >/dev/null 2>&1; devkit_env_render "$$@"' \
-	_ '$(ENV_AMBIENT)' $(wildcard .env) .env.example > $(ENV_MK) 2>/dev/null)
+# Temp + mv, and fatal on failure: writing in place was read empty by a
+# concurrent make (a `make down` then targeted the project 'devkit'), and a
+# .docker_cache left root-owned by an in-container run dropped every .env
+# setting without a word.
+ENV_MK_STATUS := $(shell mkdir -p .docker_cache 2>/dev/null && tmp=$$(mktemp "$(ENV_MK).XXXXXX" 2>/dev/null) && \
+	{ bash -c 'source config/util_paths.sh >/dev/null 2>&1; devkit_env_render "$$@"' \
+		_ '$(ENV_AMBIENT)' $(wildcard .env) .env.example > "$$tmp" && mv "$$tmp" "$(ENV_MK)" && echo ok; } || \
+	{ rm -f "$$tmp" 2>/dev/null; echo fail; })
+ifeq ($(ENV_MK_STATUS),fail)
+$(error Cannot write $(ENV_MK), so .env would be ignored entirely. Check that $(CURDIR) is writable, that .docker_cache is not root-owned from an in-container run ('sudo rm -rf .docker_cache'), and that config/util_paths.sh parses (a CRLF checkout breaks it))
+endif
 -include $(ENV_MK)
 shell_quote = '$(subst ','"'"',$(1))'
-# Detector inputs the user set explicitly — from any layer, since `?=` keeps
-# their origin — are handed to the probe and key its cache.
-DETECT_INPUTS := ROS_DISTRO BASE_IMAGE UV_PYTHON WORKSPACE_PATH DOCKER_DEV_CACHE_DIR
+# Detector inputs the user set explicitly on the COMMAND LINE or in the
+# environment are handed to the probe and key its cache. A value from .env
+# arrives as origin `file`, so it is not here — check_env.sh reads those files
+# itself, which is what keeps the two answers the same.
+DETECT_INPUTS := ROS_DISTRO BASE_IMAGE UV_PYTHON WORKSPACE_PATH DOCKER_DEV_CACHE_DIR HOST_UID HOST_GID
 DETECT_OVERRIDES := $(strip $(foreach v,$(DETECT_INPUTS),\
 	$(if $(filter command line environment override,$(origin $(v))),$(call shell_quote,$(v)=$($(v))))))
 
@@ -55,7 +76,10 @@ DETECT_OVERRIDES := $(strip $(foreach v,$(DETECT_INPUTS),\
 # the project was created from the GitHub template button and carries none of
 # DevKit's history; the short commit is best-effort on top of it.
 DEVKIT_VERSION := $(shell cat VERSION 2>/dev/null || echo unknown)
-DEVKIT_COMMIT  := $(shell git -C $(CURDIR) rev-parse --short HEAD 2>/dev/null)
+# Only when the repository IS this tree: an extracted template inside another
+# git repo reported the enclosing project's commit as the template revision.
+DEVKIT_COMMIT  := $(shell [ "$$(git -C $(call shell_quote,$(CURDIR)) rev-parse --show-toplevel 2>/dev/null)" = $(call shell_quote,$(CURDIR)) ] \
+	&& git -C $(call shell_quote,$(CURDIR)) rev-parse --short HEAD 2>/dev/null)
 
 # `make adopt` inputs, honoured ONLY from the command line: NAME and DESC are
 # ordinary environment variables (WSL exports NAME=<hostname>) and make imports
@@ -78,21 +102,38 @@ export
 # Help/teardown/validation targets skip detection and never pay the
 # nvidia-smi / docker-info probe.
 # Bakes require detection to derive BASE_IMAGE and UV_PYTHON from ROS_DISTRO.
-DETECTOR_EXEMPT := help setup adopt verify ci ci-on ci-off stop down logs clean clean-cache clean-all docker-clean slurm-status slurm-cancel completion completion-install check-host env-check run-sif
+DETECTOR_EXEMPT := help h setup adopt verify ci ci-on ci-off stop down logs clean clean-cache clean-all docker-clean slurm-status slurm-cancel run-sif update-gpg stats top gpus shell exec test lint
 # A bare `make` runs the default target (help), so it must not pay for
 # detection either — substitute 'help' before filtering.
 NEEDS_DETECTOR  := $(filter-out $(DETECTOR_EXEMPT),$(or $(MAKECMDGOALS),help))
 
 # Explicit distro/interpreter overrides must not reuse another pairing's cache.
-DETECTED_ENV_FILE := .docker_cache/detected-env$(if $(DETECT_OVERRIDES),-$(shell printf '%s' $(call shell_quote,$(DETECT_OVERRIDES)) | cksum | cut -d' ' -f1)).mk
+# The parent hands its path down: `export` gives every sub-make the detector
+# inputs in its ENVIRONMENT, so $(origin) said "environment" there and each
+# sub-make keyed a hashed file of its own — `make setup` probed the host twice
+# and its ide-config child could resolve a different GPU profile than the
+# parent's `make status`.
+DETECTED_ENV_FILE := $(or $(DEVKIT_DETECT_FILE),.docker_cache/detected-env$(if $(DETECT_OVERRIDES),-$(shell printf '%s' $(call shell_quote,$(DETECT_OVERRIDES)) | cksum | cut -d' ' -f1)).mk)
+export DEVKIT_DETECT_FILE := $(DETECTED_ENV_FILE)
 ifneq ($(NEEDS_DETECTOR),)
 # Included AFTER .env, so its `:=` wins — stale whenever .env is newer, or a
 # cache built before an edit overrides ROS_DISTRO forever. `shell test`, not
 # `wildcard`: make caches directory listings within a run.
+# Beyond mtimes the cache must still DESCRIBE this host: it records the
+# workspace it was written for (a copied checkout kept mounting the original)
+# and session-scoped paths (the X cookie and the ssh-agent socket change at
+# every login; compose then created root-owned directories at the dead paths
+# and agent forwarding was silently gone).
 DETECTED_ENV_FRESH := $(shell [ -f "$(DETECTED_ENV_FILE)" ] \
 	&& [ ! .env -nt "$(DETECTED_ENV_FILE)" ] \
 	&& [ ! .env.example -nt "$(DETECTED_ENV_FILE)" ] \
-	&& [ ! scripts/check_env.sh -nt "$(DETECTED_ENV_FILE)" ] && echo yes)
+	&& [ ! scripts/check_env.sh -nt "$(DETECTED_ENV_FILE)" ] \
+	&& [ ! config/util_paths.sh -nt "$(DETECTED_ENV_FILE)" ] \
+	&& grep -qxF 'HOST_WORKSPACE_PATH := $(CURDIR)' "$(DETECTED_ENV_FILE)" \
+	&& ! grep -q '^DEVKIT_DETECT_INCOMPLETE :=' "$(DETECTED_ENV_FILE)" \
+	&& SESSION_PATHS=$$(sed -n -e 's/^HOST_XAUTHORITY := //p' -e 's/^HOST_SSH_AUTH_SOCK := //p' "$(DETECTED_ENV_FILE)") \
+	&& { printf '%s\n' "$$SESSION_PATHS" \
+		| { while IFS= read -r p; do [ -z "$$p" ] || [ -e "$$p" ] || exit 1; done; }; } && echo yes)
 ifeq ($(DETECTED_ENV_FRESH),)
 # Write via temp + mv: a failed or interrupted probe must never leave a partial
 # cache behind, because the freshness guard above would then reuse it forever and
@@ -107,21 +148,30 @@ endif
 -include $(DETECTED_ENV_FILE)
 endif
 
+# One truthiness rule for every switch: FIX/NO_CACHE/SHARE took only 1|true
+# while KEEP_VENV and the in-container devkit_is_true also accept yes/on, so
+# `make lint FIX=yes` quietly linted without fixing.
+is_true  = $(filter 1 true TRUE True yes YES Yes on ON On,$(1))
+# The negative is its own list, not "not truthy": `clean` KEEPS the venv unless
+# asked otherwise, so an UNSET KEEP_VENV must not read as "delete it".
+is_false = $(filter 0 false FALSE False no NO No off OFF Off,$(1))
+
 # Fail fast on input that would silently pick the wrong compose profile.
-# Scoped to every target consuming ENV — including down/clean-all, where
-# `make down ENV=ros2` would volume-delete the wrong profile without a word.
-ENV_EXEMPT := help h setup adopt verify ci ci-on ci-off clean clean-cache docker-clean update-gpg xauth gpus slurm-status slurm-cancel completion completion-install
+# Scoped to every target consuming ENV — including down, where `make down
+# ENV=ros2` would stop the wrong profile without a word. (clean-all removes
+# EVERY ENV's volumes and images by design; its confirmation says so.)
+ENV_EXEMPT := help h adopt verify ci ci-on ci-off clean clean-cache docker-clean update-gpg xauth gpus slurm-status slurm-cancel
 ifneq ($(filter-out $(ENV_EXEMPT),$(or $(MAKECMDGOALS),help)),)
 ifeq ($(filter ros dev,$(ENV)),)
 $(error ENV must be 'ros' or 'dev' (got: '$(ENV)'))
 endif
 GPU_MODE ?= auto
-# intel/amd are aliases for the shared iGPU profile (same vocabulary as the
-# in-container `gpu` helper). `override` so the mapping also applies to
-# command-line assignments (make GPU_MODE=intel ...).
-override GPU_MODE := $(if $(filter intel amd,$(GPU_MODE)),igpu,$(GPU_MODE))
-ifeq ($(filter auto nvidia igpu cpu,$(GPU_MODE)),)
-$(error GPU_MODE must be auto, nvidia, igpu or cpu (got: '$(GPU_MODE)'))
+# intel/amd share the iGPU COMPOSE PROFILE but stay distinct vocabulary for the
+# in-container `gpu` helper (iris vs radeonsi). Rewriting the variable itself to
+# 'igpu' replaced the user's answer before it was exported, so the container ran
+# the generic mesa path; the profile mapping lives in RESOLVE_SVC_MODE alone.
+ifeq ($(filter auto nvidia igpu intel amd cpu,$(GPU_MODE)),)
+$(error GPU_MODE must be auto, nvidia, igpu, intel, amd or cpu (got: '$(GPU_MODE)'))
 endif
 ifeq ($(filter dev prod slurm,$(SIF_MODE)),)
 $(error SIF_MODE must be 'dev', 'prod' or 'slurm' (got: '$(SIF_MODE)'))
@@ -152,6 +202,7 @@ endef
 # NVIDIA is only chosen when the container toolkit is actually usable.
 define RESOLVE_SVC_MODE
 SVC_MODE=$${GPU_MODE:-auto}; \
+	case "$$SVC_MODE" in intel|amd) SVC_MODE=igpu ;; esac; \
 	if [ "$$SVC_MODE" = "auto" ]; then \
 		if [ "$(HAS_NVIDIA)" = "true" ] && [ "$(HAS_TOOLKIT)" = "true" ]; then SVC_MODE=nvidia; \
 		elif [ "$(HAS_DRI)" = "true" ]; then SVC_MODE=igpu; \
@@ -242,9 +293,9 @@ help:
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "test / lint" "Run project tests / check style (FIX=1 applies)"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "logs / stats / top" "Stream logs, real-time stats, process monitor"
 	@echo -e "\n$(CYAN)[ Apptainer SIF & SLURM ] ===========================$(NC)"
-	@printf "  $(GREEN)%-24s$(NC) : %s\n" "bake-dev / bake-prod" "Bake development / production SIF artifacts"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "bake-dev / bake-prod" "Bake development / production SIF artifacts (SHARE=1, PROD_FULL_CUDA=1)"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "run-sif" "Run SIF artifact locally or submit to SLURM"
-	@printf "  $(GREEN)%-24s$(NC) : %s\n" "slurm-status / cancel" "Query active SLURM jobs or cancel jobs"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "slurm-status / slurm-cancel" "Query active SLURM jobs or cancel one"
 	@echo -e "\n$(CYAN)[ Cleanup & Maintenance ] ===========================$(NC)"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "clean / clean-cache" "Delete build outputs / wipe .docker_cache"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "clean-all / docker-clean" "Reset containers & volumes / prune docker cache"
@@ -270,11 +321,15 @@ setup:
 		U="$$(printf '%s' "$$U" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-')"; U="$${U%-}"; U="$${U:-user}"; \
 		awk -v u="$$U" '/^COMPOSE_PROJECT_NAME=myproject\r?$$/{print "COMPOSE_PROJECT_NAME=myproject-" u; next} {print}' \
 			.env.example > .env.tmp && mv .env.tmp .env; \
-		echo -e "  $(OK) Created .env (project: myproject-$$U)"; \
+		echo -e "  $(OK) Created .env (project: $$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' .env | tail -n 1))"; \
 	fi
 	@bash config/devkit_make_completion.bash --install
 	@$(MAKE) xauth
-	@$(MAKE) ide-config
+	@# COMPOSE_PROJECT_NAME with the name .env now holds: make read the env
+	@# files BEFORE this recipe created .env, and the bare `export` then gave the
+	@# child the stale value, so setup's ide.compose.json named a different
+	@# compose project than a later standalone `make ide-config`.
+	@$(MAKE) ide-config COMPOSE_PROJECT_NAME="$$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' .env | tail -n 1)"
 
 ## @target adopt : Make this checkout YOUR project (NAME=my-robot [DESC='...'])
 # The identity a fork owns, in one step: the Python package name, the compose
@@ -289,7 +344,10 @@ adopt:
 	@# silently mangle a name that would break `docker compose` later.
 	@printf '%s' "$(ADOPT_NAME)" | grep -qE '^[a-z0-9][a-z0-9_-]*$$' || { \
 		echo -e "  $(ERROR) NAME must match [a-z0-9][a-z0-9_-]* (got: '$(ADOPT_NAME)')" >&2; exit 2; }
-	@if [ -n "$$(git status --porcelain 2>/dev/null)" ]; then \
+	@# .devcontainer/devcontainer.json is excluded: `make setup` rewrites it to
+	@# the host's own compose service (ide-config), so the documented order
+	@# setup → adopt refused on every host that is not the committed default.
+	@if [ -n "$$(git status --porcelain 2>/dev/null | grep -v ' .devcontainer/devcontainer.json$$')" ]; then \
 		echo -e "  $(ERROR) Working tree is not clean; commit or stash first." >&2; \
 		echo -e "  $(INFO) Adoption rewrites tracked files — keep the diff reviewable." >&2; exit 1; \
 	fi
@@ -307,15 +365,49 @@ adopt:
 		inproj && d != "" && /^description = / { print "description = \"" d "\""; next } \
 		{ print }' src/pyproject.toml > src/pyproject.toml.tmp
 	@# Publish only what parses: a half-written identity file is worse than none.
-	@python3 -c 'import sys,tomllib; tomllib.load(open(sys.argv[1],"rb"))' src/pyproject.toml.tmp \
+	@# tomllib is 3.11+ (22.04 ships 3.10, macOS CLT 3.9): an older interpreter
+	@# skips the check rather than reporting the file as broken TOML.
+	@python3 -c 'import sys; exec("try:\n    import tomllib\nexcept ImportError:\n    sys.exit(0)"); tomllib.load(open(sys.argv[1],"rb"))' src/pyproject.toml.tmp \
 		|| { rm -f src/pyproject.toml.tmp; \
 		     echo -e "  $(ERROR) The generated src/pyproject.toml is not valid TOML; nothing was changed." >&2; exit 1; }
 	@mv src/pyproject.toml.tmp src/pyproject.toml
+	@# The lock records the project's own name, and `uv sync --locked` (every
+	@# production build) refuses a lock that names another project. Rewriting
+	@# the one virtual entry is what a relock would do to it; the resolution
+	@# itself does not depend on the name.
+	@if [ -f src/uv.lock ]; then \
+		awk -v n="$(ADOPT_NAME)" ' \
+			/^\[\[package\]\]$$/ { flush(); block = $$0 "\n"; inblock = 1; next } \
+			inblock { block = block $$0 "\n"; if ($$0 ~ /^source = \{ virtual/) virtual = 1; next } \
+			{ flush(); print } \
+			END { flush() } \
+			function flush() { \
+				if (!inblock) return; \
+				if (virtual) sub(/\nname = "[^"]*"\n/, "\nname = \"" n "\"\n", block); \
+				printf "%s", block; block = ""; inblock = 0; virtual = 0; \
+			}' src/uv.lock > src/uv.lock.tmp && mv src/uv.lock.tmp src/uv.lock; \
+	fi
+	@# Renaming the project makes every container and named volume created under
+	@# the old name unreachable — `make status` shows nothing running while they
+	@# are, and clean-all cannot see them either. setup refuses for this reason;
+	@# adopt says it and asks.
+	@OLD="$$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' .env 2>/dev/null | tail -n 1)"; \
+	if [ -n "$$OLD" ] && [ "$$OLD" != "$(ADOPT_NAME)" ]; then \
+		LEFT="$$(docker ps -aq --filter "label=com.docker.compose.project=$$OLD" 2>/dev/null | wc -l)"; \
+		VOLS="$$(docker volume ls -q --filter "label=com.docker.compose.project=$$OLD" 2>/dev/null | wc -l)"; \
+		if [ "$$LEFT" -gt 0 ] || [ "$$VOLS" -gt 0 ]; then \
+			echo -e "  $(WARN) '$$OLD' still owns $$LEFT container(s) and $$VOLS volume(s), including the built venv." >&2; \
+			echo -e "  $(INFO) They become unreachable under the new name. Run 'make clean-all' first, or re-run with FORCE=1." >&2; \
+			bash -c 'source config/util_paths.sh >/dev/null 2>&1; devkit_is_true "$$1"' _ "$(FORCE)" || exit 1; \
+		fi; \
+	fi
 	@if [ -f .env ]; then \
 		sed 's/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=$(ADOPT_NAME)/' .env > .env.tmp && mv .env.tmp .env; \
 	fi
-	@sed 's/^COMPOSE_PROJECT_NAME=myproject$$/COMPOSE_PROJECT_NAME=$(ADOPT_NAME)/' .env.example > .env.example.tmp && mv .env.example.tmp .env.example
-	@echo -e "  $(OK) Adopted as '$(ADOPT_NAME)': src/pyproject.toml, .env, .env.example"
+	@# Whatever name it carries now, not the literal 'myproject': a second adopt
+	@# left the committed default pointing at the first adoption.
+	@sed 's/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=$(ADOPT_NAME)/' .env.example > .env.example.tmp && mv .env.example.tmp .env.example
+	@echo -e "  $(OK) Adopted as '$(ADOPT_NAME)': src/pyproject.toml, .env.example$$([ -f .env ] && printf ', .env')"
 	@echo -e "  $(INFO) Run mksync in the container and commit the updated src/uv.lock."
 	@echo -e "  $(INFO) Two files are yours to decide — DevKit cannot guess them:"
 	@echo -e "  $(INFO)   README.md   this front page still describes DevKit"
@@ -325,7 +417,12 @@ adopt:
 	@echo -e "  $(INFO) Review with: git diff"
 
 ## @target status : Diagnose project and container status
-status: check
+status:
+	@# NOT a prerequisite: `make status` is what you run WHEN docker is the
+	@# broken thing, and a failing preflight used to abort before printing a
+	@# single line of the wiring it exists to show. The gate still stops
+	@# build/start, which is where it matters.
+	-@$(MAKE) --no-print-directory check
 	$(call GUARD_HOST_ONLY)
 	@echo -e "\n$(BCYAN)[Project Configuration Summary]$(NC)"
 	@printf "  %-19s %s\n" "Host User:"          "$$(whoami)"
@@ -345,7 +442,7 @@ status: check
 	@printf "  %-19s %s\n" "XDG runtime:"  "$(HOST_XDG_RUNTIME_DIR)"
 	@printf "  %-19s %s\n" "Xauthority:"   "$(HOST_XAUTHORITY)"
 	@printf "  %-19s %s\n" "ssh-agent:"    "$(if $(HOST_SSH_AUTH_SOCK),$(HOST_SSH_AUTH_SOCK),- (not forwarded))"
-	@printf "  %-19s %s\n" "git identity:" "$(HOST_GITCONFIG)"
+	@printf "  %-19s %s\n" "git identity:" "$(or $(GIT_CONFIG_PATH),$(HOST_GITCONFIG))"
 	@printf "  %-19s %s\n" "Container user:" "$(CONTAINER_USER) ($(HOST_UID):$(HOST_GID))"
 	@echo -e "\n$(BCYAN)[Running Containers]$(NC)  (project-wide; other targets act on ENV=$(ENV))"
 	@docker ps --filter "label=com.docker.compose.project=$(COMPOSE_PROJECT_NAME)" || true
@@ -367,13 +464,16 @@ check:
 ## @target xauth : Refresh X11 GUI authentication
 xauth:
 	$(call GUARD_HOST_ONLY)
+	@# `exit 0` ends this recipe LINE, not the recipe, so the two blocks below
+	@# used to run anyway and a headless host saw "bad display name" plus two
+	@# xhost warnings during its very first `make setup`.
 	@if [ -z "$$DISPLAY" ]; then \
-		echo -e "  $(INFO) DISPLAY is not set — nothing to authorise."; exit 0; \
+		echo -e "  $(INFO) DISPLAY is not set — nothing to authorise."; \
 	fi
 	@# Merge a wildcard-host cookie into HOST_XAUTHORITY. Without this the file
 	@# stays empty, check_env.sh falls back to a dummy and every container start
 	@# warns "Xauthority missing" — granting xhost alone does not fix that.
-	@if command -v xauth >/dev/null 2>&1 && [ -n "$(HOST_XAUTHORITY)" ]; then \
+	@if [ -n "$$DISPLAY" ] && command -v xauth >/dev/null 2>&1 && [ -n "$(HOST_XAUTHORITY)" ]; then \
 		ERR=$$(mktemp "$${TMPDIR:-/tmp}/devkit-xauth.XXXXXX"); \
 		if [ ! -f "$(HOST_XAUTHORITY)" ] && ! touch "$(HOST_XAUTHORITY)" 2>"$$ERR"; then \
 			echo -e "  $(WARN) Cannot create $(HOST_XAUTHORITY)"; sed 's/^/    /' "$$ERR"; \
@@ -392,7 +492,7 @@ xauth:
 		rm -f "$$ERR.list"; \
 		rm -f "$$ERR"; \
 	fi
-	@if command -v xhost >/dev/null 2>&1; then \
+	@if [ -n "$$DISPLAY" ] && command -v xhost >/dev/null 2>&1; then \
 		for E in "si:localuser:root" "si:localuser:$$(whoami)"; do \
 			xhost +$$E >/dev/null 2>&1 || echo -e "  $(WARN) xhost +$$E failed."; \
 		done; \
@@ -447,13 +547,20 @@ build: check
 	$(call GUARD_HOST_ONLY)
 	@$(RESOLVE_SVC_MODE); \
 	echo -e "  $(INFO) Building image for $$TARGET_SVC..."; \
-	$(COMPOSE) --profile $$TARGET_SVC build $$TARGET_SVC $(if $(filter 1 true,$(NO_CACHE)),--no-cache,)
+	$(COMPOSE) --profile $$TARGET_SVC build $$TARGET_SVC $(if $(call is_true,$(NO_CACHE)),--no-cache,)
 
 ## @target start : Run container environment in background
 start: check
 	$(call GUARD_HOST_ONLY)
 	@$(RESOLVE_SVC_MODE); \
 	echo -e "  $(INFO) Starting $$TARGET_SVC environment..."; \
+	for s in $(ENV_SERVICES); do \
+		[ "$$s" = "$$TARGET_SVC" ] && continue; \
+		docker ps -q --filter "label=com.docker.compose.project=$(COMPOSE_PROJECT_NAME)" \
+			--filter "label=com.docker.compose.service=$$s" | grep -q . || continue; \
+		echo -e "  $(INFO) Removing the other $(ENV) variant still up ($$s): one container per ENV, or exec/shell pick whichever docker lists first."; \
+		$(COMPOSE) --profile "*" rm -sf "$$s" >/dev/null 2>&1 || true; \
+	done; \
 	$(COMPOSE) --profile $$TARGET_SVC up -d $$TARGET_SVC
 
 ## @target ide-config : Point VS Code at the compose service this host resolves to
@@ -463,16 +570,27 @@ start: check
 # Run by `make setup`; re-run after changing ENV or GPU_MODE. A host without
 # compose (a SLURM submit node) has no container to attach to: skip, so that
 # `make setup` still finishes its .env / completion / xauth work there.
+# `docker compose config` KEEPS the profiles key, and 'abstract' rides in from
+# the base-common anchor because `extends` appends: the rendered file then had
+# ZERO services enabled and Dev Containers failed with "no service selected".
+# The rendered file describes one service — the profiles have done their job, so
+# they are stripped.
 ide-config:
 	$(call GUARD_HOST_ONLY)
 	@if ! docker compose version >/dev/null 2>&1; then \
 		echo -e "  $(INFO) docker compose is not available here — VS Code attach config skipped."; exit 0; fi; \
+	if [ -n "$(DEVKIT_DETECT_INCOMPLETE)" ]; then \
+		echo -e "  $(INFO) Host detection was incomplete ($(DEVKIT_DETECT_INCOMPLETE)) — VS Code attach config left as it was."; \
+		echo -e "  $(INFO) Re-run 'make ide-config' once docker is up."; exit 0; fi; \
 	$(RESOLVE_SVC_MODE); \
 	DC=.devcontainer/devcontainer.json; \
+	if [ ! -f "$$DC" ]; then \
+		echo -e "  $(INFO) $$DC is absent — VS Code attach config skipped."; exit 0; fi; \
 	mkdir -p .docker_cache && \
 	TMP=$$(mktemp .docker_cache/ide.XXXXXX) && \
 	trap 'rm -f "$$TMP" "$$DC.tmp"' EXIT && \
 	$(COMPOSE) --profile "$$TARGET_SVC" config --format json > "$$TMP" && \
+	python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [s.pop("profiles",None) for s in d.get("services",{}).values()]; json.dump(d,open(sys.argv[1],"w"),indent=2)' "$$TMP" && \
 	mv "$$TMP" .docker_cache/ide.compose.json && \
 	sed -E -e 's|("service"[[:space:]]*:[[:space:]]*)"[^"]*"|\1"'"$$TARGET_SVC"'"|' \
 	       -e 's|("remoteUser"[[:space:]]*:[[:space:]]*)"[^"]*"|\1"'"$(CONTAINER_USER)"'"|' "$$DC" > "$$DC.tmp" && \
@@ -486,7 +604,11 @@ stop:
 	@echo -e "  $(OK) Stopped $(ENV) containers (other ENV untouched)."
 
 ## @target restart : Restart environment containers
-restart: stop start
+restart:
+	$(call GUARD_HOST_ONLY)
+	@# Sequential sub-makes: as prerequisites, `make -j restart` started the new
+	@# containers before the old ones had stopped.
+	@$(MAKE) --no-print-directory stop && $(MAKE) --no-print-directory start
 
 ## @target shell : Enter container interactive shell
 shell:
@@ -524,9 +646,12 @@ test:
 	@$(MAKE) --no-print-directory exec CMD='mtest'
 
 ## @target lint : Check style and lint rules inside the container (FIX=1 applies them)
+# DEVKIT_SKIP_CLANG_FORMAT travels WITH the command: `docker exec` forwards none
+# of the caller's environment, so the escape hatch mlint's own message names had
+# no effect when set on the host — the advertised way out of a fail-closed lint.
 lint:
 	$(call GUARD_HOST_ONLY)
-	@$(MAKE) --no-print-directory exec CMD='mlint $(if $(filter 1 true,$(FIX)),--fix,)'
+	@$(MAKE) --no-print-directory exec CMD='$(if $(DEVKIT_SKIP_CLANG_FORMAT),DEVKIT_SKIP_CLANG_FORMAT="$(DEVKIT_SKIP_CLANG_FORMAT)" ,)mlint $(if $(call is_true,$(FIX)),--fix,)'
 
 ## @target term : Launch in-container Terminator GUI window (2x2 grid layout)
 # terminator is opt-in (dependencies/apt.txt), so the binary is probed first:
@@ -570,7 +695,7 @@ term:
 ## @target bake-dev : Bake development SIF snapshot (SHARE=1 for system site-packages)
 bake-dev:
 	$(call GUARD_HOST_ONLY)
-	@bash scripts/apptainer_bake.sh --mode dev --env $(ENV) $(if $(filter 1 true,$(SHARE)),--share,)
+	@bash scripts/apptainer_bake.sh --mode dev --env $(ENV) $(if $(call is_true,$(SHARE)),--share,)
 
 ## @target bake-prod : Bake production SIF artifact
 bake-prod:
@@ -622,6 +747,9 @@ gpus:
 		nvidia-smi; \
 	elif [ -d /dev/dri ] && compgen -G "/dev/dri/renderD*" >/dev/null; then \
 		echo -e "  $(INFO) Intel/AMD iGPU (DRI) active: $$(ls /dev/dri/renderD* 2>/dev/null)"; \
+	elif [ -e /dev/dxg ]; then \
+		echo -e "  $(INFO) WSL2 D3D12 GPU (/dev/dxg) active — the host GPU is reached through the Mesa bridge."; \
+		echo -e "  $(INFO) Run nvidia-smi.exe or Task Manager on Windows for utilisation."; \
 	else \
 		echo -e "  $(WARN) No dedicated NVIDIA GPU or DRI iGPU detected on host."; \
 	fi
@@ -663,6 +791,25 @@ down:
 
 ## @target clean : Delete build and install output directories
 clean:
+	$(call GUARD_HOST_ONLY)
+	@# The same guard clean-cache has, for the same reason: build/ and install/
+	@# are the live container's mount points. Removing them from the host left
+	@# the container writing into an unreachable path, and the next start
+	@# remounted the volume over it — a build that reported success and a
+	@# binary that was the pre-clean one.
+	@if [ -z "$(ROS_INSTALL_VOL)$(DEV_INSTALL_VOL)" ]; then \
+		RUNNING=$$(docker ps -q --filter "label=com.docker.compose.project=$(COMPOSE_PROJECT_NAME)" 2>/dev/null | wc -l); \
+		if [ "$$RUNNING" -gt 0 ]; then \
+			echo -e "  $(ERROR) $$RUNNING container(s) still running with build/ and install/ mounted."; \
+			echo -e "  $(INFO) Deleting them now splits the workspace in two: the container keeps writing"; \
+			echo -e "  $(INFO) to an unreachable path and a later start remounts the old volume. Run 'make down' first."; \
+			exit 1; \
+		fi; \
+	fi
+	@# Ask BEFORE deleting anything: the confirmation used to sit after the rm,
+	@# so a non-interactive `make clean KEEP_VENV=0` removed build/, devel/, log/
+	@# and install/* and only then refused with 'requires FORCE=1'.
+	$(if $(call is_false,$(KEEP_VENV)),$(call CONFIRM,This also deletes install/.venv — recreating it needs a full 'mksync'))
 	@# devel/ is the ROS 1 (catkin_make) counterpart of install/: it lives next to
 	@# build/ on the workspace root and goes stale exactly the same way. With a
 	@# bind-mounted build/ (ROS_BUILD_VOL=./build) Docker created it as root,
@@ -680,8 +827,7 @@ clean:
 	@if [ -d install ]; then \
 		find install -mindepth 1 -maxdepth 1 ! -name '.venv' -exec rm -rf {} + 2>/dev/null || true; \
 	fi
-	$(if $(filter 0 false no,$(KEEP_VENV)),$(call CONFIRM,This also deletes install/.venv — recreating it needs a full 'mksync'))
-	@if [ -n "$(filter 0 false no,$(KEEP_VENV))" ]; then \
+	@if [ -n "$(call is_false,$(KEEP_VENV))" ]; then \
 		rm -rf install/.venv 2>/dev/null || true; \
 		echo -e "  $(OK) Build artifacts and virtualenv removed."; \
 	elif [ -d install/.venv ]; then \
@@ -706,6 +852,7 @@ clean:
 
 ## @target clean-cache : Wipe .docker_cache (host detection cache & placeholders)
 clean-cache:
+	$(call GUARD_HOST_ONLY)
 	@RUNNING=$$(docker ps -q --filter "label=com.docker.compose.project=$(COMPOSE_PROJECT_NAME)" 2>/dev/null | wc -l); \
 	if [ "$$RUNNING" -gt 0 ]; then \
 		echo -e "  $(ERROR) $$RUNNING container(s) still running with .docker_cache bind-mounted."; \
@@ -748,10 +895,10 @@ clean-cache:
 # Containers first, cache second — clean-cache aborts while one is running.
 # Asks unless FORCE=1/CI=true. KEEP_VENV=1 keeps the venv and its volume, so a
 # rebuild reconnects instead of re-running mksync.
-clean-all: KEEP_VENV := $(if $(filter 1 true yes,$(KEEP_VENV)),1,0)
+clean-all: KEEP_VENV := $(if $(call is_true,$(KEEP_VENV)),1,0)
 clean-all:
 	$(call GUARD_HOST_ONLY)
-	$(call CONFIRM,This removes '$(COMPOSE_PROJECT_NAME)' containers / named volumes (build/install/log) / compose-built images and host build artifacts$(if $(filter 0,$(KEEP_VENV)), — including install/.venv))
+	$(call CONFIRM,This removes EVERY ENV of '$(COMPOSE_PROJECT_NAME)' — ros and dev alike: containers, all six named volumes (build/install/log), compose-built images, host build artifacts and baked SIF/OCI artifacts$(if $(filter 0,$(KEEP_VENV)), — including install/.venv))
 	@# `clean` runs as a sub-make (not a prerequisite) so this single [y/N]
 	@# covers everything — FORCE=1 suppresses clean's own venv prompt.
 	@$(MAKE) --no-print-directory clean KEEP_VENV=$(KEEP_VENV) FORCE=1
@@ -767,12 +914,18 @@ clean-all:
 		$(COMPOSE) --profile "*" down --volumes --remove-orphans --rmi local; \
 	fi
 	@$(MAKE) --no-print-directory clean-cache
-	@echo -e "  $(OK) Full project reset complete (containers, volumes & cache)."
+	@# The bake artifacts live in the workspace root and DEVELOPMENT.md calls
+	@# this a full reset; leaving a 100 MB *.oci.tar behind is not one. The
+	@# image `bake-prod` tags locally goes with them.
+	@BAKED=$$(ls -1 *-prod*.sif *-dev*.sif *.oci.tar *.oci.tar.provenance *.sif.provenance *.sif.sha256 2>/dev/null || true); 	if [ -n "$$BAKED" ]; then 		rm -f $$BAKED && echo -e "  $(OK) Removed baked artifacts: $$(echo $$BAKED | tr '\n' ' ')"; 	fi
+	@for img in $$(docker images -q "$(COMPOSE_PROJECT_NAME)_*_prod" 2>/dev/null); do 		docker rmi -f "$$img" >/dev/null 2>&1 || true; 	done
+	@echo -e "  $(OK) Full project reset complete (containers, volumes, cache & baked artifacts)."
 
 ## @target docker-clean : Remove dangling Docker images, build cache & unused volumes
 # HOST-WIDE: `prune --volumes` also takes volumes of other, merely-stopped
 # projects. Shows what is at stake and asks, unless FORCE=1 / CI=true.
 docker-clean:
+	$(call GUARD_HOST_ONLY)
 	@echo -e "  $(WARN) This prunes Docker data for EVERY project on this host, not just $(COMPOSE_PROJECT_NAME)."
 	@docker system df 2>/dev/null | sed 's/^/    /' || true
 	@ORPHANS=$$(docker volume ls -qf dangling=true 2>/dev/null); \
@@ -784,20 +937,3 @@ docker-clean:
 	@docker system prune -f --volumes
 	@docker builder prune -a -f
 	@echo -e "  $(OK) Global Docker build cache, volumes & dangling images pruned."
-
-# =============================================================================
-# Deprecated target names (pre-streamline spellings)
-# =============================================================================
-# Renaming an entry point breaks the CI of every project built on this kit, so
-# these forward and say where to go. Absent from .PHONY and help on purpose.
-DEPRECATED = @echo -e "  $(WARN) 'make $(1)' is deprecated — use 'make $(2)'." >&2
-
-## deprecated: check-host, env-check → check
-check-host env-check:
-	$(call DEPRECATED,$@,check)
-	@$(MAKE) --no-print-directory check
-
-## deprecated: completion, completion-install → setup
-completion completion-install:
-	$(call DEPRECATED,$@,setup)
-	@bash config/devkit_make_completion.bash --install

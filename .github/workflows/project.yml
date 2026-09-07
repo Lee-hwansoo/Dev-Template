@@ -50,7 +50,14 @@ jobs:
       # extra (torch) is paid for here whenever the project declares one.
       - name: sync the workspace
         run: make exec CMD='mksync'
+      # The dev image does not install clang-format: it pulls libllvm for 230 MB,
+      # so dependencies/apt.txt keeps it commented out. mlint fails closed on
+      # C/C++ sources without a formatter — correct, and here it means "the C/C++
+      # half is knowingly unchecked". A project that keeps C/C++ sources should
+      # uncomment 'clang-format # dev' in dependencies/apt.txt and delete this env.
       - run: make lint
+        env:
+          DEVKIT_SKIP_CLANG_FORMAT: '1'
       - run: make test
       - name: teardown
         if: always()

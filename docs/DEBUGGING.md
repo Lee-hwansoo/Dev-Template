@@ -150,7 +150,8 @@ GDB 디버그 엔진을 통해 C++ 실행 파일 및 ROS 노드를 라인 단위
 2. **IntelliSense DB 재설정**: **Ctrl+Shift+P** ➔ `C/C++: Reset IntelliSense Database` 실행.
 
 ### 🛑 GDB "Operation Not Permitted" 에러 시
-컨테이너 내부에서 아래 명령을 실행하여 ptrace 권한을 해제하세요:
+`ptrace_scope` 는 호스트 커널 설정이고 컨테이너의 `/proc` 는 읽기 전용입니다 — **호스트에서** 풀어 주세요
+(또는 compose 서비스에 `cap_add: [SYS_PTRACE]` 를 더합니다):
 ```bash
-echo 0 > /proc/sys/kernel/yama/ptrace_scope
+sudo sysctl -w kernel.yama.ptrace_scope=0   # 호스트에서 실행 (컨테이너의 /proc 는 읽기 전용)
 ```

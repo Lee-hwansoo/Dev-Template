@@ -44,7 +44,8 @@ make adopt NAME=my-robot DESC='One line about it'
 
 | 항목 | 결정 |
 | :--- | :--- |
-| `ROS_DISTRO` | 배포판 하나 — ROS 2 는 `humble`·`iron`·`jazzy`·`kilted`·`rolling`, ROS 1 은 `noetic`(레거시 티어: 지원·검증되나 새 기능 없음). Ubuntu 릴리스와 Python 이 따라옵니다. ROS 를 쓰지 않으면 그대로 두고 `ENV=dev` 만 사용 |
+| `ENV` | `ros` 로 두면 ROS 스택, `dev` 는 ROS 없는 C++/Python 전용. 여기에 적어 두면 `make` 마다 `ENV=dev` 를 붙이지 않습니다 |
+| `ROS_DISTRO` | 배포판 하나 — 현재 지원 중인 ROS 2 는 `humble`(2027-05)·`jazzy`(2029-05)·`kilted`(2026-11)·`rolling`. `iron`(2024-11 EOL)·`foxy`(2023-05 EOL)·ROS 1 `noetic`(2025-05 EOL)은 **레거시 티어**입니다 — 빌드되고 계약도 검증하지만 상류 보안 업데이트가 없습니다. Ubuntu 릴리스와 Python 이 따라옵니다. ROS 를 쓰지 않으면 그대로 두고 `ENV=dev` 만 사용 |
 | `UV_EXTRA` | `pyproject.toml` 에 extras 를 선언한 뒤 팀이 기본으로 쓸 것(예: `gpu`). 선언 전에는 비워 둡니다 |
 | `ROS_DOMAIN_ID` | 같은 네트워크의 다른 팀과 겹치지 않는 값 |
 | `DEVKIT_SLURM_*`, `SLURM_DATA_ROOT` … | 클러스터를 쓴다면 사이트 값 ([SLURM.md](SLURM.md)) |
@@ -55,6 +56,7 @@ make adopt NAME=my-robot DESC='One line about it'
 | 레이어 | 파일 | 할 일 |
 | :--- | :--- | :--- |
 | Python | `src/pyproject.toml` | `dependencies` 에 패키지 추가. PyTorch cpu/gpu 분기가 필요하면 파일 안의 **주석 예시**를 풉니다 ([opt-in 되살리기](DEPENDENCIES.md#-opt-in-기능-되살리기)) |
+| C++ 소스 위치 | 루트 `CMakeLists.txt` 로 빌드한다면 소스를 `src/` 또는 `cmake/` 안에 두세요. 프로덕션 빌더는 그 두 곳과 `dependencies/`·`config/`·`scripts/`·`VERSION` 만 복사하므로, `app/main.cpp` 같은 다른 최상위 디렉터리는 dev 빌드는 통과하고 `make bake-prod` 에서 실패합니다 |
 | 시스템·ROS apt | `dependencies/apt.txt`, `apt_ros.txt` | 한 줄에 패키지 하나. 배포물에 필요하면 `# runtime`, GUI 도구는 `# gui`. terminator·clang-format 은 주석 해제로 켭니다 ([opt-in 되살리기](DEPENDENCIES.md#-opt-in-기능-되살리기)) |
 | 외부 소스 | `dependencies/dependencies.repos` | vcstool 형식. 릴리스는 **40자 커밋 해시**로 고정 |
 

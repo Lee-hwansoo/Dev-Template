@@ -33,11 +33,22 @@ jobs:
       # A fork that did what GETTING_STARTED says — adopted its name, removed
       # the starters, replaced README — must still pass: the template's own
       # content is checked only upstream (upstream_checks in the suite).
-      - name: the suite passes on a fork that replaced the template's own files
+      - name: the suite passes on a fork that made every documented edit
         run: |
           cp -a . /tmp/fork && cd /tmp/fork
+          # A fresh fork has no .env yet; carrying a developer's copy in
+          # would make adopt guard the volumes of the ORIGINAL project.
+          rm -f .env
           make adopt NAME=forkprobe DESC='fork probe'
-          rm -rf src/example && printf '# forkprobe\n' > README.md
+          # Everything GETTING_STARTED and DEPENDENCIES tell a fork it may do
+          # WITHOUT a container: own the starters, README and docs/, uncomment
+          # the opt-in packages, set site SLURM values, pin the base image.
+          # (Uncommenting the torch extras needs a relock, which needs mksync;
+          # [adopt] checks that example parses on its own.)
+          rm -rf src/example docs && printf '# forkprobe\n' > README.md
+          sed -i 's/^# terminator # gui/terminator # gui/' dependencies/apt.txt
+          printf 'DEVKIT_SLURM_CPUS_PER_TASK=16\n' >> .env.example
+          printf 'BASE_IMAGE=ubuntu:22.04@sha256:%064d\n' 0 >> .env.example
           make verify
       # The docker-build shell has no terminal and no BASH_ENV, and the prod
       # builder stages source config/util_aliases.sh in exactly that shell —

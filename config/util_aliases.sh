@@ -114,12 +114,6 @@ hwcheck()    { bash "${WS_SCRIPTS}/check_hardware.sh" "$@"; }
 gpus()       { bash "${WS_SCRIPTS}/setup_gpu.sh" status "$@"; }
 check_deps() { bash "${WS_SCRIPTS}/check_deps.sh" "$@"; }
 
-# Pre-streamline spelling: a base kit must not break scripts already calling it.
-hw_check() {
-    log_warn "'hw_check' is deprecated — use 'hwcheck'."
-    bash "${WS_SCRIPTS}/check_hardware.sh" "$@"
-}
-
 __print_container_help() {
     # Locals, not devkit_auto_color: `exec >` would redirect the user's shell
     # for good. _log_plain is the same rule the log verbs apply.
@@ -333,8 +327,21 @@ mkenv() {
         share=(--system-site-packages); py="${SYS_PYTHON_EXE}"; label="Shared"
     fi
     if command -v uv >/dev/null 2>&1; then
-        uv venv "$venv_dir" --python "$py" "${share[@]}" --seed \
-            --prompt "$prompt" "${DEVKIT_REMAINING_ARGS[@]}" || return 1
+        # --seed brings pip, setuptools and wheel: 18 MB of package manager the
+        # runtime never calls, and the whole content of a prod pip manifest.
+        local seed=(--seed)
+        [ "${DEVKIT_BUILD_TYPE:-dev}" != prod ] || seed=()
+        # --clear when the directory exists without a usable interpreter: an
+        # empty root-created .venv (Docker's mount-source, or any in-container
+        # root run) made every later mksync fail with uv's raw "Permission
+        # denied" / "already exists", with nothing suggesting a way out.
+        local clear=()
+        [ ! -d "$venv_dir" ] || [ -x "${WS_VENV_PY:-}" ] || clear=(--clear)
+        uv venv "$venv_dir" --python "$py" "${share[@]}" ${seed[@]+"${seed[@]}"} ${clear[@]+"${clear[@]}"} \
+            --prompt "$prompt" "${DEVKIT_REMAINING_ARGS[@]}" || {
+                log_error "Could not create ${venv_dir}."
+                log_detail "If it exists but is unusable (root-owned from a container run), remove it: 'mclean --all'." >&2
+                return 1; }
     else
         # The fallback must honour --share too, or a noetic workspace (where it
         # is forced) silently ends up without rospy.
@@ -350,8 +357,7 @@ activate() {
     if [ -f "${venv_dir}/bin/activate" ]; then
         source "${venv_dir}/bin/activate"
         # Re-entrant already: activate calls `deactivate nondestructive` first.
-        # Same paren normalisation as config/init_bash.sh.
-        VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT#\(}"; VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT%\) }"
+        devkit_venv_prompt
         log_ok "Activated virtualenv: ${venv_dir}"
     else
         log_warn "Virtualenv not found at ${venv_dir}. Run 'mkenv' first."
@@ -439,10 +445,17 @@ mtest() {
                 log_error "No build directory — run 'mbuild' first."
                 return 1
             fi
-            # --test-dir keeps this working from any cwd; ctest is a no-op with a
-            # clear message when the project registers no tests.
+            # cd, not --test-dir: that flag arrived in CMake 3.20 and 20.04
+            # (noetic) ships 3.16, which IGNORES it and tests the cwd instead —
+            # mtest was green there without running the project's tests.
             __require_cmd ctest || return 1
-            ctest --test-dir "${WS_ROOT}/build" --output-on-failure "$@" ;;
+            ( cd "${WS_ROOT}/build" && ctest --output-on-failure "$@" ) || return 1
+            # A CMake project can still carry python tests, and GETTING_STARTED
+            # tells a fork to add a CMakeLists.txt to the same tree: running
+            # ctest alone dropped them silently and `make test` stayed green.
+            if [ -n "$(find "${WS_SRC:-${WS_ROOT}/src}" -name 'test_*.py' -o -name '*_test.py' 2>/dev/null | head -n 1)" ]; then
+                __pytest "$@"
+            fi ;;
         *)  __pytest "$@" ;;
     esac
 }
@@ -477,6 +490,11 @@ __pytest() {
 #   (.editorconfig → [tool.ruff] and .clang-format).
 mlint() {
     local fix=false src="${WS_SRC:-${WS_ROOT}/src}" rc=0 checked=0
+    # Also the repository root when a project lives there (__cmake_entry's first
+    # choice): a root-level .py was never linted while ruff reported clean.
+    local roots=("$src") entry
+    entry="$(__cmake_entry 2>/dev/null || true)"
+    [ "$entry" != "${WS_ROOT}" ] || roots=("${WS_ROOT}/src" "${WS_ROOT}")
     case "${1:-}" in
         --fix)  fix=true; shift ;;
         -h|--help) echo "Usage: mlint [--fix]   (ruff for Python, clang-format for C/C++)"; return 0 ;;
@@ -487,11 +505,11 @@ mlint() {
     if [ -x "${WS_VENV_PY:-}" ] && "${WS_VENV_PY}" -m ruff --version >/dev/null 2>&1; then
         checked=1
         if [ "$fix" = true ]; then
-            "${WS_VENV_PY}" -m ruff check --fix "$src" || rc=1
-            "${WS_VENV_PY}" -m ruff format "$src" || rc=1
+            "${WS_VENV_PY}" -m ruff check --fix "${roots[@]}" || rc=1
+            "${WS_VENV_PY}" -m ruff format "${roots[@]}" || rc=1
         else
-            "${WS_VENV_PY}" -m ruff check "$src" || rc=1
-            "${WS_VENV_PY}" -m ruff format --check "$src" || rc=1
+            "${WS_VENV_PY}" -m ruff check "${roots[@]}" || rc=1
+            "${WS_VENV_PY}" -m ruff format --check "${roots[@]}" || rc=1
         fi
     else
         log_warn "ruff is not installed — skipping the Python half."
@@ -514,8 +532,15 @@ mlint() {
                 clang-format --dry-run --Werror "${cpp_files[@]}" || rc=1
             fi
         else
-            log_warn "clang-format is not installed — skipping the C/C++ half."
-            log_detail "Uncomment 'clang-format # dev' in dependencies/apt.txt, then 'make build'." >&2
+            # FAIL, not skip: `make lint` is the CI style gate, and reporting
+            # "Lint clean" with C/C++ sources present and no formatter is the
+            # answer this function's own comment below calls the worst one.
+            log_error "${#cpp_files[@]} C/C++ file(s) present but clang-format is not installed."
+            log_detail "Uncomment 'clang-format # dev' in dependencies/apt.txt and run 'make build', or set DEVKIT_SKIP_CLANG_FORMAT=1 to accept an unchecked C/C++ half." >&2
+            case "${DEVKIT_SKIP_CLANG_FORMAT:-}" in
+                1|true|yes|on) log_warn "DEVKIT_SKIP_CLANG_FORMAT set — continuing without the C/C++ half." ;;
+                *) rc=1 ;;
+            esac
         fi
     fi
 
@@ -702,5 +727,5 @@ complete -W "--debug --release" mbuild 2>/dev/null || true
 complete -W "--rosdep --force" sync_deps 2>/dev/null || true
 complete -W "--all" mclean 2>/dev/null || true
 complete -W "--fix" mlint 2>/dev/null || true
-complete -W "--brief" hwcheck hw_check 2>/dev/null || true
+complete -W "--brief" hwcheck 2>/dev/null || true
 complete -W "--share" mksync mkenv 2>/dev/null || true

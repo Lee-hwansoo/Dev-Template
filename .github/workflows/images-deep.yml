@@ -1,0 +1,227 @@
+# =============================================================================
+# .github/workflows/images-deep.yml — the jobs that build a WHOLE image: the
+# production artifacts, the runtime smoke test, the arm64 stages and the SIF
+# conversion. They cost 15-45 minutes each and cannot say anything a push has
+# not already been told by the cheap tier, so they run on the weekly cron and
+# on request — never on a push or a pull request, where they only added five
+# "Skipped" rows to every commit's check list.
+#   gh workflow run images-deep        # before merging anything image-shaped
+# =============================================================================
+name: images-deep
+
+# The token can read the checkout and nothing else.
+permissions:
+  contents: read
+
+on:
+  schedule:
+    # Monday 04:00 UTC, an hour after the cheap tier.
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime-smoke:
+    name: runtime smoke (build, run, ROS python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      # No layer cache here on purpose: this job exercises `make build`, the
+      # path a developer runs, and teaching compose about the Actions cache
+      # would test something else.
+      - uses: ./.github/actions/gate
+        with:
+          reclaim-disk: 'true'
+      - name: setup (.env + completion + xauth)
+        run: make setup
+      - name: build and start (GPU_MODE=auto resolves to cpu here)
+        run: |
+          make build ENV=ros
+          make start ENV=ros
+      - name: the environment must reach a NON-bash process
+        run: |
+          make exec ENV=ros CMD='python3 -c "import rclpy; print(\"rclpy\", rclpy.__file__)"'
+          make exec ENV=ros CMD='ros2 pkg list | wc -l'
+      - name: the display probe must name a binary the image ships
+        run: make exec ENV=ros CMD='command -v xdpyinfo'
+      - name: shell functions must reach a child shell
+        run: make exec ENV=ros CMD='type -t mksync'
+      - name: one-click init, then the venv must be active and project-named
+        run: |
+          make exec ENV=ros CMD='mksync'
+          # A ROS venv shares the SYSTEM interpreter: this is why the ROS
+          # production runtime does not copy /opt/uv/python (check [sif-contract]).
+          make exec ENV=ros CMD='readlink -f "$$(command -v python3)" | grep -q ^/usr/bin/python3'
+          make exec ENV=ros CMD='test -n "$$VIRTUAL_ENV_PROMPT" && echo "venv: $$VIRTUAL_ENV_PROMPT"'
+          make exec ENV=ros CMD='python3 -c "import rclpy"'
+          make exec ENV=ros CMD='check_deps'
+      - name: teardown
+        if: always()
+        run: make down ENV=ros
+
+  arm64-image:
+    name: arm64 stages (Apple Silicon -> HPC)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/gate
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: build the arm64 base stage
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: base
+          platforms: linux/arm64
+          build-args: |
+            BASE_IMAGE=ubuntu:22.04
+            ROS_DISTRO=humble
+          tags: devkit-ci:arm64
+          load: true
+          cache-from: type=gha,scope=arm64-base
+          cache-to: type=gha,mode=max,scope=arm64-base
+      # A Mac developer bakes for an x86 cluster and vice versa. The arch that
+      # names the artifact must be the arch the image actually is.
+      - name: the arm64 image must be arm64, and sif_arch must agree
+        run: |
+          got=$(docker image inspect --format '{{.Architecture}}' devkit-ci:arm64)
+          [ "$got" = arm64 ] || { echo "built image reports '$got', not arm64"; exit 1; }
+          named=$(TARGETARCH=arm64 bash -c '
+            source config/util_paths.sh
+            devkit_require util_logging.sh
+            devkit_require util_sif_common.sh
+            sif_arch')
+          [ "$named" = arm64 ] || { echo "sif_arch names '$named' for an arm64 target"; exit 1; }
+
+  sif-artifact:
+    name: SIF conversion and run (real Apptainer)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      # No layer cache: `make bake-prod` is the path under test.
+      - uses: ./.github/actions/gate
+        with:
+          reclaim-disk: 'true'
+      - name: install apptainer
+        run: |
+          version=1.5.3
+          curl -fsSLO "https://github.com/apptainer/apptainer/releases/download/v${version}/apptainer_${version}_amd64.deb"
+          sudo apt-get install -y "./apptainer_${version}_amd64.deb"
+          apptainer --version
+      # Apptainer runs as the invoking UID; verify access to the baked venv.
+      - name: bake a production SIF
+        run: |
+          make setup
+          make bake-prod ENV=dev
+          ls -lh ./*.sif ./*.sif.sha256 ./*.sif.provenance
+      - name: the artifact must identify itself
+        run: |
+          sif=$(ls ./*.sif | head -1)
+          grep -qE '^[0-9a-f]{64} ' "${sif}.sha256" || { echo "no sha256 sidecar"; exit 1; }
+          grep -q '^oci_image_id=sha256:' "${sif}.provenance" || { cat "${sif}.provenance"; exit 1; }
+          grep -q '^base_image=' "${sif}.provenance" || { cat "${sif}.provenance"; exit 1; }
+      - name: the SIF venv must be accessible to the invoking uid
+        run: |
+          sif=$(ls ./*.sif | head -1)
+          # No --env here: sif_entry_args probes for it and the production
+          # entrypoint does not take it. Hardcoding it fails with a bare
+          # "exec: --: invalid option".
+          # One line: a YAML block keeps its indentation, and python3 -c reads
+          # that as an IndentationError before it ever looks at the venv.
+          apptainer exec "$sif" /entrypoint.sh python3 -c 'import sys, pathlib; print("interpreter:", sys.executable); assert "/install/.venv/" in sys.executable, sys.executable; assert pathlib.Path(sys.executable).exists()'
+      - name: production excludes sources and exposes the venv interpreter
+        run: |
+          sif=$(ls ./*.sif | head -1)
+          # src/ is not in a production artifact; only install/ is. This is the
+          # claim docs/SLURM.md makes to readers, asserted rather than promised.
+          apptainer exec "$sif" test ! -e /workspace/src \
+            || { echo "the production SIF still carries src/"; exit 1; }
+          apptainer exec "$sif" sh -c 'command -v python3 | grep -q "/install/.venv/bin/"'
+      - name: a job run must leave a closed record
+        run: |
+          sif=$(ls ./*.sif | head -1)
+          SLURM_RUN_ROOT="$PWD/runs" bash scripts/slurm_run.sh "$sif" 'python3 -c "print(1)"'
+          record=$(ls runs/devkit-local-*.txt | head -1)
+          cat "$record"
+          grep -q '^exit_status=0' "$record" || { echo "the record has no exit status"; exit 1; }
+          grep -q '^oci_image_id=' "$record" || { echo "the record does not reach the OCI image"; exit 1; }
+      - name: a failing job must be recorded as failing
+        run: |
+          sif=$(ls ./*.sif | head -1)
+          rc=0
+          SLURM_RUN_ROOT="$PWD/runs-fail" bash scripts/slurm_run.sh "$sif" 'exit 7' || rc=$?
+          [ "$rc" = 7 ] || { echo "slurm_run.sh returned $rc, not the job's 7"; exit 1; }
+          grep -q '^exit_status=7' "$(ls runs-fail/devkit-local-*.txt | head -1)" \
+            || { echo "a failed job was not recorded as failed"; exit 1; }
+
+  prod-artifact:
+    name: production artifact (${{ matrix.flavour }}, non-root, venv intact)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: [dev, ros]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/gate
+        with:
+          reclaim-disk: 'true'
+      - uses: docker/setup-buildx-action@v3
+      - name: build the production runtime
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: prod-runtime
+          build-args: |
+            PROD_ENV=${{ matrix.flavour }}
+            BASE_IMAGE=ubuntu:22.04
+            ROS_DISTRO=humble
+            WORKSPACE_PATH=/workspace
+          tags: devkit-ci:prod
+          load: true
+          cache-from: type=gha,scope=prod-${{ matrix.flavour }}
+          cache-to: type=gha,mode=max,scope=prod-${{ matrix.flavour }}
+      # The failure was silent: with the interpreter under /root, PATH fell
+      # through to /usr/bin/python3 and the venv vanished from sys.path. An
+      # arbitrary uid (Apptainer, OpenShift) is what exposes it.
+      - name: the artifact must keep its own interpreter under any uid
+        run: |
+          probe='import os,sys; assert os.getuid()!=0, "runs as root";'
+          probe="$probe"' assert sys.prefix.endswith("install/.venv"), sys.prefix;'
+          probe="$probe"' assert any("install/.venv" in p for p in sys.path), "venv site-packages missing";'
+          probe="$probe"' print("uid", os.getuid(), "->", sys.executable)'
+          for uid in 1000 4321; do
+            docker run --rm --user "$uid:$uid" devkit-ci:prod python3 -c "$probe"
+          done
+      # A ROS venv shares the system interpreter, so the managed one must be
+      # gone — check [sif-contract] pins the Dockerfile side of this.
+      - name: the ROS artifact runs on the system interpreter and ships no managed one
+        if: matrix.flavour == 'ros'
+        run: |
+          docker run --rm --entrypoint sh devkit-ci:prod -c '
+            py=$(readlink -f "$(command -v python3)")
+            case "$py" in /usr/bin/python3*) ;; *) echo "venv python is $py, not the system interpreter"; exit 1 ;; esac
+            [ -z "$(ls -A /opt/uv/python 2>/dev/null)" ] || { echo "/opt/uv/python still carries an interpreter"; exit 1; }'
+      # The bootstrap tools `base` installed must not ship: a runtime has no
+      # key to fetch and no repository to add. dev only: purge-bootstrap keeps a
+      # tool an installed ROS package still depends on (libcurl-vendor → curl).
+      - name: the artifact carries no apt bootstrap tools
+        if: matrix.flavour == 'dev'
+        run: |
+          docker run --rm --entrypoint sh devkit-ci:prod -c '
+            for t in curl gpg lsb_release dirmngr; do
+              ! command -v "$t" >/dev/null || { echo "$t is still installed in the runtime image"; exit 1; }
+            done'
+      - name: the release manifest must name the template revision
+        run: |
+          docker run --rm --entrypoint sh devkit-ci:prod -c 'cat /etc/devkit/devkit-release.json' \
+            | grep -q "\"devkit_version\": *\"$(cat VERSION)\""

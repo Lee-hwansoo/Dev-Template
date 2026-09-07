@@ -13,7 +13,7 @@
   WSL2 진단, NVIDIA Container Toolkit 미설정 감지(해결 명령 동반). `build`/`start`의 선행 의존성입니다.
 * **`make status`**: 프로젝트 요약 + **`[Detected Host Wiring]`** (GPU 디바이스, WSL 라이브러리, 디스플레이,
   XDG/Xauthority, ssh-agent, git 신원, 컨테이너 UID/GID) — 자동 감지 결과를 한눈에 확인.
-* **`make clean-cache`**: 호스트 감지 캐시(`.docker_cache/detected-env.mk`) 무효화 → 다음 `make` 실행 시 재감지.
+* **`make clean-cache`**: 호스트 감지 캐시(`.docker_cache/detected-env*.mk`, 감지 입력을 준 조합은 해시가 붙습니다) 무효화 → 다음 `make` 실행 시 재감지.
 * **`make verify`**: 키트 계약 전체(개수는 README 의 `make verify` 행)를 실행으로 검증합니다 — docker 도 `.env` 도 필요 없습니다. 실패 메시지의
   슬러그(`[env-bridge]` 등)가 어느 계약인지 알려주고, 각 검사가 왜 있는지는 `scripts/verify_repo.sh`의 슬러그
   헤더에 적혀 있습니다. 계약을 추가하는 규칙은 [CONTRIBUTING.md](../.github/CONTRIBUTING.md#계약을-추가할-때).

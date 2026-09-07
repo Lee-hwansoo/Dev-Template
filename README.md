@@ -108,7 +108,7 @@ mksync
 | :--- | :--- |
 | **`h` / `help`** | **도움말 안내**: 컨테이너 내부 전용 통합 숏컷 및 카테고리 안내 출력 |
 | **`mksync [--share]`** | **원클릭 환경 동기화**: 파이썬 venv 생성 + 의존성 설치 + ROS/CMake 빌드 일괄 수행. `--share`는 ROS 이미지에서 자동 적용 (시스템 파이썬 공유 venv — `rospy`/`rclpy`가 시스템에 있음) |
-| **`cbuild` / `mbuild`** | **통합 빌드**: `colcon build` / `catkin_make` (ROS) 또는 Modern `cmake` (Pure C++) 실행. `--debug`/`--release`(기본 `RelWithDebInfo`), `--pkg <이름…>`, `--meta`(`config/colcon.meta` 적용) |
+| **`cbuild` / `mbuild`** | **통합 빌드**: `colcon build` / `catkin_make` (ROS) 또는 Modern `cmake` (Pure C++) 실행. `--debug`/`--release`(기본 `RelWithDebInfo`), `--pkg <이름…>`·`--meta`(`cbuild` 전용; `mbuild` 는 거부합니다) |
 | **`cw` / `cs` / `cc`** | **디렉토리 이동**: 워크스페이스 루트(`$WS_ROOT`), `src/`, `config/`로 빠르게 이동 |
 | **`gpus` / `gpu <mode>`** | **렌더링 스택 리포트**: OpenGL/GLX·EGL·Vulkan·D3D12 렌더러와 Mesa 버전, 로더 경로, 활성 환경변수 조회 / 가속 모드 전환 |
 | **`hwcheck`** | **6섹션 종합 스캔**: 시스템·네트워크·GPU·디스플레이·**신원(uid/gid)과 마운트 권한**·툴체인 |
@@ -126,7 +126,8 @@ mksync
 `GPU_MODE` 환경변수를 통해 사용자의 하드웨어를 자동으로 감지합니다 (`.env` 제어 가능).
 
 - **`GPU_MODE=auto`** (기본값): 아래 순서로 하드웨어를 감지해 모드를 선택합니다.
-  `nvidia`(dGPU) → `tegra`(Jetson) → `amd`(ROCm) → `intel`/`amd`(DRI) → `igpu`(WSL2 D3D12) → `cpu`.
+  호스트 측(`GPU_MODE`, compose 프로파일): `nvidia`(툴킷까지 있을 때) → `igpu`(DRI 또는 WSL2 D3D12) → `cpu`.
+  컨테이너 안(`gpu auto`): `nvidia` → `tegra` → ROCm → `intel`/`amd`(DRI) → `igpu` → `cpu`.
 - **`GPU_MODE=nvidia`**: NVIDIA Container Toolkit 기반 하드웨어 가속 (OpenGL + Vulkan + EGL).
 - **`tegra`**: NVIDIA Jetson / Tegra 내장 GPU (L4T 스택, `/dev/nvhost-*`).
   Jetson은 `/dev/nvidiactl`이 없어 일반 NVIDIA 탐지로는 잡히지 않으므로 별도 경로로 처리합니다.
@@ -147,6 +148,7 @@ mksync
 ### 자동으로 연결되는 호스트 리소스
 
 `scripts/check_env.sh`가 호스트를 1회 감지하여 `.docker_cache/detected-env.mk`에 캐시하고, 그 값으로 아래 마운트가 결정됩니다.
+`ROS_DISTRO=…  make` 처럼 감지 입력을 직접 준 호출은 그 조합만의 캐시 파일(`detected-env-<해시>.mk`)을 씁니다.
 감지에 실패한 항목은 호스트를 오염시키지 않도록 `.docker_cache/dummy_*` 플레이스홀더로 대체됩니다.
 
 | 호스트 리소스 | 컨테이너 매핑 | 비고 |
@@ -200,27 +202,27 @@ mksync
 | 조합 | 상태 | 근거 |
 | :--- | :--- | :--- |
 | 이미지 스테이지 빌드 (`base`, `build-core`) | ✅ 실행 검증 | CI(실행됨) `images.yml` image-stages |
-| Dockerfile apt 목록이 20.04 · 22.04 · 24.04 에서 해석 | ✅ 실행 검증 | CI(실행됨) `images.yml` apt-lists-resolve |
-| `apt*.txt` 매니페스트가 foxy · noetic · humble · jazzy 인덱스에서 해석 | ✅ 실행 검증 | CI(실행됨) `images.yml` ros-lists-resolve |
-| ROS 저장소·GPG (humble, 라이브 및 스냅샷 키; noetic) | ✅ 실행 검증 | CI(실행됨) `images.yml` apt-key-paths |
+| Dockerfile apt 목록이 20.04 · 22.04 · 24.04 에서 해석 | ✅ 실행 검증 | CI(실행됨) `images.yml` apt |
+| `apt*.txt` 매니페스트가 foxy · noetic · humble · jazzy 인덱스에서 해석 | ✅ 실행 검증 | CI(실행됨) `images.yml` apt |
+| ROS 저장소·GPG (humble, 라이브 및 스냅샷 키; noetic) | ✅ 실행 검증 | CI(실행됨) `images.yml` apt |
 | **ROS 1 noetic** (레거시 티어 — EOL 2025-05, 동작은 유지·검증되나 새 기능은 ROS 2 에만) | ✅ 실행 검증 — 계약(`build-entrypoints`·`workspace-overlay`)과 apt 키 경로 | CI(실행됨) · `make verify` |
 | 계약 스위트 62개 · Dockerfile 린트 | ✅ 실행 검증 | CI(실행됨) `verify.yml` contracts |
-| 개발 컨테이너 스모크 (빌드 · 기동 · ROS 2 파이썬) | ✅ 실행 검증 | CI(실행됨) `images.yml` runtime-smoke · 참조 호스트 |
+| 개발 컨테이너 스모크 (빌드 · 기동 · ROS 2 파이썬) | ✅ 실행 검증 | CI(실행됨) `images-deep.yml` runtime-smoke · 참조 호스트 |
 | WSL2 호스트: 감지 · 빌드 · 실행 (ROS 2) | ✅ 실행 검증 | 참조 호스트 |
 | NVIDIA GPU 패스스루 (`nvidia-smi`, `libcuda`) | ✅ 실행 검증 — **WSL2 경로만**. 네이티브 Linux 는 장치 노드가 달라(`/dev/nvidia*`) 별개 | 참조 호스트 |
 | GUI · GL 가속 (X11, WSLg/D3D12) | ✅ 실행 검증 — **WSL2 경로만** | 참조 호스트 |
-| 프로덕션 런타임 이미지 (non-root, venv) — dev · ros | ✅ 실행 검증 | CI(실행됨) `images.yml` prod-artifact · 참조 호스트 |
-| SIF 변환 · 실행 · 작업 기록 | ✅ 실행 검증 | CI(실행됨) `images.yml` sif-artifact · 참조 호스트 |
+| 프로덕션 런타임 이미지 (non-root, venv) — dev · ros | ✅ 실행 검증 | CI(실행됨) `images-deep.yml` prod-artifact · 참조 호스트 |
+| SIF 변환 · 실행 · 작업 기록 | ✅ 실행 검증 | CI(실행됨) `images-deep.yml` sif-artifact · 참조 호스트 |
 | SLURM 제출 · 실행 · 종료 상태 기록 | ✅ 실행 검증 — 컨테이너 클러스터. **컨테이너 런타임만 스텁** | 참조 호스트 |
 | **다중 노드 SLURM** (`--nodes=2`, 노드별 태스크 배치) | ✅ 실행 검증 — 2노드 컨테이너 클러스터 | 참조 호스트 |
-| arm64 이미지: 빌드 · 실행 · 계정 생성 | ✅ 실행 검증 — **QEMU 에뮬레이션** | CI(실행됨) `images.yml` arm64-image · 참조 호스트 |
+| arm64 이미지: 빌드 · 실행 · 계정 생성 | ✅ 실행 검증 — **QEMU 에뮬레이션** | CI(실행됨) `images-deep.yml` arm64-image · 참조 호스트 |
 | 네이티브 Linux 호스트 감지 (`IS_WSL=false`, GPU 플래그, DXG 마운트 중립화) | ✅ 실행 검증 | CI(실행됨) `verify.yml` contracts |
 | macOS 호스트 (bash 3.2 · BSD sed/awk) | ✅ 실행 검증 | CI(실행됨) `verify.yml` macos-host |
 | macOS GPU (Metal/MPS) | ❌ **미지원** — CPU 폴백으로만 동작 | — |
 | MPI 통신 | ❌ **미지원** — `srun` 이 노드에 태스크를 띄우는 것까지는 동작하나 `--mpi`/PMI 배선이 없어 태스크 간 통신은 애플리케이션 몫 | — |
 
 > ROS 배포판은 Ubuntu 릴리스와 Python 인터프리터를 함께 결정합니다
-> (20.04/noetic·foxy → 3.8, 22.04/humble·iron → 3.10, 24.04/jazzy·kilted·rolling → 3.12).
+> (20.04/noetic·foxy → 3.8, 22.04/humble·iron → 3.10, 24.04/jazzy·kilted·rolling → 3.12). `noetic`·`foxy`·`iron` 은 상류 EOL 이후의 레거시 티어입니다.
 > `ROS_DISTRO` 하나만 바꾸면 나머지가 따라옵니다 — apt 가 `rclpy`/`rospy` 를 시스템
 > 인터프리터에 넣기 때문에 이 짝이 어긋나면 venv 가 ROS 를 import 하지 못합니다.
 

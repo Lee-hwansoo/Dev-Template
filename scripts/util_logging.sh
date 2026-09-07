@@ -43,7 +43,10 @@ _log_resolve_file() {
     esac
     case "$LOG_FILE" in
         /*) __DEVKIT_LOG_PATH="$LOG_FILE" ;;
-        *)  __DEVKIT_LOG_PATH="${WORKSPACE_PATH:-/workspace}/${LOG_FILE}" ;;
+        # WS_ROOT first: WORKSPACE_PATH is the CONTAINER path and make exports
+        # it to host recipes too, so a relative LOG_FILE resolved under
+        # /workspace on the host and the file half silently disabled itself.
+        *)  __DEVKIT_LOG_PATH="${WS_ROOT:-${WORKSPACE_PATH:-/workspace}}/${LOG_FILE}" ;;
     esac
     # Best-effort: logging must never crash the caller, so an unusable path
     # silently disables the file half.
@@ -65,7 +68,10 @@ _log_write() {
     local when=""
     if [ "${__DEVKIT_PRINTF_TIME:-}" = 1 ]; then printf -v when '%(%F %T)T' -1
     else when="$(date '+%F %T')"; fi
-    echo -e "${when} $3" >> "$__DEVKIT_LOG_PATH" 2>/dev/null
+    # Braces around the redirect too: a failure to OPEN the file is reported by
+    # the shell before 2>/dev/null applies, so an unwritable LOG_FILE printed
+    # "Permission denied" after every line the caller logged.
+    { echo -e "${when} $3" >> "$__DEVKIT_LOG_PATH"; } 2>/dev/null
     return 0
 }
 

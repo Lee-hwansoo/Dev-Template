@@ -13,7 +13,7 @@
 #   - (No tag)  : Installed in dev and production builder environments
 #
 # Examples:
-#   - libyaml-cpp-dev # runtime,ros2 (Installed in ROS2 dev and deployment)
+#   - libyaml-cpp-dev # runtime         (dev images and deployment artifacts)
 #   - python3-catkin-tools # ros1    (ROS1 dev-only tool)
 # =============================================================================
 

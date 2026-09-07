@@ -67,15 +67,37 @@ fi
 # 2. GPU Detection (NVIDIA / DRI)
 # macOS is skipped entirely: Docker Desktop runs a Linux VM with no CUDA/DRI
 # passthrough, so every macOS host resolves to cpu (LLVMpipe).
+# Set when a probe could not reach something it needed: the emitted cache then
+# carries the marker and the Makefile treats it as stale.
+DETECT_INCOMPLETE=""
 HAS_NVIDIA="false"
 HAS_TOOLKIT="false"
 HAS_DRI="false"
 
 if [ "$IS_MACOS" = "false" ]; then
-    if command -v nvidia-smi >/dev/null 2>&1; then
+    # The BINARY is not the GPU: a machine with the tools but no working driver
+    # answers `nvidia-smi -L` with an error, and the same rule already lives in
+    # util_gpu_detect.sh's has_nvidia. A timeout because a hung daemon or a
+    # wedged driver would otherwise stall every make in the read phase.
+    if devkit_timeout 10 nvidia-smi -L >/dev/null 2>&1; then
         HAS_NVIDIA="true"
-        if command -v docker >/dev/null 2>&1 && docker info 2>/dev/null | grep -qi nvidia; then
-            HAS_TOOLKIT="true"
+        # The runtime NAME, not the word 'nvidia' anywhere in `docker info` — a
+        # host called nvidia-box answered true and `docker compose up` then died
+        # with "unknown runtime". An unreachable daemon is unknown, not false:
+        # caching false here sent every later run to the iGPU profile in silence.
+        if command -v docker >/dev/null 2>&1; then
+            if docker_runtimes="$(devkit_timeout 10 docker info --format '{{range $r, $_ := .Runtimes}}{{$r}} {{end}}' 2>/dev/null)"; then
+                case " $docker_runtimes " in *" nvidia "*) HAS_TOOLKIT="true" ;; esac
+            else
+                # Do NOT fail: `make check`/`status`/`setup` are what a user runs
+                # WHILE the daemon is down. Answer, say so, and mark the result
+                # incomplete so the Makefile refuses to reuse this cache — the
+                # next run with a live daemon re-probes instead of pinning the
+                # project to the iGPU/CPU profile in silence.
+                DETECT_INCOMPLETE="the docker daemon was unreachable, so the NVIDIA runtime could not be probed"
+                log_warn "Docker is installed but its daemon is unreachable: assuming no NVIDIA runtime for now." >&2
+                log_detail "This result is not cached. Start Docker and re-run for the GPU profile." >&2
+            fi
         fi
     fi
 
@@ -98,12 +120,24 @@ env_setting() {
     [ -n "$value" ] || value="$(devkit_env_value "$1" "$DEVKIT_ENV_DEFAULTS")"
     printf '%s' "$value"
 }
+# Advertised in .env.example: a fork can pin the host path the container mounts.
+HOST_WORKSPACE_PATH="${HOST_WORKSPACE_PATH:-$(env_setting HOST_WORKSPACE_PATH)}"
 HOST_WORKSPACE_PATH="${HOST_WORKSPACE_PATH:-$(pwd)}"
+case "$HOST_WORKSPACE_PATH" in
+    /*) ;;
+    *)  log_error "HOST_WORKSPACE_PATH must be an absolute path (got: ${HOST_WORKSPACE_PATH})." >&2; exit 1 ;;
+esac
 # Read through the same two layers as ROS_DISTRO: a WORKSPACE_PATH or a
 # relocated cache set in .env used to be emitted as the default here, and the
 # include that follows then overwrote the user's answer with it.
 WORKSPACE_PATH="${WORKSPACE_PATH:-$(env_setting WORKSPACE_PATH)}"
 WORKSPACE_PATH="${WORKSPACE_PATH:-/workspace}"
+# Absolute, like DOCKER_DEV_CACHE_DIR: compose happily renders working_dir: ws
+# and a relative mount target, and only the container start says so.
+case "$WORKSPACE_PATH" in
+    /*) ;;
+    *)  log_error "WORKSPACE_PATH must be an absolute container path (got: ${WORKSPACE_PATH})." >&2; exit 1 ;;
+esac
 DOCKER_DEV_CACHE_DIR="${DOCKER_DEV_CACHE_DIR:-$(env_setting DOCKER_DEV_CACHE_DIR)}"
 # Under sudo, bind the invoking user's HOME and ids, not root's. macOS has no
 # getent, hence the fallbacks; each is `|| true` so a missing tool degrades.
@@ -152,11 +186,21 @@ fi
 # creates a missing mount source as root, breaking the later real mount.
 placeholder() {
     local path="${HOST_CACHE_DIR}/dummy_$1"
-    if [ "${2:-}" = "--file" ]; then
-        [ -f "$path" ] || : > "$path" 2>/dev/null || true
-    else
-        mkdir -p "$path" 2>/dev/null || true
-    fi
+    # Braces around the redirect: a failure to OPEN the file is reported before
+    # 2>/dev/null applies, which is how "Permission denied" leaked into the
+    # makefile output. And emitting a path that does NOT exist is worse than
+    # failing: compose mounts it and Docker creates it as a root-owned
+    # directory — exactly what the placeholder exists to prevent.
+    if [ "${2:-}" = "--file" ]; then { [ -f "$path" ] || : > "$path"; } 2>/dev/null
+    else mkdir -p "$path" 2>/dev/null
+    fi || {
+        if [ "$OUTPUT_MODE" = "--makefile" ]; then
+            log_error "Cannot create the placeholder ${path}; Docker would re-create it as a root-owned directory." >&2
+            log_detail "Check that ${HOST_CACHE_DIR} is writable (DOCKER_DEV_CACHE_DIR relocates it)." >&2
+            exit 2
+        fi
+        log_warn "Cannot create the placeholder ${path}." >&2
+    }
     printf '%s' "$path"
 }
 
@@ -187,11 +231,17 @@ if [ "$IS_MACOS" = "true" ]; then
         *) HOST_DISPLAY="$DISPLAY" ;;
     esac
 else
-    HOST_DISPLAY="${DISPLAY:-:0}"
+    HOST_DISPLAY="${DISPLAY:-$(env_setting DISPLAY)}"
+    HOST_DISPLAY="${HOST_DISPLAY:-:0}"
 fi
 
-HOST_WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}"
-HOST_XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}"
+# The advertised .env knobs (.env.example section 5) go through the same two
+# layers as HOST_XAUTHORITY: set in .env they were emitted and then ignored,
+# because detection only ever read the live session.
+HOST_WAYLAND_DISPLAY="${HOST_WAYLAND_DISPLAY:-$(env_setting HOST_WAYLAND_DISPLAY)}"
+HOST_WAYLAND_DISPLAY="${HOST_WAYLAND_DISPLAY:-${WAYLAND_DISPLAY:-}}"
+HOST_XDG_RUNTIME_DIR="${HOST_XDG_RUNTIME_DIR:-$(env_setting HOST_XDG_RUNTIME_DIR)}"
+HOST_XDG_RUNTIME_DIR="${HOST_XDG_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-}}"
 
 # WSLg publishes its own X11 socket dir, Wayland socket and runtime dir.
 if [ "$IS_WSL" = "true" ] && [ -d /mnt/wslg/runtime-dir ]; then
@@ -209,7 +259,10 @@ if [ -n "$HOST_WAYLAND_DISPLAY" ]; then
 fi
 [ -d "${HOST_XDG_RUNTIME_DIR:-}" ] || HOST_XDG_RUNTIME_DIR="$(placeholder xdg_runtime)"
 
-if [ -d /tmp/.X11-unix ]; then
+if [ -n "${HOST_X11_DIR:-$(env_setting HOST_X11_DIR)}" ]; then
+    HOST_X11_DIR="${HOST_X11_DIR:-$(env_setting HOST_X11_DIR)}"
+    [ -d "$HOST_X11_DIR" ] || { log_error "HOST_X11_DIR=${HOST_X11_DIR} is not a directory (set in .env or the environment)." >&2; exit 1; }
+elif [ -d /tmp/.X11-unix ]; then
     HOST_X11_DIR="/tmp/.X11-unix"
 elif [ "$IS_WSL" = "true" ] && [ -d /mnt/wslg/.X11-unix ]; then
     HOST_X11_DIR="/mnt/wslg/.X11-unix"
@@ -230,7 +283,10 @@ else
 fi
 
 # ssh-agent forwarding & host git identity (mounted read-only into the container)
-if [ -S "${SSH_AUTH_SOCK:-}" ]; then
+HOST_SSH_AUTH_SOCK="${HOST_SSH_AUTH_SOCK:-$(env_setting HOST_SSH_AUTH_SOCK)}"
+if [ -n "$HOST_SSH_AUTH_SOCK" ]; then
+    [ -S "$HOST_SSH_AUTH_SOCK" ] || { log_error "HOST_SSH_AUTH_SOCK=${HOST_SSH_AUTH_SOCK} is not a socket (set in .env or the environment)." >&2; exit 1; }
+elif [ -S "${SSH_AUTH_SOCK:-}" ]; then
     HOST_SSH_AUTH_SOCK="${SSH_AUTH_SOCK}"
 else
     HOST_SSH_AUTH_SOCK=""
@@ -259,6 +315,13 @@ case "$ROS_DISTRO" in
     humble|iron)          distro_base="ubuntu:22.04"; distro_python="3.10" ;;
     *)                    distro_base="";             distro_python=""     ;;
 esac
+# An explicit BASE_IMAGE takes a pairing DevKit does not know: then the
+# interpreter cannot be derived either, and defaulting it silently to 3.10
+# installed a venv that imports neither rclpy nor rospy.
+if [ -n "${BASE_IMAGE:-}" ] && [ -z "$distro_python" ] && [ -z "${UV_PYTHON:-}" ]; then
+    log_error "ROS_DISTRO '${ROS_DISTRO}' is not one DevKit knows, and BASE_IMAGE is pinned: set UV_PYTHON to the Python of that base."
+    exit 2
+fi
 if [ -z "${BASE_IMAGE:-}" ]; then
     [ -n "$distro_base" ] || {
         log_error "Unsupported ROS_DISTRO '${ROS_DISTRO}'. Each distro is bound to one Ubuntu release:"
@@ -273,11 +336,25 @@ UV_PYTHON="${UV_PYTHON:-${distro_python:-3.10}}"
 # a .env written before ROS_DISTRO changed pins the OLD pairing and nothing says
 # so until apt fails deep in the build. Say it here, once, and keep going.
 if [ -n "$distro_base" ]; then
-    case "$BASE_IMAGE" in
-        "$distro_base"|*"${distro_base#ubuntu:}"*) ;;
-        *) log_warn "ROS_DISTRO=${ROS_DISTRO} expects ${distro_base}, but BASE_IMAGE is '${BASE_IMAGE}'." >&2
-           log_detail "Comment BASE_IMAGE out in .env to follow ROS_DISTRO, or ignore this if the pin is deliberate." >&2 ;;
+    # By RELEASE, not substring: 'ubuntu:jammy' IS 22.04 and warned falsely,
+    # while 'ubuntu:22.04-something-else' passed on the number alone.
+    case "${distro_base#ubuntu:}" in
+        20.04) base_alias=focal ;; 22.04) base_alias=jammy ;; 24.04) base_alias=noble ;;
+        *)     base_alias="" ;;
     esac
+    base_ok=false
+    case "$BASE_IMAGE" in
+        "$distro_base"|"$distro_base"@*|"$distro_base"-*) base_ok=true ;;
+    esac
+    if [ -n "$base_alias" ]; then
+        case "$BASE_IMAGE" in
+            ubuntu:"$base_alias"|ubuntu:"$base_alias"@*|ubuntu:"$base_alias"-*) base_ok=true ;;
+        esac
+    fi
+    if [ "$base_ok" != true ]; then
+        log_warn "ROS_DISTRO=${ROS_DISTRO} expects ${distro_base}, but BASE_IMAGE is '${BASE_IMAGE}'." >&2
+        log_detail "Comment BASE_IMAGE out in .env to follow ROS_DISTRO, or ignore this if the pin is deliberate." >&2
+    fi
     [ "$UV_PYTHON" = "$distro_python" ] \
         || { log_warn "ROS_DISTRO=${ROS_DISTRO} ships Python ${distro_python}, but UV_PYTHON is '${UV_PYTHON}'." >&2
              log_detail "The venv will not import the apt-installed rclpy/rospy. Comment UV_PYTHON out in .env." >&2; }
@@ -312,3 +389,5 @@ emit_env "HOST_SSH_AUTH_SOCK" "$HOST_SSH_AUTH_SOCK"
 emit_env "HOST_GITCONFIG" "$HOST_GITCONFIG"
 emit_env "HOST_CACHE_DIR" "$HOST_CACHE_DIR"
 emit_env "HOST_HOME" "$HOST_HOME"
+# Last line on purpose: a reader that stops early still sees the values.
+[ -z "$DETECT_INCOMPLETE" ] || emit_env "DEVKIT_DETECT_INCOMPLETE" "$DETECT_INCOMPLETE"

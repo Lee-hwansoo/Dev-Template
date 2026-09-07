@@ -1,8 +1,10 @@
 # =============================================================================
-# .github/workflows/images.yml — the slow tier, gated on the files that can
-# break an image. The weekly cron covers drift nobody pushed (a rotated key, a
-# moved apt package); the full-image jobs are cron/manual only, and they exist
-# for the failures no static check can see.
+# .github/workflows/images.yml — the middle tier, gated on the files that can
+# break an image, and kept to two jobs so a commit's check list stays readable.
+# Nothing here builds a whole image: every check resolves against a real apt
+# index or builds the two cheap stages. The weekly cron covers drift nobody
+# pushed (a rotated key, a moved apt package). The jobs that DO build a full
+# image live in images-deep.yml, on their own cron and `gh workflow run`.
 # =============================================================================
 name: images
 
@@ -16,16 +18,19 @@ on:
   push:
     paths:
       - 'docker/**'
-      - 'scripts/util_apt_helper.sh'
-      - 'scripts/util_cuda_apt.sh'
+      # config/ and scripts/ are COPYed into every image and sourced by the
+      # builder stages, so a change there can break a build that no other
+      # trigger covers (the apt helpers were listed alone).
+      - 'config/**'
+      - 'scripts/**'
       - 'dependencies/apt.txt'
       - 'dependencies/apt_ros.txt'
       - '.github/workflows/images.yml'
   pull_request:
-    paths:
+    paths:                       # the same set as push, above
       - 'docker/**'
-      - 'scripts/util_apt_helper.sh'
-      - 'scripts/util_cuda_apt.sh'
+      - 'config/**'
+      - 'scripts/**'
       - 'dependencies/apt.txt'
       - 'dependencies/apt_ros.txt'
       - '.github/workflows/images.yml'
@@ -39,105 +44,84 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  apt-key-paths:
-    # The ROS 1 key import once aborted inside `docker build` for want of
-    # /dev/tty while every host test passed — so run it where it failed.
-    name: apt keys (${{ matrix.distro }}, ${{ matrix.snapshot }})
+  apt:
+    # One job, not ten matrix rows: every check here is a ~40 s container run
+    # against a real apt index, and a template's check list should stay readable.
+    # Each concern prints its own group and the step names the distro that broke.
+    name: apt (ROS keys, CUDA repo, package lists)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - image: ubuntu:20.04
-            distro: noetic
-            package: ros-noetic-ros-base
-            snapshot: latest
-          - image: ubuntu:22.04
-            distro: humble
-            package: ros-humble-ros-base
-            snapshot: latest
-          - image: ubuntu:22.04
-            distro: humble
-            package: ros-humble-ros-base
-            snapshot: '2025-05-16'
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
-      - name: setup-ros-repo
+      # The ROS 1 key import once aborted inside `docker build` for want of
+      # /dev/tty while every host test passed — so run it where it failed.
+      - name: ROS repo keys land, and apt trusts them
+        run: |
+          failed=""
+          # <base>|<distro>|<package>|<ROS_SNAPSHOT_DATE>
+          for case in 'ubuntu:20.04|noetic|ros-noetic-ros-base|latest' \
+                      'ubuntu:22.04|humble|ros-humble-ros-base|latest' \
+                      'ubuntu:22.04|humble|ros-humble-ros-base|2025-05-16'; do
+            IFS='|' read -r image distro package snapshot <<<"$case"
+            echo "::group::$distro on $image (snapshot $snapshot)"
+            # apt refuses an unsigned or wrongly-signed repository, so a
+            # resolvable candidate proves the keyring landed correctly.
+            docker run --rm -v "$PWD:/w" -w /w -e DEBIAN_FRONTEND=noninteractive \
+              -e ROS_SNAPSHOT_DATE="$snapshot" "$image" bash -c '
+                set -e
+                apt-get update -qq
+                apt-get install -y -qq curl gnupg ca-certificates >/dev/null
+                bash scripts/util_apt_helper.sh setup-ros-repo '"$distro"'
+                apt-cache policy '"$package"' | tee /dev/stderr | grep -q Candidate:' \
+              || failed="$failed $distro@$image($snapshot)"
+            echo "::endgroup::"
+          done
+          [ -z "$failed" ] || { echo "ROS repo key path failed for:$failed"; exit 1; }
+      - name: CUDA repo, fingerprint-pinned
         run: |
           docker run --rm -v "$PWD:/w" -w /w -e DEBIAN_FRONTEND=noninteractive \
-            -e ROS_SNAPSHOT_DATE=${{ matrix.snapshot }} \
-            ${{ matrix.image }} bash -c '
+            ubuntu:22.04 bash -c '
               set -e
               apt-get update -qq
-              apt-get install -y -qq curl gnupg lsb-release ca-certificates >/dev/null
-              bash scripts/util_apt_helper.sh setup-ros-repo ${{ matrix.distro }}
-              # apt refuses an unsigned or wrongly-signed repository, so a
-              # resolvable candidate proves the keyring landed correctly.
-              apt-cache policy ${{ matrix.package }} | tee /dev/stderr | grep -q Candidate:'
-      - name: cuda repo (fingerprint-pinned)
-        if: matrix.image == 'ubuntu:22.04' && matrix.snapshot == 'latest'
-        run: |
-          docker run --rm -v "$PWD:/w" -w /w -e DEBIAN_FRONTEND=noninteractive \
-            ${{ matrix.image }} bash -c '
-              set -e
-              apt-get update -qq
-              apt-get install -y -qq curl gnupg lsb-release ca-certificates >/dev/null
+              apt-get install -y -qq curl gnupg ca-certificates >/dev/null
               bash scripts/util_apt_helper.sh setup-cuda-repo 12.4
               apt-cache policy cuda-nvcc-12-4 | grep -q Candidate:'
-
-  ros-lists-resolve:
-    # The ROS manifests were written against Humble and inherited by every other
-    # distro: `tf2-ros-py` (Galactic+) broke a Foxy build four minutes in while
-    # the only Foxy contract checked base-image derivation. Resolve the full dev
-    # selection against each distro's own apt index — no build, ~1 min each.
-    name: ROS apt lists resolve (${{ matrix.distro }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { image: 'ubuntu:20.04', distro: foxy,   snapshot: final }
-          - { image: 'ubuntu:20.04', distro: noetic, snapshot: latest }
-          - { image: 'ubuntu:22.04', distro: humble, snapshot: latest }
-          - { image: 'ubuntu:24.04', distro: jazzy,  snapshot: latest }
-    steps:
-      - uses: actions/checkout@v5
-      - name: every selected package has a candidate on ${{ matrix.distro }}
+      # The ROS manifests were written against Humble and inherited by every
+      # other distro: `tf2-ros-py` (Galactic+) broke a Foxy build four minutes
+      # in. Resolve the full dev selection against each distro's own index.
+      - name: every selected ROS package has a candidate on its own distro
         run: |
-          docker run --rm -v "$PWD:/w" -w /w -e DEBIAN_FRONTEND=noninteractive \
-            -e ROS_SNAPSHOT_DATE=${{ matrix.snapshot }} -e WORKSPACE_PATH=/w \
-            ${{ matrix.image }} bash -c '
-              set -e
-              apt-get update -qq
-              apt-get install -y -qq curl gnupg lsb-release ca-certificates >/dev/null
-              bash scripts/util_apt_helper.sh setup-ros-repo ${{ matrix.distro }} >/dev/null
-              apt-get update -qq
-              pkgs=$(DEVKIT_DRY_RUN=1 bash scripts/util_apt_helper.sh install-packages all ${{ matrix.distro }})
-              [ "$(wc -w <<< "$pkgs")" -ge 10 ] || { echo "selection collapsed: $pkgs"; exit 1; }
-              missing=""
-              for p in $pkgs; do
-                apt-cache policy "${p%%=*}" 2>/dev/null | grep -q "Candidate: [^(]" || missing="$missing $p"
-              done
-              [ -z "$missing" ] || { echo "no candidate on ${{ matrix.distro }}:$missing"; exit 1; }
-              echo "all $(wc -w <<< "$pkgs") packages resolve on ${{ matrix.distro }}"'
-
-  apt-lists-resolve:
-    # The dev image's apt list is spelled once in the Dockerfile, for three
-    # Ubuntu releases the kit advertises. `libgl1-mesa-glx` vanished in 24.04
-    # and every jazzy/kilted/rolling build died at dev-base-tools while CI,
-    # building only 22.04 stages, stayed green. Resolve, don't build: ~30 s.
-    name: dev apt list resolves (${{ matrix.image }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        image: ['ubuntu:20.04', 'ubuntu:22.04', 'ubuntu:24.04']
-    steps:
-      - uses: actions/checkout@v5
-      - name: every Dockerfile apt package has a candidate on this base
+          failed=""
+          # <base>|<distro>|<ROS_SNAPSHOT_DATE>
+          for case in 'ubuntu:20.04|foxy|final' \
+                      'ubuntu:20.04|noetic|latest' \
+                      'ubuntu:22.04|humble|latest' \
+                      'ubuntu:24.04|jazzy|latest'; do
+            IFS='|' read -r image distro snapshot <<<"$case"
+            echo "::group::$distro package selection"
+            docker run --rm -v "$PWD:/w" -w /w -e DEBIAN_FRONTEND=noninteractive \
+              -e ROS_SNAPSHOT_DATE="$snapshot" -e WORKSPACE_PATH=/w "$image" bash -c '
+                set -e
+                apt-get update -qq
+                apt-get install -y -qq curl gnupg ca-certificates >/dev/null
+                bash scripts/util_apt_helper.sh setup-ros-repo '"$distro"' >/dev/null
+                apt-get update -qq
+                pkgs=$(DEVKIT_DRY_RUN=1 bash scripts/util_apt_helper.sh install-packages all '"$distro"')
+                [ "$(wc -w <<< "$pkgs")" -ge 10 ] || { echo "selection collapsed: $pkgs"; exit 1; }
+                missing=""
+                for p in $pkgs; do
+                  apt-cache policy "${p%%=*}" 2>/dev/null | grep -q "Candidate: [^(]" || missing="$missing $p"
+                done
+                [ -z "$missing" ] || { echo "no candidate:$missing"; exit 1; }
+                echo "all $(wc -w <<< "$pkgs") packages resolve"' \
+              || failed="$failed $distro"
+            echo "::endgroup::"
+          done
+          [ -z "$failed" ] || { echo "ROS package selection failed for:$failed"; exit 1; }
+      # The dev image's apt list is spelled once in the Dockerfile, for three
+      # Ubuntu releases the kit advertises. `libgl1-mesa-glx` vanished in 24.04
+      # and every jazzy/kilted/rolling build died at dev-base-tools.
+      - name: every Dockerfile apt package has a candidate on every base
         run: |
           # Package words of the multi-line `apt-get install` in the stages that
           # every image shares; comment lines inside the RUN are skipped.
@@ -147,14 +131,20 @@ jobs:
                       grab {line=$0; if (line ~ /&&/) {grab=0; sub(/&&.*/, "", line)}; gsub(/\\/, "", line); print line}' \
                  docker/Dockerfile | tr -s ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')
           [ "$(wc -w <<< "$pkgs")" -ge 40 ] || { echo "package extraction collapsed: '$pkgs'"; exit 1; }
-          docker run --rm -e DEBIAN_FRONTEND=noninteractive -e PKGS="$pkgs" ${{ matrix.image }} bash -c '
-            apt-get update -qq >/dev/null
-            missing=""
-            for p in $PKGS; do
-              apt-cache policy "$p" 2>/dev/null | grep -q "Candidate: [^(]" || missing="$missing $p"
-            done
-            [ -z "$missing" ] || { echo "no candidate on this base:$missing"; exit 1; }
-            echo "all $(wc -w <<< "$PKGS") packages resolve"'
+          failed=""
+          for image in ubuntu:20.04 ubuntu:22.04 ubuntu:24.04; do
+            echo "::group::$image"
+            docker run --rm -e DEBIAN_FRONTEND=noninteractive -e PKGS="$pkgs" "$image" bash -c '
+              apt-get update -qq >/dev/null
+              missing=""
+              for p in $PKGS; do
+                apt-cache policy "$p" 2>/dev/null | grep -q "Candidate: [^(]" || missing="$missing $p"
+              done
+              [ -z "$missing" ] || { echo "no candidate on this base:$missing"; exit 1; }
+              echo "all $(wc -w <<< "$PKGS") packages resolve"' || failed="$failed $image"
+            echo "::endgroup::"
+          done
+          [ -z "$failed" ] || { echo "the Dockerfile apt list does not resolve on:$failed"; exit 1; }
 
   image-stages:
     name: image stages (base, build-core)
@@ -217,213 +207,3 @@ jobs:
           [ "$rc" -ne 0 ] || { echo "a CONTAINER_USER taken at another uid must fail the build"; exit 1; }
           grep -q 'already exists at uid' clash.log \
             || { echo "the build failed without naming the cause:"; tail -20 clash.log; exit 1; }
-
-  runtime-smoke:
-    name: runtime smoke (build, run, ROS python)
-    # Cron and manual only — this one builds the full image.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v5
-      # No layer cache here on purpose: this job exercises `make build`, the
-      # path a developer runs, and teaching compose about the Actions cache
-      # would test something else.
-      - uses: ./.github/actions/gate
-        with:
-          reclaim-disk: 'true'
-      - name: setup (.env + completion + xauth)
-        run: make setup
-      - name: build and start (GPU_MODE=auto resolves to cpu here)
-        run: |
-          make build ENV=ros
-          make start ENV=ros
-      - name: the environment must reach a NON-bash process
-        run: |
-          make exec ENV=ros CMD='python3 -c "import rclpy; print(\"rclpy\", rclpy.__file__)"'
-          make exec ENV=ros CMD='ros2 pkg list | wc -l'
-      - name: the display probe must name a binary the image ships
-        run: make exec ENV=ros CMD='command -v xdpyinfo'
-      - name: shell functions must reach a child shell
-        run: make exec ENV=ros CMD='type -t mksync'
-      - name: one-click init, then the venv must be active and project-named
-        run: |
-          make exec ENV=ros CMD='mksync'
-          # A ROS venv shares the SYSTEM interpreter: this is why the ROS
-          # production runtime does not copy /opt/uv/python (check [sif-contract]).
-          make exec ENV=ros CMD='readlink -f "$$(command -v python3)" | grep -q ^/usr/bin/python3'
-          make exec ENV=ros CMD='test -n "$$VIRTUAL_ENV_PROMPT" && echo "venv: $$VIRTUAL_ENV_PROMPT"'
-          make exec ENV=ros CMD='python3 -c "import rclpy"'
-          make exec ENV=ros CMD='check_deps'
-      - name: teardown
-        if: always()
-        run: make down ENV=ros
-
-  arm64-image:
-    name: arm64 stages (Apple Silicon -> HPC)
-    # Cron and manual only: QEMU emulation makes this slow.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/gate
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - name: build the arm64 base stage
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile
-          target: base
-          platforms: linux/arm64
-          build-args: |
-            BASE_IMAGE=ubuntu:22.04
-            ROS_DISTRO=humble
-          tags: devkit-ci:arm64
-          load: true
-          cache-from: type=gha,scope=arm64-base
-          cache-to: type=gha,mode=max,scope=arm64-base
-      # A Mac developer bakes for an x86 cluster and vice versa. The arch that
-      # names the artifact must be the arch the image actually is.
-      - name: the arm64 image must be arm64, and sif_arch must agree
-        run: |
-          got=$(docker image inspect --format '{{.Architecture}}' devkit-ci:arm64)
-          [ "$got" = arm64 ] || { echo "built image reports '$got', not arm64"; exit 1; }
-          named=$(TARGETARCH=arm64 bash -c '
-            source config/util_paths.sh
-            devkit_require util_logging.sh
-            devkit_require util_sif_common.sh
-            sif_arch')
-          [ "$named" = arm64 ] || { echo "sif_arch names '$named' for an arm64 target"; exit 1; }
-
-  sif-artifact:
-    name: SIF conversion and run (real Apptainer)
-    # Cron and manual only: this bakes the production chain into a SIF.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v5
-      # No layer cache: `make bake-prod` is the path under test.
-      - uses: ./.github/actions/gate
-        with:
-          reclaim-disk: 'true'
-      - name: install apptainer
-        run: |
-          version=1.5.3
-          curl -fsSLO "https://github.com/apptainer/apptainer/releases/download/v${version}/apptainer_${version}_amd64.deb"
-          sudo apt-get install -y "./apptainer_${version}_amd64.deb"
-          apptainer --version
-      # Apptainer runs as the invoking UID; verify access to the baked venv.
-      - name: bake a production SIF
-        run: |
-          make setup
-          make bake-prod ENV=dev
-          ls -lh ./*.sif ./*.sif.sha256 ./*.sif.provenance
-      - name: the artifact must identify itself
-        run: |
-          sif=$(ls ./*.sif | head -1)
-          grep -qE '^[0-9a-f]{64} ' "${sif}.sha256" || { echo "no sha256 sidecar"; exit 1; }
-          grep -q '^oci_image_id=sha256:' "${sif}.provenance" || { cat "${sif}.provenance"; exit 1; }
-          grep -q '^base_image=' "${sif}.provenance" || { cat "${sif}.provenance"; exit 1; }
-      - name: the SIF venv must be accessible to the invoking uid
-        run: |
-          sif=$(ls ./*.sif | head -1)
-          # No --env here: sif_entry_args probes for it and the production
-          # entrypoint does not take it. Hardcoding it fails with a bare
-          # "exec: --: invalid option".
-          # One line: a YAML block keeps its indentation, and python3 -c reads
-          # that as an IndentationError before it ever looks at the venv.
-          apptainer exec "$sif" /entrypoint.sh python3 -c 'import sys, pathlib; print("interpreter:", sys.executable); assert "/install/.venv/" in sys.executable, sys.executable; assert pathlib.Path(sys.executable).exists()'
-      - name: production excludes sources and exposes the venv interpreter
-        run: |
-          sif=$(ls ./*.sif | head -1)
-          # src/ is not in a production artifact; only install/ is. This is the
-          # claim docs/SLURM.md makes to readers, asserted rather than promised.
-          apptainer exec "$sif" test ! -e /workspace/src \
-            || { echo "the production SIF still carries src/"; exit 1; }
-          apptainer exec "$sif" sh -c 'command -v python3 | grep -q "/install/.venv/bin/"'
-      - name: a job run must leave a closed record
-        run: |
-          sif=$(ls ./*.sif | head -1)
-          SLURM_RUN_ROOT="$PWD/runs" bash scripts/slurm_run.sh "$sif" 'python3 -c "print(1)"'
-          record=$(ls runs/devkit-local-*.txt | head -1)
-          cat "$record"
-          grep -q '^exit_status=0' "$record" || { echo "the record has no exit status"; exit 1; }
-          grep -q '^oci_image_id=' "$record" || { echo "the record does not reach the OCI image"; exit 1; }
-      - name: a failing job must be recorded as failing
-        run: |
-          sif=$(ls ./*.sif | head -1)
-          rc=0
-          SLURM_RUN_ROOT="$PWD/runs-fail" bash scripts/slurm_run.sh "$sif" 'exit 7' || rc=$?
-          [ "$rc" = 7 ] || { echo "slurm_run.sh returned $rc, not the job's 7"; exit 1; }
-          grep -q '^exit_status=7' "$(ls runs-fail/devkit-local-*.txt | head -1)" \
-            || { echo "a failed job was not recorded as failed"; exit 1; }
-
-  prod-artifact:
-    name: production artifact (${{ matrix.flavour }}, non-root, venv intact)
-    # Cron and manual only: this builds the production chain, once per flavour.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        flavour: [dev, ros]
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/gate
-        with:
-          reclaim-disk: 'true'
-      - uses: docker/setup-buildx-action@v3
-      - name: build the production runtime
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile
-          target: prod-runtime
-          build-args: |
-            PROD_ENV=${{ matrix.flavour }}
-            BASE_IMAGE=ubuntu:22.04
-            ROS_DISTRO=humble
-            WORKSPACE_PATH=/workspace
-          tags: devkit-ci:prod
-          load: true
-          cache-from: type=gha,scope=prod-${{ matrix.flavour }}
-          cache-to: type=gha,mode=max,scope=prod-${{ matrix.flavour }}
-      # The failure was silent: with the interpreter under /root, PATH fell
-      # through to /usr/bin/python3 and the venv vanished from sys.path. An
-      # arbitrary uid (Apptainer, OpenShift) is what exposes it.
-      - name: the artifact must keep its own interpreter under any uid
-        run: |
-          probe='import os,sys; assert os.getuid()!=0, "runs as root";'
-          probe="$probe"' assert sys.prefix.endswith("install/.venv"), sys.prefix;'
-          probe="$probe"' assert any("install/.venv" in p for p in sys.path), "venv site-packages missing";'
-          probe="$probe"' print("uid", os.getuid(), "->", sys.executable)'
-          for uid in 1000 4321; do
-            docker run --rm --user "$uid:$uid" devkit-ci:prod python3 -c "$probe"
-          done
-      # A ROS venv shares the system interpreter, so the managed one must be
-      # gone — check [sif-contract] pins the Dockerfile side of this.
-      - name: the ROS artifact runs on the system interpreter and ships no managed one
-        if: matrix.flavour == 'ros'
-        run: |
-          docker run --rm --entrypoint sh devkit-ci:prod -c '
-            py=$(readlink -f "$(command -v python3)")
-            case "$py" in /usr/bin/python3*) ;; *) echo "venv python is $py, not the system interpreter"; exit 1 ;; esac
-            [ -z "$(ls -A /opt/uv/python 2>/dev/null)" ] || { echo "/opt/uv/python still carries an interpreter"; exit 1; }'
-      # The bootstrap tools `base` installed must not ship: a runtime has no
-      # key to fetch and no repository to add. dev only: purge-bootstrap keeps a
-      # tool an installed ROS package still depends on (libcurl-vendor → curl).
-      - name: the artifact carries no apt bootstrap tools
-        if: matrix.flavour == 'dev'
-        run: |
-          docker run --rm --entrypoint sh devkit-ci:prod -c '
-            for t in curl gpg lsb_release dirmngr; do
-              ! command -v "$t" >/dev/null || { echo "$t is still installed in the runtime image"; exit 1; }
-            done'
-      - name: the release manifest must name the template revision
-        run: |
-          docker run --rm --entrypoint sh devkit-ci:prod -c 'cat /etc/devkit/devkit-release.json' \
-            | grep -q "\"devkit_version\": *\"$(cat VERSION)\""

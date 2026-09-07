@@ -73,6 +73,33 @@ devkit_is_true() {
     case "$1" in 1|true|TRUE|True|yes|YES|Yes|on|ON|On) return 0 ;; *) return 1 ;; esac
 }
 
+# devkit_venv_prompt — one pair of parens around the venv name, whoever wrote
+# the activate script: uv reports a bare name, CPython "(name) ", and an
+# activate written by `python3 -m venv` before 3.11 sets nothing at all, which
+# aborted a `set -u` shell. Called from init_bash.sh and from activate().
+devkit_venv_prompt() {
+    VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT:-}"
+    VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT#\(}"
+    VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT%\) }"
+}
+
+# devkit_timeout <seconds> <command…> — the command under a wall clock where the
+# host has one. `timeout` is GNU coreutils: macOS ships neither it nor gtimeout,
+# so every probe wrapped in it failed with "command not found" and the caller
+# read that as "no GPU" / "no docker runtime" — the NVIDIA runtime notice never
+# fired on a Mac. Without a timeout the command still runs: a hung driver is a
+# rarer failure than the silence was.
+devkit_timeout() {
+    local secs="$1"; shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$secs" "$@"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$secs" "$@"
+    else
+        "$@"
+    fi
+}
+
 # devkit_overlay_setup — the setup.bash a build in THIS workspace produced.
 # ROS 1's catkin_make writes devel/ and only fills install/ when asked for it,
 # so a dev build's packages were invisible to every shell that looked only at
@@ -116,13 +143,19 @@ devkit_env_value() {
 # (LANG, TZ… — exported by every shell) are re-emitted with `=` in reverse
 # order so the file still wins for them; a host locale must not reach an image.
 # '#' is escaped so a value never turns into a make comment.
+# A value is DATA, so make's three metacharacters are neutralised: '#' would
+# start a comment, '$' was expanded ('log/$USER.log' reached compose as
+# 'log/SER.log'), and a trailing backslash continued the line and swallowed
+# the next key. '$()' expands to nothing and ends the line.
+devkit_env_escape() { sed -e 's/#/\\#/g' -e 's/[$]/$$/g' -e 's/\\$/\\$()/'; }
+
 devkit_env_render() {
     local ambient="$1" file i; shift
     for file in "$@"; do
         # `?=` preserves file/environment precedence, but emitting every line
         # would make the FIRST duplicate win. Compose and devkit_env_value use
         # the last assignment within one file, so emit only that occurrence.
-        devkit_env_entries "$file" | sed 's/#/\\#/g' | awk -F'\t' '
+        devkit_env_entries "$file" | devkit_env_escape | awk -F'\t' '
             {
                 key[NR] = $1
                 value[NR] = substr($0, length($1) + 2)
@@ -134,7 +167,7 @@ devkit_env_render() {
             }'
     done
     for (( i = $#; i >= 1; i-- )); do
-        devkit_env_entries "${!i}" | sed 's/#/\\#/g' \
+        devkit_env_entries "${!i}" | devkit_env_escape \
             | awk -F'\t' -v re="^(${ambient})\$" '$1 ~ re { print $1 " = " $2 }'
     done
 }

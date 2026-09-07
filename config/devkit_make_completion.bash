@@ -8,9 +8,11 @@
 # Silent no-op outside bash so a stray rc entry never prints errors.
 [ -z "${BASH_VERSION:-}" ] && return 0 2>/dev/null
 
-# Locate the DevKit Makefile by walking up from $PWD, so completion works from
-# any subdirectory (src/, docs/, …) exactly like `git` does. Printing nothing
-# and returning 1 means "this is not a DevKit tree".
+# Locate the DevKit Makefile by walking up from $PWD, so completion still knows
+# the target list from a subdirectory. make itself does NOT search upward: from
+# src/ the answer is `make -C <root> <target>`, and the -C form completes too
+# (the option and its directory are skipped when looking for the target).
+# Printing nothing and returning 1 means "this is not a DevKit tree".
 _devkit_find_makefile() {
     local dir="$PWD"
     while :; do
@@ -53,10 +55,17 @@ _devkit_make_completion() {
 
     # Determine target (first non-assignment word after 'make', excluding the
     # word currently being completed)
-    local target="" word i n=${#words[@]}
+    local target="" word i n=${#words[@]} skip=0
     [ -n "$cur" ] && n=$((n - 1))
     for ((i=1; i<n; i++)); do
         word="${words[i]}"
+        # An option that TAKES a value (-C dir, -f file, -j N…) hides its
+        # argument: 'make -C . build' read '.' as the target and completed
+        # nothing from then on.
+        if [ "$skip" = 1 ]; then skip=0; continue; fi
+        case "$word" in
+            -C|-f|--file|--makefile|--directory|-o|-W|-I|-l) skip=1; continue ;;
+        esac
         [[ "$word" == *=* ]] && continue
         [[ "$word" == -* ]] && continue
         target="$word"
@@ -77,13 +86,13 @@ _devkit_make_completion() {
     local opts=""
     case "$target" in
         build)
-            opts="ENV=ros ENV=dev GPU_MODE=auto GPU_MODE=nvidia GPU_MODE=igpu GPU_MODE=cpu NO_CACHE=1"
+            opts="ENV=ros ENV=dev GPU_MODE=auto GPU_MODE=nvidia GPU_MODE=igpu GPU_MODE=intel GPU_MODE=amd GPU_MODE=cpu NO_CACHE=1"
             ;;
         ide-config)
-            opts="ENV=ros ENV=dev GPU_MODE=auto GPU_MODE=nvidia GPU_MODE=igpu GPU_MODE=cpu"
+            opts="ENV=ros ENV=dev GPU_MODE=auto GPU_MODE=nvidia GPU_MODE=igpu GPU_MODE=intel GPU_MODE=amd GPU_MODE=cpu"
             ;;
         start|restart)
-            opts="ENV=ros ENV=dev GPU_MODE=auto GPU_MODE=nvidia GPU_MODE=igpu GPU_MODE=cpu DEVKIT_VCS_ALLOW_FAILURE=1 DEVKIT_ROSDEP_ALLOW_FAILURE=1"
+            opts="ENV=ros ENV=dev GPU_MODE=auto GPU_MODE=nvidia GPU_MODE=igpu GPU_MODE=intel GPU_MODE=amd GPU_MODE=cpu DEVKIT_VCS_ALLOW_FAILURE=1 DEVKIT_ROSDEP_ALLOW_FAILURE=1"
             ;;
         exec)
             opts="CMD="
@@ -119,7 +128,7 @@ _devkit_make_completion() {
             opts="ENV=ros ENV=dev PROD_FULL_CUDA=1 IMAGE_TAG=latest SOURCE_DATE_EPOCH=0 DEVKIT_STRIP_SOURCE=1 DEVKIT_FAIL_ON_SOURCE=1"
             ;;
         run-sif)
-            opts="SIF_MODE=dev SIF_MODE=prod SIF_MODE=slurm ENV=ros ENV=dev SIF_FILE= RUN_ARGS= APP_COMMAND= DEVKIT_SLURM_PARTITION=gpu DEVKIT_SLURM_GRES=gpu:1 DEVKIT_SLURM_CPUS_PER_TASK=8 DEVKIT_SLURM_MEM=32G DEVKIT_SLURM_TIME=01:00:00"
+            opts="SIF_MODE=dev SIF_MODE=prod SIF_MODE=slurm ENV=ros ENV=dev SIF_FILE= RUN_ARGS= APP_COMMAND= DEVKIT_SLURM_PARTITION=gpu DEVKIT_SLURM_GRES=gpu:1 DEVKIT_SLURM_CPUS_PER_TASK=8 DEVKIT_SLURM_MEM=32G DEVKIT_SLURM_TIME=02:00:00"
             ;;
     esac
 
@@ -148,9 +157,15 @@ if [ "${1:-}" = "--install" ] || [ "${BASH_SOURCE[0]}" = "$0" ]; then
     ENTRY="[ -f \"$COMPLETION_SRC\" ] && source \"$COMPLETION_SRC\""
     RC_FILE="$HOME/.bashrc"
     if [ -f "$RC_FILE" ]; then
-        if ! grep -q "devkit_make_completion.bash" "$RC_FILE" 2>/dev/null; then
+        # THIS checkout's path, not the bare filename: a second clone (or a
+        # moved one) reported "already registered" while the entry pointed at a
+        # tree that may no longer exist, and completion was silently dead.
+        if ! grep -qF "$COMPLETION_SRC" "$RC_FILE" 2>/dev/null; then
+            # grep -c prints its 0 and still exits 1, so `|| echo 0` appended a second one.
+            OTHER="$(grep -cF 'devkit_make_completion.bash' "$RC_FILE" 2>/dev/null || true)"
             printf '\n# DevKit Makefile Tab Completion\n%s\n' "$ENTRY" >> "$RC_FILE"
             echo -e "  \033[32m[OK]\033[0m Registered Tab completion in ${RC_FILE}"
+            [ "$OTHER" = 0 ] || echo -e "  \033[0;34m[INFO]\033[0m ${OTHER} entr(ies) for another DevKit checkout remain there; a stale one disables itself."
         else
             echo -e "  \033[32m[OK]\033[0m Tab completion already registered in ${RC_FILE}"
         fi

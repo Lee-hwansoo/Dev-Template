@@ -87,8 +87,13 @@ DevKit이 추측하지 않고 파생 프로젝트의 `uv.lock`이 고정합니�
 규칙과 `mlint`가 검사하는 규칙이 동일하므로, 에디터에서 깨끗한 파일은 CI에서도 깨끗합니다.
 
 > [!NOTE]
-> `clang-format`은 **선택 설치**입니다(libllvm 의존성). 에디터는 C/C++ 확장에 내장된 복사본을
-> 쓰므로 CLI 검사가 필요할 때만 켭니다 ([opt-in 되살리기](DEPENDENCIES.md#-opt-in-기능-되살리기)). 테스트가 아직 없는 프로젝트에서 `mtest`는 실패가 아니라 안내를 출력합니다.
+> `clang-format`은 **선택 설치**입니다(libllvm 을 끌어와 이미지가 230 MB 늘어납니다). 에디터는
+> C/C++ 확장에 내장된 복사본을 쓰지만, **CLI 는 다릅니다**: C/C++ 소스가 있는데 `clang-format`
+> 이 없으면 `mlint` 는 "clean" 이 아니라 **실패**합니다 — 스타일 게이트가 장식이 되지 않도록
+> 닫아 둔 것입니다. 켜려면 `dependencies/apt.txt` 의 `clang-format # dev` 주석을 풀고
+> `make build` ([opt-in 되살리기](DEPENDENCIES.md#-opt-in-기능-되살리기)), 검사 없이 넘기려면
+> `DEVKIT_SKIP_CLANG_FORMAT=1 make lint` 입니다(이 저장소의 `project.yml` 이 그 예입니다).
+> 테스트가 아직 없는 프로젝트에서 `mtest`는 실패가 아니라 안내를 출력합니다.
 
 CI 에서 같은 루프를 도는 `project.yml` 은 아래 [CI 절](#-ci-github-actions) 에 있습니다.
 
@@ -98,7 +103,7 @@ CI 에서 같은 루프를 도는 `project.yml` 은 아래 [CI 절](#-ci-github-
 
 | 호출 방식 | bash가 읽는 파일 | 경로 |
 | :--- | :--- | :--- |
-| 로그인 | `/etc/profile` | → `profile.d/devkit-*.sh` → `init_bash.sh` |
+| 로그인 | `/etc/profile` | → `profile.d/devkit-*.sh`(엔트리포인트가 남긴 값) + `BASH_ENV` 훅 → `init_bash.sh` |
 | 대화형 (`make shell`) | `/etc/bash.bashrc` | → 동일 훅 |
 | **비대화형** (`bash -c`, CI) | **`$BASH_ENV`** | → 동일 훅 |
 
@@ -149,14 +154,27 @@ docker exec <container> /entrypoint.sh --env sh -c 'echo $VIRTUAL_ENV'
 
 ---
 
+## 🔁 컨테이너와 `.env` 가 어긋날 때
+
+컨테이너는 **시작 시점의** `.env` 값을 그대로 들고 있습니다. `GPU_MODE`·`ROS_DOMAIN_ID`·`UV_EXTRA` 를
+고쳐도 이미 도는 컨테이너에는 반영되지 않고, `make status` 는 새 값을 보여 줍니다. 다시 만들어야 합니다.
+
+```bash
+make restart          # stop → start (같은 ENV)
+make status           # GPU Mode 줄이 실제 서비스와 일치하는지 확인
+```
+
+한 ENV 에는 컨테이너가 하나만 존재합니다 — `make start` 는 같은 ENV 의 다른 GPU 변종이 떠 있으면
+먼저 제거합니다. 그래야 `make exec`·`shell`·`test`·`lint` 가 어느 것에 붙을지 모호해지지 않습니다.
+
 ## 🧹 정리와 초기화 (Cleanup)
 
 | 명령 | 범위 | 비고 |
 | :--- | :--- | :--- |
 | `mclean` (컨테이너) | `build/`, `devel/`, `log/`, `install/` 의 산출물을 **비움** (마운트 지점이라 지우지는 않음) | venv 는 `mclean --all` 에서만. 남은 항목이 있으면 실패로 보고 |
-| `make clean` | 호스트의 `build/`, `devel/`, `log/`, `install/` 산출물과 편의 심볼릭 링크(`compile_commands.json`, `.venv`, `colcon.meta`) | `install/.venv` 보존 — 재생성에 `mksync` 전체가 필요. 지우려면 `KEEP_VENV=0`(확인 프롬프트). Docker 가 root 로 만든 디렉터리는 해결 명령을 안내 |
+| `make clean` | 호스트의 `build/`, `devel/`, `log/`, `install/` 산출물과 편의 심볼릭 링크(`compile_commands.json`, `.venv`, `colcon.meta`) | 컨테이너가 떠 있고 이 경로들이 bind 마운트면 거부 — 살아 있는 컨테이너의 마운트 지점입니다. `install/.venv` 보존 — 재생성에 `mksync` 전체가 필요. 지우려면 `KEEP_VENV=0`(확인 프롬프트). Docker 가 root 로 만든 디렉터리는 해결 명령을 안내 |
 | `make clean-cache` | `.docker_cache/`(호스트 감지 캐시·플레이스홀더) | 컨테이너가 떠 있으면 거부 — Docker 가 마운트 소스를 root 로 다시 만들기 때문 |
-| `make clean-all` | 컨테이너 · 프로젝트 named 볼륨 · **compose 가 빌드한 이 프로젝트 이미지**(`--rmi local`) · 호스트 산출물 · 캐시 | 확인 프롬프트. `KEEP_VENV=1` 은 venv 가 든 `install` 볼륨만 남겨 재빌드 후 `mksync` 없이 접속 |
+| `make clean-all` | **ENV 양쪽 모두** — ros·dev 컨테이너 · 여섯 개 named 볼륨 · **compose 가 빌드한 이 프로젝트 이미지**(`--rmi local`) · 호스트 산출물 · 캐시 · 구운 SIF/OCI 아티팩트 | 확인 프롬프트. `KEEP_VENV=1` 은 venv 가 든 `install` 볼륨만 남겨 재빌드 후 `mksync` 없이 접속 |
 | `make stop` / `make down` | 선택한 `ENV` 의 서비스만 | `ENV=ros` 는 `basic-*` 컨테이너를 건드리지 않음 |
 | `make docker-clean` | **호스트 전체**의 고아 이미지 · BuildKit 캐시 · 미사용 볼륨 | 다른 프로젝트도 영향. 삭제 대상을 보여주고 확인 |
 
@@ -244,7 +262,18 @@ git log --oneline "v$(cat VERSION)"..upstream/main
 
 # 3) 커널 파일만 선별 병합 — src/ 와 .env 는 당신 것이므로 건드리지 않습니다
 git diff HEAD upstream/main -- Makefile config/ scripts/ docker/ docker-compose*.yml
-git checkout upstream/main -- config/ scripts/        # 예: 셸/스크립트 계층만 갱신
+# 키트 소유 묶음은 한 단위입니다 — `scripts/verify_repo.sh` 가 Makefile·docker/·apt 목록·워크플로의
+# 계약이기도 해서, 일부만 가져오면 4 단계의 `make verify` 가 가져오지 않은 파일을 가리키며 실패합니다.
+git checkout upstream/main -- Makefile config/ scripts/ docker/ docker-compose*.yml \
+    dependencies/apt.txt dependencies/apt_ros.txt \
+    .github/workflows/verify.yml .github/workflows/images.yml .github/workflows/images-deep.yml .github/actions/ \
+    .editorconfig .clang-format .gitattributes .dockerignore
+
+# 3b) 당신 것이지만 키트도 항목을 추가하는 세 파일은 손으로 병합합니다 —
+#     .gitignore(키트가 만드는 산출물), .env.example(새 노브 선언), docs/(키트 사용법),
+#     .vscode/·.devcontainer/(편집기 계약: 경로와 확장은 키트가 정하고 설정은 당신 것).
+#     `make verify` 의 실패 메시지가 무엇을 더해야 하는지 그대로 알려줍니다.
+git diff HEAD upstream/main -- .gitignore .env.example docs/ .vscode/ .devcontainer/
 
 # 4) 계약으로 검증 후 커밋
 make verify && make build && make test
@@ -269,8 +298,10 @@ make verify && make build && make test
 
 ## 🤖 CI (GitHub Actions)
 
-세 워크플로가 세 티어를 이룹니다. 흔한 push 가 컨테이너 빌드를 기다리지 않도록 빠른 티어를 분리했고,
-무거운 잡은 cron·수동 전용입니다. 셋 모두 `concurrency: cancel-in-progress` 로 같은 ref 의 이전 실행을 취소합니다.
+네 워크플로가 네 티어를 이룹니다. 흔한 push 가 컨테이너 빌드를 기다리지 않도록 빠른 티어를 분리했고,
+이미지를 통째로 굽는 잡은 별도 워크플로(`images-deep.yml`)에 모아 cron·수동 전용으로 두었습니다 — push 나 PR 의
+체크 목록에는 아예 나타나지 않습니다. 넷 모두 `concurrency: cancel-in-progress` 로 같은 ref 의 이전 실행을 취소합니다.
+커밋 하나가 만드는 체크는 최대 5 개입니다(`verify` 2 · `images` 2 · `project` 1).
 
 > **호스트 OS 범위**: CI 는 **Ubuntu(네이티브 Linux)** 와 **macOS** 러너에서 돕니다. GitHub 에 WSL2 러너는 없으므로
 > WSL2 경로(`/proc/version` 판정·`/dev/dxg`·`/usr/lib/wsl`·WSLg 소켓)는 CI 가 아니라 README 지원 매트릭스의
@@ -281,9 +312,9 @@ make verify && make build && make test
 | 바뀐 경로 | 도는 것 | 벽시계 · 러너 시간 |
 | :--- | :--- | :--- |
 | 어디든 (`scripts/`, `config/`, `Makefile`, `docs/` …) | `verify.yml` 두 잡 | ~30 s · ~1 min |
-| `docker/**`, `dependencies/apt*.txt`, apt 헬퍼 두 파일 | + `images.yml` 의 push 잡 (키 경로 3 · apt 해석 3 · 스테이지 빌드 1) | ~1 min · ~6 min |
+| `docker/**`, `dependencies/apt*.txt`, apt 헬퍼 두 파일 | + `images.yml` 두 잡 (`apt`: 키 경로 3 · CUDA 저장소 · ROS 해석 4 · dev apt 해석 3 / `image-stages`: 스테이지 빌드) | ~7 min · ~9 min |
 | `src/**`, `dependencies/**` | + `project.yml` (dev 이미지 빌드 → `mksync` → lint → test) | ~2 min · ~2 min |
-| 어떤 푸시에도 | 무거운 넷(`runtime-smoke` · `arm64-image` · `sif-artifact` · `prod-artifact`)은 돌지 않음 — 월요일 cron 과 `workflow_dispatch` 만 | — |
+| 어떤 푸시에도 | `images-deep.yml`(`runtime-smoke` · `arm64-image` · `sif-artifact` · `prod-artifact`)은 돌지 않음 — 월요일 04:00 UTC cron 과 `gh workflow run images-deep` 만 | — |
 
 > 이 저장소는 공개라 Actions 분은 무제한입니다. 비공개로 바꾸면 macOS 분이 Linux 의 10 배로 계산되므로
 > `macos-host` 를 PR·main 푸시로 좁히는 것이 첫 조정입니다. 같은 브랜치에 연속 푸시하면 이전 실행은 취소됩니다.
@@ -303,11 +334,12 @@ make verify && make build && make test
 `workflow_dispatch` 도 막히므로 무거운 잡을 손으로 돌리려면 먼저 켭니다. `make verify` 의 [host-prereqs] 가 이 스위치를
 스텁 `gh` 위에서 실행으로 검증합니다.
 
-세 워크플로가 공유하는 것: 토큰은 `permissions: contents: read` 로 체크아웃만 읽고, 이미지 잡은 먼저
+네 워크플로가 공유하는 것: 토큰은 `permissions: contents: read` 로 체크아웃만 읽고, 이미지 잡은 먼저
 `.github/actions/gate`(계약 스위트, 필요하면 러너 디스크 정리)를 거칩니다. Dockerfile 을 **직접** 빌드하는 잡
 (`image-stages` · `arm64-image` · `prod-artifact`)은 BuildKit 레이어를 Actions 캐시(`type=gha`, 타겟별 scope)에
 남겨 다음 push 에서 바뀌지 않은 레이어를 다시 빌드하지 않습니다. `make build`·`make bake-prod` 를 거치는 잡
-(`runtime-smoke` · `sif-artifact` · `project.yml`)은 개발자가 실제로 밟는 경로 자체가 검증 대상이라 캐시를 두지 않습니다.
+(`images-deep.yml` 의 `runtime-smoke` · `sif-artifact`, 그리고 `project.yml`)은 개발자가 실제로 밟는 경로 자체가
+검증 대상이라 캐시를 두지 않습니다.
 
 ### `verify.yml` — 빠른 티어 (모든 push · PR, 이미지 빌드 없음)
 
@@ -316,22 +348,28 @@ make verify && make build && make test
 | `contracts` | ubuntu | `make verify`(계약 전체) · 이름을 adopt 하고 스타터·README 를 바꾼 **포크 복사본**에서도 통과 · tty·BASH_ENV 없는 `ubuntu:22.04` 컨테이너에서 `util_aliases.sh` 부트스트랩 · 네이티브 Linux 호스트 감지(`IS_WSL=false`, GPU 플래그, DXG 마운트 중립) · `docker build --check` 멀티스테이지 린트 |
 | `macos-host` | macos | 같은 `make verify` 를 bash 3.2 · BSD sed/awk/stat 위에서 · macOS 호스트 감지가 cpu 프로필로 해석 · 모든 스크립트가 `--help` 에 0 으로 응답 |
 
-### `images.yml` — 느린 티어 (키트의 이미지 파이프라인)
+### `images.yml` — 중간 티어 (이미지를 굽지 않는 검사)
 
 트리거: `docker/**` · `scripts/util_apt_helper.sh` · `scripts/util_cuda_apt.sh` · `dependencies/apt.txt` · `dependencies/apt_ros.txt` ·
 워크플로 자신 · 매주 월요일 03:00 UTC · 수동. 파생 프로젝트의 의존성(`src/pyproject.toml`, `.repos`)은 여기서 보지 않습니다 —
 그것은 `project.yml` 의 몫입니다.
 
-| 잡 | 언제 | 무엇을 증명하나 |
-| :--- | :--- | :--- |
-| `apt-key-paths` | push마다 | 컨테이너 안(tty 없음)에서 `setup-ros-repo` 실행 — noetic/20.04, humble/22.04, humble 스냅샷 키 — 와 CUDA 저장소 핀 |
-| `apt-lists-resolve` | push마다 | Dockerfile 의 apt 목록을 뽑아 20.04 · 22.04 · 24.04 에서 후보 유무만 확인 (빌드 없이 ~30 s) |
-| `ros-lists-resolve` | push마다 | `apt*.txt` 의 dev 선택 전체가 foxy(final) · noetic · humble · jazzy 각자의 apt 인덱스에서 해석되는지 (빌드 없이 ~1 min) |
-| `image-stages` | push마다 | `base`·`build-core` 실제 빌드 — BASH_ENV 배선, 관리 인터프리터의 non-root 실행, uid/gid 충돌 해소(macOS 501:20, 이름 충돌 시 원인 명시) |
-| `runtime-smoke` | cron · 수동 | 전체 ROS 이미지 → `make start` → 비-bash 프로세스에서 `import rclpy` → `mksync` 후 venv 활성·명명 → ROS venv 가 시스템 인터프리터인지 |
-| `arm64-image` | cron · 수동 | QEMU 로 arm64 `base` 빌드, 아키텍처 태그와 `sif_arch` 일치 |
-| `sif-artifact` | cron · 수동 | 실제 Apptainer 로 prod SIF 굽기 — sha256·provenance 사이드카, 호출 uid 의 venv 접근, `src/` 미포함, 실행 기록의 종료 코드 전파(0 과 7) |
-| `prod-artifact` | cron · 수동 (dev · ros 매트릭스) | `prod-runtime` 체인 — 임의 uid 에서 venv 유지, ROS 는 시스템 인터프리터·빈 `/opt/uv`, dev 는 부트스트랩 도구 부재, 매니페스트의 템플릿 버전 |
+| 잡 | 무엇을 증명하나 |
+| :--- | :--- |
+| `apt` | 한 잡 안에서 네 단계: 컨테이너 안(tty 없음)에서 `setup-ros-repo` — noetic/20.04, humble/22.04, humble 스냅샷 키 · CUDA 저장소 핀 · `apt*.txt` 의 dev 선택 전체가 foxy(final) · noetic · humble · jazzy 각자의 인덱스에서 해석 · Dockerfile 의 apt 목록이 20.04 · 22.04 · 24.04 에서 해석. 실패한 배포판은 단계 로그가 이름으로 말합니다 |
+| `image-stages` | `base`·`build-core` 실제 빌드 — BASH_ENV 배선, 관리 인터프리터의 non-root 실행, uid/gid 충돌 해소(macOS 501:20, 이름 충돌 시 원인 명시) |
+
+### `images-deep.yml` — 무거운 티어 (이미지를 통째로 굽는 잡)
+
+트리거: 매주 월요일 04:00 UTC · `gh workflow run images-deep`. push·PR 에는 나타나지 않습니다 — 잡마다
+15~45 분이 들고, 체크 목록에 "Skipped" 줄만 남기기 때문입니다. **이미지 관련 변경을 병합하기 전에 한 번 돌리세요.**
+
+| 잡 | 무엇을 증명하나 |
+| :--- | :--- |
+| `runtime-smoke` | 전체 ROS 이미지 → `make start` → 비-bash 프로세스에서 `import rclpy` → `mksync` 후 venv 활성·명명 → ROS venv 가 시스템 인터프리터인지 |
+| `arm64-image` | QEMU 로 arm64 `base` 빌드, 아키텍처 태그와 `sif_arch` 일치 |
+| `sif-artifact` | 실제 Apptainer 로 prod SIF 굽기 — sha256·provenance 사이드카, 호출 uid 의 venv 접근, `src/` 미포함, 실행 기록의 종료 코드 전파(0 과 7) |
+| `prod-artifact` | `prod-runtime` 체인(dev · ros) — 임의 uid 에서 venv 유지, ROS 는 시스템 인터프리터·빈 `/opt/uv`, dev 는 부트스트랩 도구 부재, 매니페스트의 템플릿 버전 |
 
 ### `project.yml` — 파생 프로젝트의 루프
 
@@ -352,20 +390,21 @@ ROS 1 noetic 은 2025 년 5 월에 EOL 이 되었습니다. DevKit 은 그 경�
 20.04 이전 배포판 이름(melodic·kinetic)은 베이스 이미지 매핑이 없어 어차피 빌드되지 않았으므로 제거했습니다 —
 `ROS_DISTRO=noetic` 만 ROS 1 입니다.
 
-## 🔁 이전 이름 (Deprecated Names)
+## 🔁 제거된 이름 (Removed Names)
 
-DevKit은 베이스 키트이므로 진입점 이름을 바꾸면 그 위에 올린 프로젝트의 CI가 깨집니다.
-아래 이름은 **계속 동작**하며, 실행 시 새 이름을 한 줄로 안내한 뒤 위임합니다.
-탭 완성과 `make help` / `h`에는 노출되지 않으므로 새 코드에서는 오른쪽 이름만 쓰세요.
-(`make verify` [deprecated-entrypoints]가 위임 동작을 실행으로 검증합니다.)
+**한 동작에 이름 하나** — 옛 이름을 위임으로 남겨 두면 표면이 두 배가 되고, 무엇이 정식
+이름인지 문서·탭 완성·계약이 각각 답해야 합니다. 직전 리비전까지 안내와 함께 위임했던 아래
+이름들은 이 리비전에서 **제거**되었습니다(태그 메시지가 어느 리비전인지 말합니다).
+streamline 이전에서 갈라진 포크가 상류를 병합할 때는 자기 스크립트의 왼쪽 이름을 오른쪽으로
+바꾸면 됩니다 — sed 한 줄입니다.
 
-| 이전 이름 | 현재 이름 | 비고 |
+| 제거된 이름 | 쓸 이름 | 왜 없어졌나 |
 | :--- | :--- | :--- |
-| `make check-host` | `make check` | 호스트 GPU/툴킷 점검이 `check`로 통합 |
-| `make env-check` | `make check` | `.env` ↔ `.env.example` 키 비교가 `check`로 통합 |
-| `make completion` / `completion-install` | `make setup` | `setup`이 탭 완성을 `~/.bashrc`에 등록 |
-| `hw_check` (컨테이너) | `hwcheck` | 동일 스크립트, 이름만 변경 |
+| 타깃 `check-host` · `env-check` | `make check` | 호스트 점검과 `.env` 키 비교가 `check` 하나로 통합 |
+| 타깃 `completion` · `completion-install` | `make setup` | `setup` 이 탭 완성을 `~/.bashrc` 에 등록 |
+| 셸 함수 `hw_check` (컨테이너) | `hwcheck` | 동일 스크립트, 이름만 |
+| `GPU_MODE=software` | `GPU_MODE=cpu` | `cpu` 와 완전히 같은 동작이었고 문서화된 적이 없음 |
 
-> **`software` GPU 모드는 예외적으로 제거되었습니다.** `cpu`와 완전히 동일한 동작이었고
+> **`software` GPU 모드도 같은 이유로 제거되었습니다.** `cpu`와 완전히 동일한 동작이었고
 > `GPU_MODE`·`gpu` 명령·README 어디에도 문서화된 적이 없는 내부 동의어였기 때문입니다.
 > 한 동작에 두 이름을 남기지 않는다는 원칙에 따라 `cpu` 하나만 유지합니다.

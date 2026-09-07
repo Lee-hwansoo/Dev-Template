@@ -60,11 +60,17 @@ if [ -f /proc/meminfo ]; then
     while read -r key val _; do
         case "$key" in MemTotal:) TOT_KB="$val" ;; MemAvailable:) AV_KB="$val" ;; esac
     done < /proc/meminfo
-    PCT=$(( (TOT_KB - AV_KB) * 100 / (TOT_KB > 0 ? TOT_KB : 1) ))
-    MSG="RAM: $((TOT_KB/1048576)).$((TOT_KB%1048576*10/1048576)) GB total, $((AV_KB/1048576)) GB free (${PCT}% used)"
-    if   [ "$PCT" -ge 90 ]; then _hw_err "$MSG — OOM risk"
-    elif [ "$PCT" -ge 75 ]; then _hw_warn "$MSG"
-    else _hw_ok "$MSG"; fi
+    if [ "$AV_KB" -eq 0 ]; then
+        # No MemAvailable (pre-3.14 kernels, some cgroup views): a computed 100%
+        # used reported an OOM risk on a healthy host.
+        _hw_ok "RAM: $((TOT_KB/1048576)).$((TOT_KB%1048576*10/1048576)) GB total (this kernel reports no MemAvailable)"
+    else
+        PCT=$(( (TOT_KB - AV_KB) * 100 / (TOT_KB > 0 ? TOT_KB : 1) ))
+        MSG="RAM: $((TOT_KB/1048576)).$((TOT_KB%1048576*10/1048576)) GB total, $((AV_KB/1048576)) GB free (${PCT}% used)"
+        if   [ "$PCT" -ge 90 ]; then _hw_err "$MSG — OOM risk"
+        elif [ "$PCT" -ge 75 ]; then _hw_warn "$MSG"
+        else _hw_ok "$MSG"; fi
+    fi
 fi
 
 # Disk
@@ -118,7 +124,7 @@ elif [ -n "${ROS_DISTRO:-}" ]; then
         [ -z "${ROS_MASTER_URI:-}" ] && _hw_err "ROS_MASTER_URI not set — roscore will not start" \
             || _hw_detail "    Master: ${ROS_MASTER_URI}"
     else
-        _hw_detail "    RMW: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp (default)}"
+        _hw_detail "    RMW: ${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp (DevKit default)}"
         _hw_detail "    Domain ID: ${ROS_DOMAIN_ID:-0}"
         [ "${ROS_LOCALHOST_ONLY:-0}" = "1" ] && _hw_warn "ROS_LOCALHOST_ONLY=1 (multi-machine discovery disabled)"
     fi

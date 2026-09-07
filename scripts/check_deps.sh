@@ -52,9 +52,11 @@ fi
 log_info "Scanning ELF binaries in ${TARGET_DIR}..."
 
 missing=0
-# Filter to executables and .so first: the `file` probe is per-file.
+# The four magic bytes, not `file`: that package plus libmagic-mgc is 7.4 MB in
+# every shipped artifact for a test the shell can do itself.
+is_elf() { [ "$(LC_ALL=C head -c 4 "$1" 2>/dev/null)" = "$(printf '\177ELF')" ]; }
 while IFS= read -r -d '' binary; do
-    if file "$binary" 2>/dev/null | grep -qE "ELF.*(executable|shared object)"; then
+    if is_elf "$binary"; then
         # Driver libraries are injected by --nv / NVIDIA Container Toolkit.
         unresolved="$(ldd "$binary" 2>/dev/null | awk '/not found/ && $1 !~ /^(libcuda\.so|libnvidia-)/ {print}' || true)"
         if [ -n "$unresolved" ]; then

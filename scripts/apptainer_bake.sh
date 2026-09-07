@@ -42,7 +42,15 @@ BAKE_FORMAT="${BAKE_FORMAT:-sif}"
 sif_require_choice BAKE_FORMAT "$BAKE_FORMAT" sif oci || exit 2
 RUNTIME=""
 if [ "$BAKE_FORMAT" = sif ]; then
-    RUNTIME="$(sif_runtime)" || { log_detail 'On macOS use BAKE_FORMAT=oci, then convert the archive on Linux.' >&2; exit 1; }
+    RUNTIME="$(sif_runtime)" || {
+        # Apptainer has no macOS build, so there the format is the answer; on
+        # Linux it is simply not installed and the hint read as nonsense.
+        if [ "$(uname -s)" = Darwin ]; then
+            log_detail 'macOS has no Apptainer: use BAKE_FORMAT=oci here and convert the archive on Linux.' >&2
+        else
+            log_detail 'Install apptainer (or singularity), or use BAKE_FORMAT=oci and convert the archive elsewhere.' >&2
+        fi
+        exit 1; }
 fi
 # Direct script calls need the same .env/default pairing and host IDs as make.
 detected_env="$(bash "${WS_ROOT}/scripts/check_env.sh")" || exit 1
@@ -55,6 +63,8 @@ COMPOSE_PROJECT="$(sif_project_name)"
 SHARE_SUFFIX=""
 [ "$SHARE_MODE" = "true" ] && SHARE_SUFFIX="-share"
 SIF_FILE="${SIF_FILE:-${WS_ROOT}/${COMPOSE_PROJECT}-${ENV_NAME}-${MODE}${SHARE_SUFFIX}-${TARGETARCH}.sif}"
+IMAGE_TAG="${IMAGE_TAG:-$(devkit_env_value IMAGE_TAG)}"
+IMAGE_TAG="${IMAGE_TAG:-$(devkit_env_value IMAGE_TAG "${WS_ROOT}/.env.example")}"
 GIT_COMMIT="$(git -C "${WS_ROOT}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 # PROD_FULL_CUDA is the SIF's own knob for the FULL_CUDA build arg. FULL_CUDA
 # belongs to the compose dev image and make exports it, so reading it here
@@ -86,11 +96,18 @@ BUILD_ARGS=(
 # their Dockerfile defaults (--build-arg KEY= would override with empty).
 # Without CUDA_VERSION in particular, a SIF baked on a GPU host silently
 # ships with no CUDA while the equivalent compose build installs it.
+# Read through the SAME two layers make renders (.env, then .env.example), or a
+# direct script call silently ignored every one of them: a CUDA_VERSION or a
+# ROS_SNAPSHOT_DATE set in .env produced an image without it, and the host's own
+# LANG/TZ leaked in where make had substituted the committed defaults.
 for arg in APT_SNAPSHOT_DATE APT_SNAPSHOT_FALLBACK ROS_SNAPSHOT_DATE STRICT_GPG_CHECK OPENCV_CUDA \
            UV_VERSION UV_PYTHON UV_EXTRA TARGETARCH \
            SYS_PYTHON_EXE UV_SYNC_FLAGS CMAKE_EXTRA_ARGS COLCON_EXTRA_FLAGS \
            CMAKE_C_STANDARD CMAKE_CXX_STANDARD CUDA_VERSION CUDNN_VERSION LANG TZ; do
-    [ -n "${!arg:-}" ] && BUILD_ARGS+=(--build-arg "${arg}=${!arg}")
+    value="${!arg:-}"
+    [ -n "$value" ] || value="$(devkit_env_value "$arg")"
+    [ -n "$value" ] || value="$(devkit_env_value "$arg" "${WS_ROOT}/.env.example")"
+    [ -n "$value" ] && BUILD_ARGS+=(--build-arg "${arg}=${value}")
 done
 
 TEMP_ARCHIVE="$(mktemp "${TMPDIR:-/tmp}/devkit-bake.XXXXXX")"
@@ -150,6 +167,9 @@ docker save -o "$TEMP_ARCHIVE" "$DOCKER_IMG"
 if [ "$BAKE_FORMAT" = oci ]; then
     archive="${SIF_FILE%.sif}.oci.tar"
     mv "$TEMP_ARCHIVE" "$archive"
+    # mktemp made it 0600 and `docker save -o` reused the inode: the whole point
+    # of this format is handing the file to whoever converts it on Linux.
+    chmod 644 "$archive" 2>/dev/null || true
     write_provenance "${archive}.provenance"
     log_ok "Docker/OCI transport archive: $archive"
     log_detail "On Linux: apptainer build '${SIF_FILE##*/}' 'docker-archive://${archive##*/}'"
@@ -159,8 +179,12 @@ log_info "Converting Docker image to SIF artifact: ${SIF_FILE}..."
 # Convert beside the destination and publish only after a successful build.
 TEMP_SIF="$(mktemp "${SIF_FILE}.XXXXXX")"
 trap 'rm -f "$TEMP_ARCHIVE" "$TEMP_SIF"' EXIT
-"$RUNTIME" build --force "$TEMP_SIF" "docker-archive://${TEMP_ARCHIVE}"
+# Through sif_run_and_record: it forwards TERM/INT/HUP to the child and waits,
+# so a signal to this script no longer leaves apptainer building into a temp
+# file the EXIT trap has already removed — and re-creating minutes later.
+sif_run_and_record "$RUNTIME" build --force "$TEMP_SIF" "docker-archive://${TEMP_ARCHIVE}"
 mv "$TEMP_SIF" "$SIF_FILE"
+chmod 644 "$SIF_FILE" 2>/dev/null || true
 # Hash once, here: every run and every job submission wants this digest, and
 # re-reading a multi-GB artifact per launch is minutes of I/O for a value that
 # cannot change. sif_record_run reuses the sidecar when it is present.
