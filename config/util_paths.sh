@@ -119,7 +119,19 @@ devkit_env_value() {
 devkit_env_render() {
     local ambient="$1" file i; shift
     for file in "$@"; do
-        devkit_env_entries "$file" | sed 's/#/\\#/g' | awk -F'\t' '{ print $1 " ?= " $2 }'
+        # `?=` preserves file/environment precedence, but emitting every line
+        # would make the FIRST duplicate win. Compose and devkit_env_value use
+        # the last assignment within one file, so emit only that occurrence.
+        devkit_env_entries "$file" | sed 's/#/\\#/g' | awk -F'\t' '
+            {
+                key[NR] = $1
+                value[NR] = substr($0, length($1) + 2)
+                last[$1] = NR
+            }
+            END {
+                for (i = 1; i <= NR; i++)
+                    if (last[key[i]] == i) print key[i] " ?= " value[i]
+            }'
     done
     for (( i = $#; i >= 1; i-- )); do
         devkit_env_entries "${!i}" | sed 's/#/\\#/g' \

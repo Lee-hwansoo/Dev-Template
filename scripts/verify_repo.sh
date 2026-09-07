@@ -452,12 +452,13 @@ done
 #      beat the environment (`APT_SNAPSHOT_DATE=… make bake-prod` built
 #      'latest'), a quoted UV_SYNC_FLAGS reached compose quoted, and an
 #      explicit HOST_XAUTHORITY was replaced by the detector's placeholder.
+#      Duplicate keys follow Compose too: the last assignment in a file wins.
 # =============================================================================
 prec_errors=0
 prec_probe="$(probe_dir config scripts docker dependencies)"
 cp Makefile "$prec_probe/"
-printf 'IMAGE_TAG=fromexample\nAPT_SNAPSHOT_DATE=latest\nLANG=C.UTF-8\nUV_SYNC_FLAGS=\nDESC=plain\n' > "$prec_probe/.env.example"
-printf 'IMAGE_TAG=fromenv\nUV_SYNC_FLAGS="--extra gpu"\nDESC=a value # a comment\nSIF_FILE='"'"'/tmp/x y.sif'"'"'\n' > "$prec_probe/.env"
+printf 'IMAGE_TAG=fromexample\nAPT_SNAPSHOT_DATE=latest\nLANG=C.UTF-8\nUV_SYNC_FLAGS=\nDESC=plain\nDEFAULT_DUP=first\nDEFAULT_DUP=last\n' > "$prec_probe/.env.example"
+printf 'IMAGE_TAG=shadowed\nIMAGE_TAG=fromenv\nUV_SYNC_FLAGS="--extra cpu"\nUV_SYNC_FLAGS="--extra gpu"\nDESC=a value # a comment\nSIF_FILE='"'"'/tmp/x y.sif'"'"'\n' > "$prec_probe/.env"
 # prec_value <VAR> [env…] — the value make resolves for VAR in the probe tree.
 prec_value() {
     local var="$1"; shift
@@ -470,6 +471,8 @@ while IFS='|' read -r label want var envs; do
         || { log_err "config precedence, ${label}: ${var}='${got}', expected '${want}'."; prec_errors=1; }
 done <<'CASES'
 .env beats .env.example|fromenv|IMAGE_TAG|DEVKIT_UNUSED=1
+.env uses its last duplicate assignment|--extra gpu|UV_SYNC_FLAGS|DEVKIT_UNUSED=1
+.env.example uses its last duplicate assignment|last|DEFAULT_DUP|DEVKIT_UNUSED=1
 the environment beats .env|fromshell|IMAGE_TAG|IMAGE_TAG=fromshell
 the environment beats .env.example|20260801T000000Z|APT_SNAPSHOT_DATE|APT_SNAPSHOT_DATE=20260801T000000Z
 the file beats an ambient LANG|C.UTF-8|LANG|LANG=ko_KR.UTF-8
@@ -495,7 +498,7 @@ prec_rc=0; prec_out="$(prec_xauth HOST_XAUTHORITY="$prec_probe/absent.xauth")" |
     || { log_err "a HOST_XAUTHORITY that names a missing file is downgraded to the placeholder instead of failing (rc=${prec_rc})."; prec_errors=1; }
 rm -rf "$prec_probe"
 [ "$prec_errors" -eq 0 ] \
-    && log_ok "Config precedence: command line > environment > .env > .env.example (LANG/TZ file-first), quotes dropped, HOST_XAUTHORITY honoured."
+    && log_ok "Config precedence: command line > environment > .env > .env.example (last duplicate wins; LANG/TZ file-first), quotes dropped, HOST_XAUTHORITY honoured."
 
 # =============================================================================
 # [device-groups] A GPU node exposed into the container carries the HOST's gid
