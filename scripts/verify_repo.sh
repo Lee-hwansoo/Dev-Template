@@ -319,8 +319,10 @@ done
 gpu_env_probe="$(probe_dir)"
 if ( GPU_ENV_FILE="${gpu_env_probe}/gpu_env.sh" HOME="$gpu_env_probe" \
      bash -c 'source scripts/setup_gpu.sh cpu' >/dev/null 2>&1 ) \
-   && grep -q "LIBGL_ALWAYS_SOFTWARE" "${gpu_env_probe}/gpu_env.sh" 2>/dev/null; then
-    log_ok "setup_gpu.sh persists the GPU environment for non-entrypoint shells."
+   && grep -q "LIBGL_ALWAYS_SOFTWARE" "${gpu_env_probe}/gpu_env.sh" 2>/dev/null && [ "$gpu_switch_ok" -eq 1 ]; then
+    log_ok "setup_gpu.sh persists the GPU environment for non-entrypoint shells, and a mode switch clears the previous mode there too."
+elif [ "$gpu_switch_ok" -eq 0 ]; then
+    log_err "a persisted GPU file does not reset the previous mode: after cpu → intel a new shell saw '${gpu_after:-<no file>}' (expected 'unset 0 intel')."
 else
     log_err "setup_gpu.sh did not write GPU_ENV_FILE; 'make shell' sessions would lose GPU settings."
 fi
@@ -331,6 +333,16 @@ fi
 gpu_ld_probe="$(probe_dir)"
 ( LD_LIBRARY_PATH=/probe/boot GPU_ENV_FILE="${gpu_ld_probe}/gpu_env.sh" HOME="$gpu_ld_probe" \
   bash -c 'source scripts/setup_gpu.sh igpu' ) >/dev/null 2>&1
+# …and a NEW shell reads the image default (/etc/profile.d copy of the first
+# mode) and then the user's file: a switch cpu → intel left the cpu-only
+# variables (QT_XCB_FORCE_SOFTWARE_OPENGL, llvmpipe) standing, so the file must
+# reset every owned variable before it exports the new mode's.
+gpu_switch_ok=0
+if ( GPU_ENV_FILE="${gpu_env_probe}/default.sh" HOME="$gpu_env_probe" bash -c 'source scripts/setup_gpu.sh cpu' >/dev/null 2>&1 ) \
+   && ( GPU_ENV_FILE="${gpu_env_probe}/user.sh" HOME="$gpu_env_probe" bash -c 'source scripts/setup_gpu.sh intel' >/dev/null 2>&1 ); then
+    gpu_after="$(bash -c "source '${gpu_env_probe}/default.sh'; source '${gpu_env_probe}/user.sh'; echo \"\${QT_XCB_FORCE_SOFTWARE_OPENGL:-unset} \${LIBGL_ALWAYS_SOFTWARE:-unset} \${DEVKIT_GPU_MODE_ACTIVE:-unset}\"" 2>/dev/null)"
+    [ "$gpu_after" = "unset 0 intel" ] && gpu_switch_ok=1
+fi
 if grep -qE '^export LD_LIBRARY_PATH=' "${gpu_ld_probe}/gpu_env.sh" 2>/dev/null; then
     log_err "setup_gpu.sh persists LD_LIBRARY_PATH as an assignment; re-sourcing it drops the ROS library path."
 elif [ -s "${gpu_ld_probe}/gpu_env.sh" ]; then
