@@ -313,7 +313,7 @@ make verify && make build && make test
 
 | 잡 | 러너 | 무엇을 증명하나 |
 | :--- | :--- | :--- |
-| `contracts` | ubuntu | `make verify`(계약 전체) · tty·BASH_ENV 없는 `ubuntu:22.04` 컨테이너에서 `util_aliases.sh` 부트스트랩 · 네이티브 Linux 호스트 감지(`IS_WSL=false`, GPU 플래그, DXG 마운트 중립) · `docker build --check` 멀티스테이지 린트 |
+| `contracts` | ubuntu | `make verify`(계약 전체) · 이름을 adopt 하고 스타터·README 를 바꾼 **포크 복사본**에서도 통과 · tty·BASH_ENV 없는 `ubuntu:22.04` 컨테이너에서 `util_aliases.sh` 부트스트랩 · 네이티브 Linux 호스트 감지(`IS_WSL=false`, GPU 플래그, DXG 마운트 중립) · `docker build --check` 멀티스테이지 린트 |
 | `macos-host` | macos | 같은 `make verify` 를 bash 3.2 · BSD sed/awk/stat 위에서 · macOS 호스트 감지가 cpu 프로필로 해석 · 모든 스크립트가 `--help` 에 0 으로 응답 |
 
 ### `images.yml` — 느린 티어 (키트의 이미지 파이프라인)

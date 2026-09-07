@@ -110,7 +110,7 @@ mtest                                                                 # 예제�
 ### 7. 확인
 
 ```bash
-make verify        # 키트 계약 — 포크에서도 통과해야 합니다
+make verify        # 키트 계약 — 포크에서도 통과해야 합니다 (README·스타터 등 템플릿 자체 문구 검사는 상류 전용)
 make test          # 프로젝트 테스트 (mtest 를 make exec 으로 경유)
 make status        # 프로젝트 이름 · 템플릿 버전 · 감지된 호스트 배선
 ```

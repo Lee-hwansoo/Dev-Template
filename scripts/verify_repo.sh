@@ -45,6 +45,16 @@ log_info(){ echo -e "  \033[0;34m[INFO]\033[0m $*"; }
 # broke every such probe on a host that keeps bash in /usr/local/bin.
 probe_min_path="$(dirname "$(command -v bash)"):$(dirname "$(command -v sed)"):/usr/bin:/bin"
 
+# upstream_checks — the template's OWN content: README wording, starter examples,
+# the doc map. A fork replaces those (GETTING_STARTED's ownership table) and
+# must still pass, so they run only where the project still carries the
+# template's name, or on request (DEVKIT_UPSTREAM=1; =0 forces them off). Kit
+# BEHAVIOUR is checked everywhere.
+upstream_checks() {
+    case "${DEVKIT_UPSTREAM:-}" in 1) return 0 ;; 0) return 1 ;; esac
+    [ "$(sed -n 's/^name = "\(.*\)"/\1/p' src/pyproject.toml 2>/dev/null)" = devkit ]
+}
+
 # docker_live — a usable docker daemon on this host. The few probes that need a
 # real container run only here (the macOS runner has none) and say so.
 docker_live() {
@@ -87,7 +97,7 @@ for f in \
     dependencies/apt.txt dependencies/apt_ros.txt \
     VERSION .clang-format \
     docs/GETTING_STARTED.md docs/DEVELOPMENT.md docs/DEPENDENCIES.md docs/DEPLOY.md docs/DIAGNOSTICS.md \
-    src/example/starter_node.cpp src/example/starter_node.py src/example/test_starter_node.py
+    $(upstream_checks && echo src/example/starter_node.cpp src/example/starter_node.py src/example/test_starter_node.py)
 do
     [ -f "$f" ] || log_err "Missing required file: $f"
 done
@@ -215,6 +225,11 @@ for wf in .github/workflows/*.yml; do
     grep -qE '^[[:space:]]+run: (sudo )?rm -rf /usr/share/dotnet|^[[:space:]]+run: make verify$' "$wf" && [ "${wf##*/}" != verify.yml ] \
         && wf_bad+=("${wf##*/}: hand-written gate step; use ./.github/actions/gate")
 done
+# A fork that did what GETTING_STARTED says — adopted a name, removed the
+# starters, replaced README — must still pass: verify.yml runs the suite on
+# such a copy (the suite cannot run itself here without recursing).
+grep -q 'rm -rf src/example' .github/workflows/verify.yml && grep -q 'make adopt NAME=' .github/workflows/verify.yml \
+    || wf_bad+=("verify.yml: no fork probe (adopt + rm -rf src/example + replaced README + make verify)")
 [ "$(grep -c 'uses: ./.github/actions/gate' .github/workflows/images.yml .github/workflows/project.yml | awk -F: '{s+=$2} END{print s}')" -ge 6 ] \
     || wf_bad+=("fewer image jobs use the gate action than exist (images.yml 5 + project.yml 1)")
 [ ${#wf_bad[@]} -eq 0 ] && log_ok "Workflows: read-only token, checkout@v5+, image jobs gated by ./.github/actions/gate." \
@@ -450,21 +465,6 @@ rm -rf "$prec_probe"
     && log_ok "Config precedence: command line > environment > .env > .env.example (LANG/TZ file-first), quotes dropped, HOST_XAUTHORITY honoured."
 
 # =============================================================================
-# [detector-cache] The cache write must be atomic and a failed probe fatal: a
-#     partial cache is reused forever and every mount degrades silently.
-# =============================================================================
-# Run, in a probe tree: a detector input the detector refuses (a relative cache
-# dir) must stop make with the named error and leave NO cache file behind — not
-# a partial one, not a mktemp leftover; a good run leaves exactly one.
-cache_errors=0
-cache_probe="$(probe_dir scripts config docker dependencies)"
-cp Makefile "${ROOT_DIR}/.env.example" "$cache_probe/"
-cache_rc=0
-cache_out="$(cd "$cache_probe" && env -u DOCKER_DEV_CACHE_DIR make -n bake-prod DOCKER_DEV_CACHE_DIR=relative/cache 2>&1)" || cache_rc=$?
-{ [ "$cache_rc" -ne 0 ] && grep -q 'Host environment detection failed' <<< "$cache_out"; } \
-    || { log_err "a failed host probe does not stop make with 'Host environment detection failed' (rc ${cache_rc})."; cache_errors=1; }
-[ -z "$(find "$cache_probe/.docker_cache" -name 'detected-env*' 2>/dev/null)" ] \
-# =============================================================================
 # [device-groups] A GPU node exposed into the container carries the HOST's gid
 #      (root:render 0660 on native Linux); the account setpriv --init-groups
 #      switches to must be in a group with that gid or it sees the node and
@@ -493,6 +493,21 @@ grep -qE '^grant_device_groups$' docker/entrypoint.sh \
 rm -rf "$devgrp_probe"
 [ "$devgrp_errors" -eq 0 ] && log_ok "Device groups: the container user joins the group of every exposed GPU node before privileges drop."
 
+# =============================================================================
+# [detector-cache] The cache write must be atomic and a failed probe fatal: a
+#     partial cache is reused forever and every mount degrades silently.
+# =============================================================================
+# Run, in a probe tree: a detector input the detector refuses (a relative cache
+# dir) must stop make with the named error and leave NO cache file behind — not
+# a partial one, not a mktemp leftover; a good run leaves exactly one.
+cache_errors=0
+cache_probe="$(probe_dir scripts config docker dependencies)"
+cp Makefile "${ROOT_DIR}/.env.example" "$cache_probe/"
+cache_rc=0
+cache_out="$(cd "$cache_probe" && env -u DOCKER_DEV_CACHE_DIR make -n bake-prod DOCKER_DEV_CACHE_DIR=relative/cache 2>&1)" || cache_rc=$?
+{ [ "$cache_rc" -ne 0 ] && grep -q 'Host environment detection failed' <<< "$cache_out"; } \
+    || { log_err "a failed host probe does not stop make with 'Host environment detection failed' (rc ${cache_rc})."; cache_errors=1; }
+[ -z "$(find "$cache_probe/.docker_cache" -name 'detected-env*' 2>/dev/null)" ] \
     || { log_err "a failed host probe left a cache file behind ($(cd "$cache_probe/.docker_cache" && ls detected-env* | tr '\n' ' ')); the freshness guard would reuse it forever."; cache_errors=1; }
 (cd "$cache_probe" && env -u DOCKER_DEV_CACHE_DIR make -n bake-prod) >/dev/null 2>&1 || true
 [ "$(find "$cache_probe/.docker_cache" -name 'detected-env*' 2>/dev/null | wc -l)" -eq 1 ] \
@@ -660,7 +675,7 @@ rm -rf "$distro_probe"
 grep -rqE 'melodic|kinetic' Makefile scripts config docker --exclude=verify_repo.sh \
     && { log_err "a pre-20.04 ROS 1 name (melodic/kinetic) is back in the code; only noetic is ROS 1 here."; distro_errors=1; }
 # Both places a reader looks: the badge and the support-matrix row.
-{ grep -qiE 'badge/ROS-.*noetic.*legacy' README.md && grep -qiE '^\|.*noetic.*레거시' README.md; } \
+! upstream_checks || { grep -qiE 'badge/ROS-.*noetic.*legacy' README.md && grep -qiE '^\|.*noetic.*레거시' README.md; } \
     || { log_err "README does not mark ROS 1 noetic as the legacy tier in both the badge and the support matrix."; distro_errors=1; }
 [ "$distro_errors" -eq 0 ] \
     && log_ok "Every supported ROS distro has a base image, an unknown one is refused, and ROS 1 is noetic only, marked legacy ($(wc -w <<< "$apt_distros") distros)."
@@ -1053,7 +1068,7 @@ submit_launcher_for() {   # submit_launcher_for [job-id]
 # The property, not a phrasing: the README must say MPI is unsupported. srun
 # spreads the tasks across nodes — that part is verified — but nothing wires a
 # transport between them.
-grep -qiE 'MPI.*(미지원|unsupported)' README.md \
+! upstream_checks || grep -qiE 'MPI.*(미지원|unsupported)' README.md \
     || { log_err "README does not state that MPI is unsupported; srun spawns the tasks but no transport is wired between them."; submit_errors=1; }
 rm -rf "$submit_probe"
 [ "$submit_errors" -eq 0 ] \
@@ -1268,7 +1283,7 @@ macos_svc="$( unset GPU_MODE; eval "$macos_resolver" >/dev/null 2>&1; printf '%s
     || { log_err "a macOS host resolves to '${macos_svc:-<nothing>}', not ros-cpu; the selected profile requests devices macOS cannot pass through."; macos_errors=1; }
 # …and the support matrix must say so, rather than letting a reader assume
 # Metal/MPS works because the GPU section does not mention macOS.
-grep -qiE 'macOS GPU.*(미지원|unsupported)' README.md \
+! upstream_checks || grep -qiE 'macOS GPU.*(미지원|unsupported)' README.md \
     || { log_err "README does not state that macOS GPU acceleration is unsupported (CPU fallback only)."; macos_errors=1; }
 [ "$macos_errors" -eq 0 ] \
     && log_ok "A macOS host resolves to cpu even with nvidia-smi on PATH, and the README says Metal/MPS is unsupported."
@@ -2852,7 +2867,8 @@ grep -q 'xset q' Makefile \
 # has. It ran as root with `-u <config>` — -u is --no-dbus, the path became a
 # positional argument and terminator exited before drawing; `docker exec -d`
 # reports 0 for a detached process, so nothing ever said so.
-term_recipe="$(make -n term 2>/dev/null | grep -E 'docker exec -d' || true)"
+term_dry_run="$(make -n term 2>/dev/null || true)"
+term_recipe="$(grep -E 'docker exec -d' <<< "$term_dry_run" || true)"
 [ -n "$term_recipe" ] && ! grep -qvE 'USER_FLAG' <<< "$term_recipe" \
     || { log_err "'make term' launches a terminal without the EXEC_USER_FLAG the other attach targets use; every pane would be a root shell."; sec_errors=1; }
 grep -qE 'terminator -g ' <<< "$term_recipe" && ! grep -qE 'terminator -u' <<< "$term_recipe" \
@@ -2872,8 +2888,8 @@ grep -qE '^[^#]*curl [^#]*github\.com' docker/Dockerfile \
 # so `make term` refused even with terminator installed. The exact probe the
 # recipe uses is lifted from the dry run and executed in a real minimal
 # container where one is available.
-term_probe="$(make -n term 2>/dev/null | sed -n "s/.*docker exec \$CONTAINER \(sh -c '[^']*' _\) \"\$TERM_BIN\".*/\1/p" | head -n 1)"
-[ -n "$term_probe" ] && make -n term 2>/dev/null | grep -q 'dependencies/apt.txt' \
+term_probe="$(sed -n "s/.*docker exec \$CONTAINER \(sh -c '[^']*' _\) \"\$TERM_BIN\".*/\1/p" <<< "$term_dry_run")"
+[ -n "$term_probe" ] && grep -q 'dependencies/apt.txt' <<< "$term_dry_run" \
     || { log_err "'make term' does not probe for the terminal binary through 'sh -c' and point at dependencies/apt.txt (found: '${term_probe:-no sh -c probe}')."; sec_errors=1; }
 term_live=""
 if [ -n "$term_probe" ] && docker_live; then
@@ -3040,8 +3056,9 @@ fi
 # README advertises how many contracts this suite enforces, and the number went
 # stale twice (24 while 32 groups existed). Derived from the slug headers, which
 # are also what the docs cite.
-readme_contracts="$(grep -oE '[0-9]+개 계약' README.md | grep -oE '[0-9]+' | head -1)"
+readme_contracts="$(grep -oE '[0-9]+개 계약' README.md | grep -oE '[0-9]+' | head -1 || true)"
 slug_groups="$(grep -cE '^# \[[a-z][a-z-]+\]' scripts/verify_repo.sh)"
+upstream_checks || readme_contracts="$slug_groups"   # a fork's README describes the fork
 [ "${readme_contracts:-0}" = "$slug_groups" ] \
     && log_ok "README's contract count matches the suite (${slug_groups} groups)." \
     || log_err "README advertises ${readme_contracts:-no} contracts; the suite has ${slug_groups} check groups."
@@ -3052,7 +3069,13 @@ slug_groups="$(grep -cE '^# \[[a-z][a-z-]+\]' scripts/verify_repo.sh)"
 # One python3 call for both: a link that resolves and a command that exists.
 # `make release` outlived its target in the docs once, so the second half reads
 # only code spans and fences — prose like "make them pass" is not a claim.
-doc_problems="$(DEVKIT_PHONY="$phony_targets" python3 - <<'PYCHECK'
+# Keep the heredoc outside a command substitution: Apple's Bash 3.2 scans its
+# contents for a closing ')' and starts reading Python strings as shell code.
+doc_upstream=0
+upstream_checks && doc_upstream=1
+doc_probe="$(probe_dir)"
+if ! DEVKIT_UPSTREAM_CHECKS="$doc_upstream" DEVKIT_PHONY="$phony_targets" \
+    python3 - > "$doc_probe/problems" <<'PYCHECK'
 import os, pathlib, re
 
 def slug(h):
@@ -3068,9 +3091,12 @@ targets = set(os.environ.get('DEVKIT_PHONY', '').split())
 # Deprecated spellings still forward, so naming one in the docs is not a lie.
 targets |= {'check-host', 'env-check', 'completion', 'completion-install'}
 bad = []
-for f in [pathlib.Path('README.md'),
-          *sorted(pathlib.Path('.github').glob('*.md')),
-          *sorted(pathlib.Path('docs').glob('*.md'))]:
+# README is the fork's: its links and headings are checked upstream only.
+upstream = os.environ.get('DEVKIT_UPSTREAM_CHECKS') == '1'
+files = sorted(pathlib.Path('.github').glob('*.md')) + sorted(pathlib.Path('docs').glob('*.md'))
+if upstream:
+    files.insert(0, pathlib.Path('README.md'))
+for f in files:
     text = f.read_text()
     for m in re.finditer(r'\[[^\]]*\]\(([^)]+)\)', text):
         target = m.group(1)
@@ -3079,23 +3105,30 @@ for f in [pathlib.Path('README.md'),
         path, _, frag = target.partition('#')
         p = (f.parent / path) if path else f
         if not p.exists():
-            bad.append(f"{f} -> {target} (no such file)")
-        elif frag and frag not in [slug(l) for l in p.read_text().splitlines() if l.startswith('#')]:
-            bad.append(f"{f} -> {target} (no such heading)")
+            bad.append(f'{f} -> {target} (no such file)')
+        check_fragment = upstream or p.name != 'README.md'
+        if p.exists() and frag and check_fragment \
+                and frag not in [slug(l) for l in p.read_text().splitlines() if l.startswith('#')]:
+            bad.append(f'{f} -> {target} (no such heading)')
     # [ \t], not \s: two adjacent inline spans must not join into a phantom
     # "make" + "source …" across the newline between them.
     for m in re.finditer(r'\bmake[ \t]+([a-z][a-z0-9-]*)', code_only(text)):
         if m.group(1) not in targets:
-            bad.append(f"{f} -> make {m.group(1)} (no such target)")
+            bad.append(f'{f} -> make {m.group(1)} (no such target)')
 print(" | ".join(bad))
 PYCHECK
-)"
+then
+    log_err "documentation validator could not run."
+fi
+doc_problems="$(cat "$doc_probe/problems" 2>/dev/null || true)"
+rm -rf "$doc_probe"
 [ -z "$doc_problems" ] \
     || log_err "documentation is out of date: ${doc_problems}"
 # …and no guide may sit unreferenced, wherever it lives: GEMINI.md was reachable
 # from nothing, and moving a file between docs/ and .github/ must not drop it
 # out of this check the way scoping the loop to docs/*.md once did.
 doc_all="$(ls docs/*.md .github/*.md 2>/dev/null || true)"
+upstream_checks || doc_all=""   # a fork's README need not map the kit's guides
 for doc_file in $doc_all; do
     case "$doc_file" in .github/PULL_REQUEST_TEMPLATE.md) continue ;; esac  # GitHub loads it by name
     grep -rqF "$(basename "$doc_file")" README.md $(grep -v "^${doc_file}$" <<< "$doc_all") \

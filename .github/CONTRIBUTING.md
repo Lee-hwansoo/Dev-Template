@@ -48,7 +48,7 @@ make build && make start    # 실물이 필요할 때만
    # Prepend, never assign: this is written before ROS is sourced.
    ```
 
-4. **커밋 전 `make verify`.** 실패 메시지는 어느 계약이 깨졌는지 슬러그로 알려줍니다
+4. **커밋 전 `make verify`.** 실패 메시지는 어느 계약이 깨졌는지 슬러그로 알려줍니다. 템플릿 자체 문구(README·스타터·문서 지도)를 보는 검사는 `upstream_checks` 뒤에 둡니다 — 포크가 바꿔도 되는 파일에 계약을 걸지 않습니다
    (`check [env-bridge]` 등). 계약을 추가했다면 아래 절의 뮤테이션 테스트를 거칩니다.
 
 ## 출력 규약
