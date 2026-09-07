@@ -1350,7 +1350,7 @@ chmod +x "$rmguard_probe/bin/rm"
 rmguard_case() {
     local label="$1" want="$2"; shift 2
     : > "$rmguard_probe/rm.log"
-    ( cd "$rmguard_probe/ws" && PATH="$rmguard_probe/bin:$PATH" make clean-cache "$@" ) >/dev/null 2>&1 || true
+    ( cd "${rmguard_ws:-$rmguard_probe/ws}" && PATH="$rmguard_probe/bin:$PATH" make clean-cache "$@" ) >/dev/null 2>&1 || true
     # The recipe removes other things too, so only a call naming the guarded
     # path counts as "the guard let it through". ${*##…} strips per word and
     # would leave FORCE=1 glued to the front.
@@ -1368,6 +1368,18 @@ rmguard_case "a real cache directory" deleted \
     "DOCKER_DEV_CACHE_DIR=$rmguard_probe/realcache"
 rmguard_case "a non-cache path the user forced" deleted \
     FORCE=1 "DOCKER_DEV_CACHE_DIR=$rmguard_probe/elsewhere"
+# A parent of the workspace whose name carries 'cache' passed both guards and
+# `rm -rf` would have taken the workspace with it. And the resolved paths went
+# through `eval` of an unquoted assignment, so a space split a cache path in two.
+mkdir -p "$rmguard_probe/cachedir/ws" "$rmguard_probe/real cache"
+cp Makefile "$rmguard_probe/cachedir/ws/"
+for rmguard_link in scripts config docker dependencies; do
+    ln -s "${ROOT_DIR}/${rmguard_link}" "$rmguard_probe/cachedir/ws/${rmguard_link}"
+done
+rmguard_ws="$rmguard_probe/cachedir/ws" rmguard_case "a parent directory of the workspace" refused \
+    FORCE=1 "DOCKER_DEV_CACHE_DIR=$rmguard_probe/cachedir"
+rmguard_ws="$rmguard_probe/cachedir/ws" rmguard_case "the root directory" refused FORCE=1 "DOCKER_DEV_CACHE_DIR=/"
+rmguard_case "a cache path containing a space" deleted "DOCKER_DEV_CACHE_DIR=$rmguard_probe/real cache"
 
 # …and the sync fence must refuse BEFORE anything writes into the directory it
 # is protecting: it used to run after `vcs import` had already populated it.

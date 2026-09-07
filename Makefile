@@ -713,18 +713,18 @@ clean-cache:
 	fi
 	@# DOCKER_DEV_CACHE_DIR relocates ccache/uv caches (see .env.example).
 	@# Guards run on the RESOLVED path: '<ws>/cache/../../<ws>' carries the word
-	@# 'cache' and used to pass, aiming this rm -rf at the workspace itself.
+	@# 'cache' and used to pass, aiming this rm -rf at the workspace itself; so
+	@# did a parent directory of the workspace. Anything containing it is refused.
 	@CACHE_DIR="$(or $(DOCKER_DEV_CACHE_DIR),.docker_cache)"; \
 	if [ "$$CACHE_DIR" != .docker_cache ]; then \
 		case "$$CACHE_DIR" in \
 			/*) ;; \
 			*)  echo -e "  $(ERROR) DOCKER_DEV_CACHE_DIR must be an absolute path (got: $$CACHE_DIR)"; exit 1 ;; \
 		esac; \
-		eval "$$(bash -c 'source config/util_paths.sh >/dev/null 2>&1; \
-			printf "REAL_CACHE=%s\nREAL_WS=%s\n" "$$(devkit_resolve_path "$$1")" "$$(devkit_resolve_path "$$2")"' \
-			_ "$$CACHE_DIR" "$(HOST_WORKSPACE_PATH)")"; \
-		case "$$REAL_CACHE" in \
-			/|"$$REAL_WS") echo -e "  $(ERROR) '$$CACHE_DIR' resolves to '$$REAL_CACHE'; refusing to delete it."; exit 1 ;; \
+		REAL_CACHE="$$(bash -c 'source config/util_paths.sh >/dev/null 2>&1; devkit_resolve_path "$$1"' _ "$$CACHE_DIR")"; \
+		REAL_WS="$$(bash -c 'source config/util_paths.sh >/dev/null 2>&1; devkit_resolve_path "$$1"' _ "$(HOST_WORKSPACE_PATH)")"; \
+		case "$$REAL_WS/" in \
+			"$${REAL_CACHE%/}/"*) echo -e "  $(ERROR) '$$CACHE_DIR' resolves to '$$REAL_CACHE', which contains this workspace; refusing to delete it."; exit 1 ;; \
 		esac; \
 		case "$$REAL_CACHE" in \
 			*cache*) ;; \
