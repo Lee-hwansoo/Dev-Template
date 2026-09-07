@@ -157,9 +157,15 @@ if [ "${1:-}" = "--install" ] || [ "${BASH_SOURCE[0]}" = "$0" ]; then
     ENTRY="[ -f \"$COMPLETION_SRC\" ] && source \"$COMPLETION_SRC\""
     RC_FILE="$HOME/.bashrc"
     if [ -f "$RC_FILE" ]; then
-        if ! grep -q "devkit_make_completion.bash" "$RC_FILE" 2>/dev/null; then
+        # THIS checkout's path, not the bare filename: a second clone (or a
+        # moved one) reported "already registered" while the entry pointed at a
+        # tree that may no longer exist, and completion was silently dead.
+        if ! grep -qF "$COMPLETION_SRC" "$RC_FILE" 2>/dev/null; then
+            # grep -c prints its 0 and still exits 1, so `|| echo 0` appended a second one.
+            OTHER="$(grep -cF 'devkit_make_completion.bash' "$RC_FILE" 2>/dev/null || true)"
             printf '\n# DevKit Makefile Tab Completion\n%s\n' "$ENTRY" >> "$RC_FILE"
             echo -e "  \033[32m[OK]\033[0m Registered Tab completion in ${RC_FILE}"
+            [ "$OTHER" = 0 ] || echo -e "  \033[0;34m[INFO]\033[0m ${OTHER} entr(ies) for another DevKit checkout remain there; a stale one disables itself."
         else
             echo -e "  \033[32m[OK]\033[0m Tab completion already registered in ${RC_FILE}"
         fi

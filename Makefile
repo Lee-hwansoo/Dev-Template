@@ -60,7 +60,7 @@ ENV_MK_STATUS := $(shell mkdir -p .docker_cache 2>/dev/null && tmp=$$(mktemp "$(
 		_ '$(ENV_AMBIENT)' $(wildcard .env) .env.example > "$$tmp" && mv "$$tmp" "$(ENV_MK)" && echo ok; } || \
 	{ rm -f "$$tmp" 2>/dev/null; echo fail; })
 ifeq ($(ENV_MK_STATUS),fail)
-$(error Cannot write $(ENV_MK), so .env would be ignored entirely. Check .docker_cache — an in-container run may own it as root ('sudo rm -rf .docker_cache'))
+$(error Cannot write $(ENV_MK), so .env would be ignored entirely. Check that $(CURDIR) is writable, that .docker_cache is not root-owned from an in-container run ('sudo rm -rf .docker_cache'), and that config/util_paths.sh parses (a CRLF checkout breaks it))
 endif
 -include $(ENV_MK)
 shell_quote = '$(subst ','"'"',$(1))'
@@ -108,7 +108,13 @@ DETECTOR_EXEMPT := help h setup adopt verify ci ci-on ci-off stop down logs clea
 NEEDS_DETECTOR  := $(filter-out $(DETECTOR_EXEMPT),$(or $(MAKECMDGOALS),help))
 
 # Explicit distro/interpreter overrides must not reuse another pairing's cache.
-DETECTED_ENV_FILE := .docker_cache/detected-env$(if $(DETECT_OVERRIDES),-$(shell printf '%s' $(call shell_quote,$(DETECT_OVERRIDES)) | cksum | cut -d' ' -f1)).mk
+# The parent hands its path down: `export` gives every sub-make the detector
+# inputs in its ENVIRONMENT, so $(origin) said "environment" there and each
+# sub-make keyed a hashed file of its own — `make setup` probed the host twice
+# and its ide-config child could resolve a different GPU profile than the
+# parent's `make status`.
+DETECTED_ENV_FILE := $(or $(DEVKIT_DETECT_FILE),.docker_cache/detected-env$(if $(DETECT_OVERRIDES),-$(shell printf '%s' $(call shell_quote,$(DETECT_OVERRIDES)) | cksum | cut -d' ' -f1)).mk)
+export DEVKIT_DETECT_FILE := $(DETECTED_ENV_FILE)
 ifneq ($(NEEDS_DETECTOR),)
 # Included AFTER .env, so its `:=` wins — stale whenever .env is newer, or a
 # cache built before an edit overrides ROS_DISTRO forever. `shell test`, not
@@ -286,7 +292,7 @@ help:
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "test / lint" "Run project tests / check style (FIX=1 applies)"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "logs / stats / top" "Stream logs, real-time stats, process monitor"
 	@echo -e "\n$(CYAN)[ Apptainer SIF & SLURM ] ===========================$(NC)"
-	@printf "  $(GREEN)%-24s$(NC) : %s\n" "bake-dev / bake-prod" "Bake development / production SIF artifacts"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "bake-dev / bake-prod" "Bake development / production SIF artifacts (SHARE=1, PROD_FULL_CUDA=1)"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "run-sif" "Run SIF artifact locally or submit to SLURM"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "slurm-status / slurm-cancel" "Query active SLURM jobs or cancel one"
 	@echo -e "\n$(CYAN)[ Cleanup & Maintenance ] ===========================$(NC)"
@@ -318,7 +324,11 @@ setup:
 	fi
 	@bash config/devkit_make_completion.bash --install
 	@$(MAKE) xauth
-	@$(MAKE) ide-config
+	@# COMPOSE_PROJECT_NAME with the name .env now holds: make read the env
+	@# files BEFORE this recipe created .env, and the bare `export` then gave the
+	@# child the stale value, so setup's ide.compose.json named a different
+	@# compose project than a later standalone `make ide-config`.
+	@$(MAKE) ide-config COMPOSE_PROJECT_NAME="$$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' .env | tail -n 1)"
 
 ## @target adopt : Make this checkout YOUR project (NAME=my-robot [DESC='...'])
 # The identity a fork owns, in one step: the Python package name, the compose
@@ -568,6 +578,9 @@ ide-config:
 	$(call GUARD_HOST_ONLY)
 	@if ! docker compose version >/dev/null 2>&1; then \
 		echo -e "  $(INFO) docker compose is not available here — VS Code attach config skipped."; exit 0; fi; \
+	if [ -n "$(DEVKIT_DETECT_INCOMPLETE)" ]; then \
+		echo -e "  $(INFO) Host detection was incomplete ($(DEVKIT_DETECT_INCOMPLETE)) — VS Code attach config left as it was."; \
+		echo -e "  $(INFO) Re-run 'make ide-config' once docker is up."; exit 0; fi; \
 	$(RESOLVE_SVC_MODE); \
 	DC=.devcontainer/devcontainer.json; \
 	if [ ! -f "$$DC" ]; then \

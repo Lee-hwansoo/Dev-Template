@@ -37,6 +37,16 @@ curl|no|make update-gpg fetches the archive signing keys
 gpg|no|make update-gpg verifies those keys
 xauth|no|GUI forwarding writes the X cookie the container reads
 gh|no|make ci switches GitHub Actions on and off'
+# The one prerequisite that is not a tool: every host-detection cache and
+# placeholder is written into the workspace, and a read-only checkout (an NFS
+# mount, a ':ro' bind in CI) otherwise produced ~20 contract failures that each
+# accused the code of a defect it does not have.
+if [ ! -w . ]; then
+    log_error "The workspace is not writable: $(pwd)"
+    log_info  "Host detection caches and placeholder mount sources are written here." >&2
+    errors=$((errors + 1))
+fi
+
 while IFS='|' read -r tool blocking why; do
     [ -n "$tool" ] || continue
     command -v "$tool" >/dev/null 2>&1 && continue

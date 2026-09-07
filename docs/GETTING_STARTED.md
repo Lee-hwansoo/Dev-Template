@@ -56,6 +56,7 @@ make adopt NAME=my-robot DESC='One line about it'
 | 레이어 | 파일 | 할 일 |
 | :--- | :--- | :--- |
 | Python | `src/pyproject.toml` | `dependencies` 에 패키지 추가. PyTorch cpu/gpu 분기가 필요하면 파일 안의 **주석 예시**를 풉니다 ([opt-in 되살리기](DEPENDENCIES.md#-opt-in-기능-되살리기)) |
+| C++ 소스 위치 | 루트 `CMakeLists.txt` 로 빌드한다면 소스를 `src/` 또는 `cmake/` 안에 두세요. 프로덕션 빌더는 그 두 곳과 `dependencies/`·`config/`·`scripts/`·`VERSION` 만 복사하므로, `app/main.cpp` 같은 다른 최상위 디렉터리는 dev 빌드는 통과하고 `make bake-prod` 에서 실패합니다 |
 | 시스템·ROS apt | `dependencies/apt.txt`, `apt_ros.txt` | 한 줄에 패키지 하나. 배포물에 필요하면 `# runtime`, GUI 도구는 `# gui`. terminator·clang-format 은 주석 해제로 켭니다 ([opt-in 되살리기](DEPENDENCIES.md#-opt-in-기능-되살리기)) |
 | 외부 소스 | `dependencies/dependencies.repos` | vcstool 형식. 릴리스는 **40자 커밋 해시**로 고정 |
 

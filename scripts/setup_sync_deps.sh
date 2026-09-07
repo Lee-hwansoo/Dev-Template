@@ -178,18 +178,44 @@ else
         fi
     fi
 
-    # Force-reset: discard local changes in third-party repos
+    # Force-reset: only the repositories THIS .repos file manages.
+    #
+    # It used to `find` every .git under the target and reset whatever it hit.
+    # With an external target (the documented opt-in) that walk reached any
+    # repository beneath it, and if the target had vanished the resolver fell
+    # back to a parent — a `git reset --hard` + `git clean -ffdx` on trees
+    # nobody named. Now the .repos file is the list, each entry's own toplevel
+    # is confirmed, and anything else is left alone.
     if [ "$FORCE_MODE" = true ]; then
-        log_warn "Force mode: resetting all third-party repos to HEAD..."
-        while IFS= read -r -d '' git_dir; do
-            repo_dir="$(dirname "$git_dir")"
-            repo_name="$(basename "$repo_dir")"
-            # Belt to the fence's braces: never this repository, however reached.
-            [ "$(cd "$repo_dir" && pwd -P)" != "$WS_REAL" ] || { log_warn "Skipping the workspace's own repository."; continue; }
-            if ! (cd "$repo_dir" && git reset --hard HEAD && git clean -ffdx); then
-                log_warn "Failed to reset: $repo_name"
-            fi
-        done < <(find "$TARGET_DIR" -type d -name ".git" -prune -print0)
+        managed="$(python3 - "$REPOS_FILE" <<'PYNAMES' 2>/dev/null || true
+import sys
+try:
+    import yaml
+except ImportError:
+    sys.exit(0)
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = yaml.safe_load(fh) or {}
+for name in (doc.get("repositories") or {}):
+    print(name)
+PYNAMES
+)"
+        if [ -z "$managed" ]; then
+            log_warn "Force mode: no repository names could be read from ${REPOS_FILE##*/}; nothing was reset."
+        else
+            log_warn "Force mode: resetting the repositories ${REPOS_FILE##*/} manages, to HEAD..."
+            while IFS= read -r repo_name; do
+                [ -n "$repo_name" ] || continue
+                repo_dir="${TARGET_DIR}/${repo_name}"
+                [ -d "${repo_dir}/.git" ] || { log_detail "Not cloned yet, skipping: ${repo_name}"; continue; }
+                # The entry must BE a repository root, not a path that merely
+                # sits inside one (the workspace's own, say).
+                [ "$(cd "$repo_dir" && git rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$repo_dir" && pwd -P)" ] \
+                    || { log_warn "Skipping ${repo_name}: it is not a repository root of its own."; continue; }
+                if ! (cd "$repo_dir" && git reset --hard HEAD && git clean -ffdx); then
+                    log_warn "Failed to reset: $repo_name"
+                fi
+            done <<< "$managed"
+        fi
     fi
 
     # Pull: only branch-tracking repos (skip detached HEAD / fixed tags)

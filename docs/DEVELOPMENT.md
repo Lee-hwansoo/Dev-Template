@@ -149,14 +149,27 @@ docker exec <container> /entrypoint.sh --env sh -c 'echo $VIRTUAL_ENV'
 
 ---
 
+## 🔁 컨테이너와 `.env` 가 어긋날 때
+
+컨테이너는 **시작 시점의** `.env` 값을 그대로 들고 있습니다. `GPU_MODE`·`ROS_DOMAIN_ID`·`UV_EXTRA` 를
+고쳐도 이미 도는 컨테이너에는 반영되지 않고, `make status` 는 새 값을 보여 줍니다. 다시 만들어야 합니다.
+
+```bash
+make restart          # stop → start (같은 ENV)
+make status           # GPU Mode 줄이 실제 서비스와 일치하는지 확인
+```
+
+한 ENV 에는 컨테이너가 하나만 존재합니다 — `make start` 는 같은 ENV 의 다른 GPU 변종이 떠 있으면
+먼저 제거합니다. 그래야 `make exec`·`shell`·`test`·`lint` 가 어느 것에 붙을지 모호해지지 않습니다.
+
 ## 🧹 정리와 초기화 (Cleanup)
 
 | 명령 | 범위 | 비고 |
 | :--- | :--- | :--- |
 | `mclean` (컨테이너) | `build/`, `devel/`, `log/`, `install/` 의 산출물을 **비움** (마운트 지점이라 지우지는 않음) | venv 는 `mclean --all` 에서만. 남은 항목이 있으면 실패로 보고 |
-| `make clean` | 호스트의 `build/`, `devel/`, `log/`, `install/` 산출물과 편의 심볼릭 링크(`compile_commands.json`, `.venv`, `colcon.meta`) | `install/.venv` 보존 — 재생성에 `mksync` 전체가 필요. 지우려면 `KEEP_VENV=0`(확인 프롬프트). Docker 가 root 로 만든 디렉터리는 해결 명령을 안내 |
+| `make clean` | 호스트의 `build/`, `devel/`, `log/`, `install/` 산출물과 편의 심볼릭 링크(`compile_commands.json`, `.venv`, `colcon.meta`) | 컨테이너가 떠 있고 이 경로들이 bind 마운트면 거부 — 살아 있는 컨테이너의 마운트 지점입니다. `install/.venv` 보존 — 재생성에 `mksync` 전체가 필요. 지우려면 `KEEP_VENV=0`(확인 프롬프트). Docker 가 root 로 만든 디렉터리는 해결 명령을 안내 |
 | `make clean-cache` | `.docker_cache/`(호스트 감지 캐시·플레이스홀더) | 컨테이너가 떠 있으면 거부 — Docker 가 마운트 소스를 root 로 다시 만들기 때문 |
-| `make clean-all` | 컨테이너 · 프로젝트 named 볼륨 · **compose 가 빌드한 이 프로젝트 이미지**(`--rmi local`) · 호스트 산출물 · 캐시 | 확인 프롬프트. `KEEP_VENV=1` 은 venv 가 든 `install` 볼륨만 남겨 재빌드 후 `mksync` 없이 접속 |
+| `make clean-all` | **ENV 양쪽 모두** — ros·dev 컨테이너 · 여섯 개 named 볼륨 · **compose 가 빌드한 이 프로젝트 이미지**(`--rmi local`) · 호스트 산출물 · 캐시 · 구운 SIF/OCI 아티팩트 | 확인 프롬프트. `KEEP_VENV=1` 은 venv 가 든 `install` 볼륨만 남겨 재빌드 후 `mksync` 없이 접속 |
 | `make stop` / `make down` | 선택한 `ENV` 의 서비스만 | `ENV=ros` 는 `basic-*` 컨테이너를 건드리지 않음 |
 | `make docker-clean` | **호스트 전체**의 고아 이미지 · BuildKit 캐시 · 미사용 볼륨 | 다른 프로젝트도 영향. 삭제 대상을 보여주고 확인 |
 
@@ -244,7 +257,18 @@ git log --oneline "v$(cat VERSION)"..upstream/main
 
 # 3) 커널 파일만 선별 병합 — src/ 와 .env 는 당신 것이므로 건드리지 않습니다
 git diff HEAD upstream/main -- Makefile config/ scripts/ docker/ docker-compose*.yml
-git checkout upstream/main -- config/ scripts/        # 예: 셸/스크립트 계층만 갱신
+# 키트 소유 묶음은 한 단위입니다 — `scripts/verify_repo.sh` 가 Makefile·docker/·apt 목록·워크플로의
+# 계약이기도 해서, 일부만 가져오면 4 단계의 `make verify` 가 가져오지 않은 파일을 가리키며 실패합니다.
+git checkout upstream/main -- Makefile config/ scripts/ docker/ docker-compose*.yml \
+    dependencies/apt.txt dependencies/apt_ros.txt \
+    .github/workflows/verify.yml .github/workflows/images.yml .github/actions/ \
+    .editorconfig .clang-format .gitattributes .dockerignore
+
+# 3b) 당신 것이지만 키트도 항목을 추가하는 세 파일은 손으로 병합합니다 —
+#     .gitignore(키트가 만드는 산출물), .env.example(새 노브 선언), docs/(키트 사용법),
+#     .vscode/·.devcontainer/(편집기 계약: 경로와 확장은 키트가 정하고 설정은 당신 것).
+#     `make verify` 의 실패 메시지가 무엇을 더해야 하는지 그대로 알려줍니다.
+git diff HEAD upstream/main -- .gitignore .env.example docs/ .vscode/ .devcontainer/
 
 # 4) 계약으로 검증 후 커밋
 make verify && make build && make test

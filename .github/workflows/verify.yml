@@ -36,6 +36,9 @@ jobs:
       - name: the suite passes on a fork that made every documented edit
         run: |
           cp -a . /tmp/fork && cd /tmp/fork
+          # A fresh fork has no .env yet; carrying a developer's copy in
+          # would make adopt guard the volumes of the ORIGINAL project.
+          rm -f .env
           make adopt NAME=forkprobe DESC='fork probe'
           # Everything GETTING_STARTED and DEPENDENCIES tell a fork it may do
           # WITHOUT a container: own the starters, README and docs/, uncomment

@@ -770,6 +770,36 @@ else
     log_err "the moved-checkout probe produced no detected-env*.mk to test."; cache_errors=1
 fi
 rm -rf "$cache_moved"
+# ONE cache per tree: `export` hands every sub-make the detector inputs in its
+# environment, so each keyed a hashed file of its own — `make setup` probed the
+# host twice and its ide-config child could resolve a different GPU profile
+# than the parent's `make status` read.
+cache_sub="$(cd "$(probe_dir scripts config docker dependencies)" && pwd -P)"
+cp Makefile "${ROOT_DIR}/.env.example" "${ROOT_DIR}"/docker-compose*.yml "$cache_sub/"
+mkdir -p "$cache_sub/.devcontainer"; printf '{ "service": "ros-cpu", "remoteUser": "user" }\n' > "$cache_sub/.devcontainer/devcontainer.json"
+( cd "$cache_sub" && make setup ) >/dev/null 2>&1 || true
+cache_sub_files="$(find "$cache_sub/.docker_cache" -name 'detected-env*.mk' 2>/dev/null | wc -l)"
+[ "$cache_sub_files" -le 1 ] \
+    || { log_err "'make setup' leaves ${cache_sub_files} detector caches (a sub-make keyed its own); the two can disagree on the GPU profile."; cache_errors=1; }
+# …and the file setup writes must name the project setup just created: make
+# read the env files before .env existed, and the bare export handed the child
+# the stale name, so setup's compose file and a later `make ide-config`
+# disagreed on the project namespace.
+cache_sub_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("name",""))' \
+    "$cache_sub/.docker_cache/ide.compose.json" 2>/dev/null || true)"
+cache_sub_env="$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "$cache_sub/.env" 2>/dev/null | tail -n 1)"
+{ [ -z "$cache_sub_name" ] || [ "$cache_sub_name" = "$cache_sub_env" ]; } \
+    || { log_err "'make setup' wrote an IDE compose file for project '${cache_sub_name}' while .env says '${cache_sub_env}'; the two namespaces hold different containers and volumes."; cache_errors=1; }
+rm -rf "$cache_sub"
+# The mechanism, because the count alone depends on which inputs a given host
+# exports: the parent must hand its cache path to every sub-make.
+grep -qF 'export DEVKIT_DETECT_FILE := $(DETECTED_ENV_FILE)' Makefile \
+    && grep -qF 'DETECTED_ENV_FILE := $(or $(DEVKIT_DETECT_FILE),' Makefile \
+    || { log_err "the Makefile does not pass its detector cache path to sub-makes; each keys its own file from the exported inputs."; cache_errors=1; }
+# …and a probe that could not finish must not pin the IDE to its guess.
+grep -q 'DEVKIT_DETECT_INCOMPLETE' <<< "$(awk '/^ide-config:$/{i=1} i{print} i && /^$/{exit}' Makefile)" \
+    || { log_err "ide-config writes the attach service even when host detection was incomplete; setup with docker down pinned VS Code to the wrong profile permanently."; cache_errors=1; }
+
 # The .env include is written atomically and its failure is fatal: writing in
 # place, a concurrent make read it empty and acted on the wrong compose project;
 # an unwritable .docker_cache dropped every .env setting silently.
@@ -1661,6 +1691,15 @@ while IFS='|' read -r hostdep_tool hostdep_block _; do
     [ "$hostdep_rc" -ne 0 ] \
         || { log_err "check_preflight.sh exits 0 without '${hostdep_tool}', which it calls blocking."; hostdep_errors=1; }
 done <<< "$hostdep_table"
+# The one prerequisite that is not a tool: a read-only checkout produced ~20
+# contract failures that each blamed the code instead of the mount.
+hostdep_ro="$(cd "$(probe_dir config scripts)" && pwd -P)"
+chmod 555 "$hostdep_ro"
+hostdep_ro_out="$( cd "$hostdep_ro" && PATH="$probe_min_path" bash "${ROOT_DIR}/scripts/check_preflight.sh" 2>&1 || true )"
+chmod 755 "$hostdep_ro"
+grep -q 'not writable' <<< "$hostdep_ro_out" \
+    || { log_err "check_preflight.sh accepts a read-only workspace, where every detection cache and placeholder write fails."; hostdep_errors=1; }
+rm -rf "$hostdep_ro"
 # The GitHub Actions switch. Its truth lives on GitHub, so `make ci` reads it
 # through gh and ci-on/ci-off write it — every workflow file, both directions,
 # a refusal with the install hint when gh is missing, and the same one-line
@@ -1786,6 +1825,17 @@ grep -q 'python3-vcstool' dependencies/apt_ros.txt \
     || { log_err "python3-vcstool is no longer installed in the image, but docs/DEPENDENCIES.md says sync_deps runs there."; hostdep_errors=1; }
 grep -qE '^[^#]*vcstool' scripts/check_preflight.sh \
     && { log_err "check_preflight.sh requires vcstool on the host; it runs inside the container."; hostdep_errors=1; }
+# These three change what the container shares with the host, and they ship ON.
+# The comment above each must NAME it — a neighbour's paragraph is not an
+# explanation, which is how they sat undocumented next to PRIVILEGED's four
+# lines.
+for hostdep_knob in NETWORK_MODE IPC_MODE ULIMIT_NOFILE; do
+    awk -v k="^${hostdep_knob}=" -v n="${hostdep_knob}" '
+        /^#/ { block = block $0 "\n"; next }
+        $0 ~ k { exit index(block, n) ? 0 : 1 }
+        { block = "" }' .env.example \
+        || { log_err "${hostdep_knob} ships enabled but the comment above it in .env.example never names it."; hostdep_errors=1; }
+done
 [ "$hostdep_errors" -eq 0 ] \
     && log_ok "Every blocking host prerequisite is both enforced by preflight and documented ($(wc -w <<< "$hostdep_tools") tools)."
 
@@ -2143,6 +2193,34 @@ rmguard_sync "a target that resolves outside the workspace" refused \
 rmguard_sync "the same target, explicitly allowed" ran \
     SYNC_TARGET_DIR="src/thirdparty/../../../outside" DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET=1
 rmguard_sync "a target inside the workspace" ran SYNC_TARGET_DIR="src/thirdparty"
+# --force resets the repositories the .repos file MANAGES, and nothing else: it
+# used to `find` every .git under the target, so an external target (the
+# documented opt-in) reached any repository beneath it — and a vanished target
+# resolved to a parent, aiming `git reset --hard` + `clean -ffdx` at trees
+# nobody named. Two repositories, one listed, one not.
+rmguard_scope="$(cd "$(probe_dir)" && pwd -P)"
+mkdir -p "$rmguard_scope/ws/config" "$rmguard_scope/ws/dependencies" "$rmguard_scope/ws/src/thirdparty" "$rmguard_scope/ws/bin"
+for rmguard_lib in util_paths.sh util_logging.sh; do
+    ln -s "${ROOT_DIR}/config/${rmguard_lib}" "$rmguard_scope/ws/config/${rmguard_lib}"
+done
+printf 'repositories:\n  managed:\n    type: git\n    url: https://example.invalid/a.git\n    version: %s\n' \
+    "0123456789abcdef0123456789abcdef01234567" > "$rmguard_scope/ws/dependencies/dependencies.repos"
+printf '#!/bin/sh\nexit 0\n' > "$rmguard_scope/ws/bin/vcs"; chmod +x "$rmguard_scope/ws/bin/vcs"
+for rmguard_repo in managed stranger; do
+    mkdir -p "$rmguard_scope/ws/src/thirdparty/$rmguard_repo"
+    ( cd "$rmguard_scope/ws/src/thirdparty/$rmguard_repo" && git init -q . \
+      && printf 'clean\n' > f.txt && git add -A \
+      && git -c user.email=p@d -c user.name=p commit -qm init \
+      && printf 'DIRTY\n' > f.txt && : > untracked.txt ) >/dev/null 2>&1
+done
+( cd "$rmguard_scope/ws" && PATH="$rmguard_scope/ws/bin:$probe_min_path" WORKSPACE_PATH="$rmguard_scope/ws" \
+  bash "${ROOT_DIR}/scripts/setup_sync_deps.sh" --force ) >/dev/null 2>&1 || true
+[ "$(cat "$rmguard_scope/ws/src/thirdparty/managed/f.txt" 2>/dev/null)" = clean ] \
+    || { log_err "sync --force did not reset the repository .repos manages."; rmguard_errors=1; }
+{ [ "$(cat "$rmguard_scope/ws/src/thirdparty/stranger/f.txt" 2>/dev/null)" = DIRTY ] \
+  && [ -f "$rmguard_scope/ws/src/thirdparty/stranger/untracked.txt" ]; } \
+    || { log_err "sync --force reset a repository the .repos file never names; a git clean reached a tree nobody asked about."; rmguard_errors=1; }
+rm -rf "$rmguard_scope"
 # The workspace ITSELF passed the "inside the workspace" test ('<ws>/' matches
 # '<ws>/*'), and the .git walk then reset this repository. Spelled four ways,
 # and the external opt-in must not unlock it either.
@@ -2992,6 +3070,19 @@ done
 # as "delete": the two cleanup targets take opposite defaults on purpose.
 grep -qE '^is_false = ' Makefile \
     || { log_err "the Makefile has no explicit false list; 'clean' would delete the venv whenever KEEP_VENV is merely not truthy."; dead_knobs="${dead_knobs} KEEP_VENV"; }
+# Registration is per CHECKOUT: matching the bare filename made a second clone
+# report "already registered" while the entry pointed at the first tree, so
+# completion was silently dead there.
+comp_home="$(probe_dir)"; mkdir -p "$comp_home/ck1/config" "$comp_home/ck2/config" "$comp_home/home"
+cp config/devkit_make_completion.bash "$comp_home/ck1/config/"; cp config/devkit_make_completion.bash "$comp_home/ck2/config/"
+: > "$comp_home/home/.bashrc"
+( HOME="$comp_home/home" bash "$comp_home/ck1/config/devkit_make_completion.bash" --install ) >/dev/null 2>&1 || true
+comp_second="$( HOME="$comp_home/home" bash "$comp_home/ck2/config/devkit_make_completion.bash" --install 2>&1 || true )"
+grep -q 'Registered' <<< "$comp_second" \
+    || { log_err "a second checkout reports completion already registered while the entry points at the first tree (got: ${comp_second##*$'\n'})."; dead_knobs="${dead_knobs} completion-path"; }
+[ "$(grep -cF "$comp_home/ck2" "$comp_home/home/.bashrc")" = 1 ] \
+    || { log_err "registering from a second checkout did not add its own path to .bashrc."; dead_knobs="${dead_knobs} completion-entry"; }
+rm -rf "$comp_home"
 [ -z "$dead_knobs" ] \
     && log_ok "Tab completion advertises no dead knobs, offers every accepted value, and every script knob is declared." \
     || log_err "tab completion offers knobs nothing consumes:${dead_knobs}"
