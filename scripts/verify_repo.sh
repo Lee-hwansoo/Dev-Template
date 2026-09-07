@@ -879,11 +879,13 @@ cache_sub_env="$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "$cache_sub/.env" 2>/dev/n
 { [ -z "$cache_sub_name" ] || [ "$cache_sub_name" = "$cache_sub_env" ]; } \
     || { log_err "'make setup' wrote an IDE compose file for project '${cache_sub_name}' while .env says '${cache_sub_env}'; the two namespaces hold different containers and volumes."; cache_errors=1; }
 rm -rf "$cache_sub"
-# The mechanism, because the count alone depends on which inputs a given host
-# exports: the parent must hand its cache path to every sub-make.
-grep -qF 'export DEVKIT_DETECT_FILE := $(DETECTED_ENV_FILE)' Makefile \
-    && grep -qF 'DETECTED_ENV_FILE := $(or $(DEVKIT_DETECT_FILE),' Makefile \
-    || { log_err "the Makefile does not pass its detector cache path to sub-makes; each keys its own file from the exported inputs."; cache_errors=1; }
+# The mechanism, read from make's own expansion (the file COUNT depends on which
+# inputs a given host exports): an inherited DEVKIT_DETECT_FILE must win, and
+# the same path must be exported onward, or every sub-make probes for itself.
+cache_inherit="$(cd "$cache_probe" && DEVKIT_DETECT_FILE=.docker_cache/inherited.mk make -pn help 2>/dev/null \
+    | sed -n -e 's/^DETECTED_ENV_FILE := //p' -e 's/^DEVKIT_DETECT_FILE := //p' | sort -u | tr '\n' ' ')"
+[ "$cache_inherit" = ".docker_cache/inherited.mk " ] \
+    || { log_err "an inherited DEVKIT_DETECT_FILE does not become this make's cache and its export (got: '${cache_inherit}'); each sub-make keys its own file."; cache_errors=1; }
 # …and a probe that could not finish must not pin the IDE to its guess.
 grep -q 'DEVKIT_DETECT_INCOMPLETE' <<< "$(awk '/^ide-config:$/{i=1} i{print} i && /^$/{exit}' Makefile)" \
     || { log_err "ide-config writes the attach service even when host detection was incomplete; setup with docker down pinned VS Code to the wrong profile permanently."; cache_errors=1; }
@@ -891,8 +893,8 @@ grep -q 'DEVKIT_DETECT_INCOMPLETE' <<< "$(awk '/^ide-config:$/{i=1} i{print} i &
 # The .env include is written atomically and its failure is fatal: writing in
 # place, a concurrent make read it empty and acted on the wrong compose project;
 # an unwritable .docker_cache dropped every .env setting silently.
-grep -q 'mv "$$tmp" "$(ENV_MK)"' Makefile && grep -qF 'ifeq ($(ENV_MK_STATUS),fail)' Makefile \
-    || { log_err "Makefile writes $(ENV_MK) in place or ignores a failure; .env would be silently dropped."; cache_errors=1; }
+grep -q 'mv "$$tmp" "$(ENV_MK)"' Makefile \
+    || { log_err "Makefile writes $(ENV_MK) in place; a concurrent make reads it empty (the failure path is probed below)."; cache_errors=1; }
 cache_ro="$(cd "$(probe_dir scripts config docker dependencies)" && pwd -P)"
 cp Makefile "${ROOT_DIR}/.env.example" "$cache_ro/"; printf 'COMPOSE_PROJECT_NAME=realproj\n' > "$cache_ro/.env"
 mkdir -p "$cache_ro/.docker_cache"; chmod 555 "$cache_ro/.docker_cache"
@@ -912,8 +914,6 @@ chmod +x "$cache_status/bin/docker"
 cache_status_out="$( cd "$cache_status" && PATH="$cache_status/bin:$probe_min_path" make status 2>&1 || true )"
 grep -q 'Detected Host Wiring' <<< "$cache_status_out" \
     || { log_err "'make status' prints no wiring when the docker daemon is down; that is the run it exists for."; cache_errors=1; }
-grep -qE '^status:$' Makefile \
-    || { log_err "'status' depends on 'check' again, so a failing preflight aborts the report."; cache_errors=1; }
 rm -rf "$cache_status"
 
 # The template revision must come from THIS tree: an extracted copy inside
@@ -2784,7 +2784,6 @@ raw_echo="$(grep -rn --exclude=verify_repo.sh -F '\033' Makefile scripts config 
              | sed 's/#.*//' | grep -E 'echo ([^-]|-[^e])' || true)"
 [ -z "$raw_echo" ] \
     || { log_err "'echo' without -e cannot emit an escape (use printf): $(cut -d: -f1,2 <<< "$raw_echo" | tr '\n' ' ')"; color_errors=1; }
-grep -q 'MAKE_TERMOUT' Makefile || { log_err "Makefile must drop colours when stdout is not a terminal (MAKE_TERMOUT)."; color_errors=1; }
 # End-to-end, because the guard only covers recipes that USE the colour
 # variables: a recipe hardcoding \033 ignores it and pollutes `make help > log`.
 make_help_out="$(make help 2>/dev/null || true)"
@@ -3401,10 +3400,6 @@ adopt_recipe="$(awk '/^adopt:/{inside=1} inside && /^[a-z]/ && !/^adopt:/{inside
                 | grep -v $'^\t@#')"
 grep -q '\[project\]' <<< "$adopt_recipe" \
     || { log_err "'make adopt' does not scope its pyproject edit to the [project] table."; adopt_errors=1; }
-# The committed default follows every adopt, not only the first: matching the
-# literal 'myproject' left .env.example naming the previous adoption.
-grep -qF "s/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=\$(ADOPT_NAME)/' .env.example" Makefile \
-    || { log_err "'make adopt' rewrites .env.example only when it still says 'myproject'; a second adopt leaves the committed default behind."; adopt_errors=1; }
 # `make setup` rewrites .devcontainer/devcontainer.json to the host's service,
 # so the documented order (setup, then adopt) refused on every non-cpu host.
 grep -qF 'grep -v ' <<< "$(awk '/^adopt:/{i=1} i && /git status --porcelain/{print} /^$/{if(i)i=0}' Makefile)" \
@@ -3510,6 +3505,12 @@ for adopt_desc in 'Robot "A"' "It's a robot" 'back\slash' '한글 설명'; do
     adopt_desc_case "$adopt_desc" \
         || { log_err "'make adopt DESC=${adopt_desc}' does not survive a TOML round-trip; the identity file is corrupt."; adopt_errors=1; }
 done
+# The committed default follows EVERY adopt, not only the first: matching the
+# literal 'myproject' left .env.example naming the previous adoption.
+( cd "$adopt_probe" && make adopt NAME=robot2 DESC=second ) >/dev/null 2>&1 || true
+adopt_names="$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "$adopt_probe/.env" "$adopt_probe/.env.example" | sort -u | tr '\n' ' ')"
+[ "$adopt_names" = "robot2 " ] \
+    || { log_err "a second 'make adopt' leaves a stale COMPOSE_PROJECT_NAME behind (.env and .env.example say: ${adopt_names}); the committed default names the previous adoption."; adopt_errors=1; }
 # …and nothing unparsable may be published. Fed a pyproject that is already
 # broken, adopt must refuse and leave the file it was given untouched.
 # Broken where adopt does NOT rewrite, so the damage survives into the output.
