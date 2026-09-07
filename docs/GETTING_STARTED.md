@@ -45,7 +45,7 @@ make adopt NAME=my-robot DESC='One line about it'
 | 항목 | 결정 |
 | :--- | :--- |
 | `ENV` | `ros` 로 두면 ROS 스택, `dev` 는 ROS 없는 C++/Python 전용. 여기에 적어 두면 `make` 마다 `ENV=dev` 를 붙이지 않습니다 |
-| `ROS_DISTRO` | 배포판 하나 — ROS 2 는 `humble`·`iron`·`jazzy`·`kilted`·`rolling`, ROS 1 은 `noetic`(레거시 티어: 지원·검증되나 새 기능 없음). Ubuntu 릴리스와 Python 이 따라옵니다. ROS 를 쓰지 않으면 그대로 두고 `ENV=dev` 만 사용 |
+| `ROS_DISTRO` | 배포판 하나 — 현재 지원 중인 ROS 2 는 `humble`(2027-05)·`jazzy`(2029-05)·`kilted`(2026-11)·`rolling`. `iron`(2024-11 EOL)·`foxy`(2023-05 EOL)·ROS 1 `noetic`(2025-05 EOL)은 **레거시 티어**입니다 — 빌드되고 계약도 검증하지만 상류 보안 업데이트가 없습니다. Ubuntu 릴리스와 Python 이 따라옵니다. ROS 를 쓰지 않으면 그대로 두고 `ENV=dev` 만 사용 |
 | `UV_EXTRA` | `pyproject.toml` 에 extras 를 선언한 뒤 팀이 기본으로 쓸 것(예: `gpu`). 선언 전에는 비워 둡니다 |
 | `ROS_DOMAIN_ID` | 같은 네트워크의 다른 팀과 겹치지 않는 값 |
 | `DEVKIT_SLURM_*`, `SLURM_DATA_ROOT` … | 클러스터를 쓴다면 사이트 값 ([SLURM.md](SLURM.md)) |

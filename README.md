@@ -222,7 +222,7 @@ mksync
 | MPI 통신 | ❌ **미지원** — `srun` 이 노드에 태스크를 띄우는 것까지는 동작하나 `--mpi`/PMI 배선이 없어 태스크 간 통신은 애플리케이션 몫 | — |
 
 > ROS 배포판은 Ubuntu 릴리스와 Python 인터프리터를 함께 결정합니다
-> (20.04/noetic·foxy → 3.8, 22.04/humble·iron → 3.10, 24.04/jazzy·kilted·rolling → 3.12).
+> (20.04/noetic·foxy → 3.8, 22.04/humble·iron → 3.10, 24.04/jazzy·kilted·rolling → 3.12). `noetic`·`foxy`·`iron` 은 상류 EOL 이후의 레거시 티어입니다.
 > `ROS_DISTRO` 하나만 바꾸면 나머지가 따라옵니다 — apt 가 `rclpy`/`rospy` 를 시스템
 > 인터프리터에 넣기 때문에 이 짝이 어긋나면 venv 가 ROS 를 import 하지 못합니다.
 
