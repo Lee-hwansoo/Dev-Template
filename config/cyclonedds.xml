@@ -1,20 +1,44 @@
 <?xml version="1.0" encoding="UTF-8" ?>
+<!--
+    config/cyclonedds.xml — CYCLONEDDS_URI points here when RMW_IMPLEMENTATION
+    is rmw_cyclonedds_cpp (config/init_ros_env.sh). Every setting below is
+    one that changes CycloneDDS's behaviour; the file used to set
+    AllowMulticast to its own default and describe the opposite.
+-->
 <CycloneDDS xmlns="https://cdds.io/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <Domain id="any">
         <General>
             <!--
-                By default, bridge networks drop DDS UDP Multicast packets.
-                This setting allows the discovery to proceed without explicitly
-                crashing, while the fallback node pairs via the Unicast Peers configuration below.
+                spdp: multicast for participant discovery only, unicast for
+                everything else. Where multicast works (host / mirrored
+                networking, a LAN) discovery stays automatic; where it does
+                not (a Docker bridge, most VPNs) the Peers below still find
+                local participants, and data never depended on multicast.
             -->
-            <AllowMulticast>default</AllowMulticast>
+            <AllowMulticast>spdp</AllowMulticast>
+            <!--
+                Interface pinning, OPT-IN. With several interfaces of equal
+                quality (WSL2: eth0/eth1/docker0) CycloneDDS picks one
+                arbitrarily, and a robot on the LAN is then never discovered —
+                silently. Set the LAN interface's address when nodes must reach
+                other machines. Syntax is version-bound: 0.7 (Foxy) accepts only
+                NetworkInterfaceAddress; 0.8+ (Humble and newer) also accepts
+                <Interfaces><NetworkInterface name="eth1"/></Interfaces>, which
+                0.7 rejects — this shared file keeps the form both understand.
+
+                <NetworkInterfaceAddress>192.168.0.108</NetworkInterfaceAddress>
+            -->
         </General>
         <Discovery>
             <Peers>
                 <!--
-                    Unicast Discovery Proxy: Automatically pair local nodes (Host/Container mapping)
-                    that are cut off from IGMP Multicast. Add more external IP addresses here
-                    for multi-robot operation over VPNs or isolated subnets.
+                    Unicast discovery peers, tried alongside multicast. localhost
+                    pairs participants that share the loopback: processes in one
+                    container, and host and container under network_mode host or
+                    WSL2 mirrored networking. On a default bridge network the
+                    container's loopback is its own — add the host's or the other
+                    machine's address here for that case, or for robots over a
+                    VPN or an isolated subnet.
                 -->
                 <Peer address="localhost"/>
             </Peers>

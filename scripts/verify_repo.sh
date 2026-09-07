@@ -527,6 +527,32 @@ rm -rf "$devgrp_probe"
 [ "$devgrp_errors" -eq 0 ] && log_ok "Device groups: the container user joins the group of every exposed GPU node before privileges drop."
 
 # =============================================================================
+# [dds-config] config/cyclonedds.xml must change something and say what it
+#      changes: AllowMulticast=default was a no-op under a comment describing
+#      the opposite, and nothing told a multi-interface host how to pin the
+#      LAN interface — CycloneDDS picks one arbitrarily and discovery then
+#      fails silently.
+# =============================================================================
+dds_errors=0
+dds_multicast="$(python3 - <<'PYDDS' 2>/dev/null || echo 'parse failed'
+import xml.etree.ElementTree as ET
+ns = {'c': 'https://cdds.io/config'}
+root = ET.parse('config/cyclonedds.xml').getroot()
+el = root.find('.//c:General/c:AllowMulticast', ns)
+print(el.text.strip() if el is not None and el.text else 'missing')
+PYDDS
+)"
+case "$dds_multicast" in
+    spdp|false|true) ;;
+    *) log_err "cyclonedds.xml AllowMulticast is '${dds_multicast}': 'default' changes nothing, and the file must parse."; dds_errors=1 ;;
+esac
+grep -q '<NetworkInterfaceAddress>' config/cyclonedds.xml && grep -q 'NetworkInterface name=' config/cyclonedds.xml \
+    || { log_err "cyclonedds.xml offers no interface-pinning stanza (NetworkInterfaceAddress for 0.7/Foxy, the 0.8+ form noted)."; dds_errors=1; }
+grep -qiE 'bridge' config/cyclonedds.xml && grep -qiE 'host|mirrored' config/cyclonedds.xml \
+    || { log_err "cyclonedds.xml's Peers comment does not say which network modes share the loopback it relies on."; dds_errors=1; }
+[ "$dds_errors" -eq 0 ] && log_ok "DDS config: AllowMulticast=${dds_multicast} takes effect, interface pinning is offered, the Peers comment names its network modes."
+
+# =============================================================================
 # [detector-cache] The cache write must be atomic and a failed probe fatal: a
 #     partial cache is reused forever and every mount degrades silently.
 # =============================================================================
@@ -1512,7 +1538,7 @@ chmod +x "$rmguard_probe/bin/rm"
 rmguard_case() {
     local label="$1" want="$2"; shift 2
     : > "$rmguard_probe/rm.log"
-    ( cd "${rmguard_ws:-$rmguard_probe/ws}" && PATH="$rmguard_probe/bin:$PATH" make clean-cache "$@" ) >/dev/null 2>&1 || true
+    local out; out="$( cd "${rmguard_ws:-$rmguard_probe/ws}" && PATH="$rmguard_probe/bin:$PATH" make clean-cache "$@" 2>&1 || true )"
     # The recipe removes other things too, so only a call naming the guarded
     # path counts as "the guard let it through". ${*##…} strips per word and
     # would leave FORCE=1 glued to the front. And "refused" must be the GUARD's
@@ -1546,6 +1572,14 @@ rmguard_ws="$rmguard_probe/cachedir/ws" rmguard_case "a parent directory of the 
     FORCE=1 "DOCKER_DEV_CACHE_DIR=$rmguard_probe/cachedir"
 rmguard_ws="$rmguard_probe/cachedir/ws" rmguard_case "the root directory" refused FORCE=1 "DOCKER_DEV_CACHE_DIR=/"
 rmguard_case "a cache path containing a space" deleted "DOCKER_DEV_CACHE_DIR=$rmguard_probe/real cache"
+# The suite itself must not carry make's exports into these probes: the scrub
+# at the top, run against a leaked environment, and the live environment now.
+rmguard_scrub="$(MAKELEVEL=1 COMPOSE_PROJECT_NAME=leaked HOST_WORKSPACE_PATH=/leaked IMAGE_TAG=leaked LANG="${LANG:-C.UTF-8}" \
+    bash -c "$(sed -n '/^if \[ -n "\${MAKELEVEL:-}" \]; then$/,/^fi$/p' scripts/verify_repo.sh); echo \"\${COMPOSE_PROJECT_NAME:-clean} \${HOST_WORKSPACE_PATH:-clean} \${IMAGE_TAG:-clean} \${LANG:-lost}\"" 2>/dev/null)"
+[ "$rmguard_scrub" = "clean clean clean ${LANG:-C.UTF-8}" ] \
+    || { log_err "the make-export scrub leaves '${rmguard_scrub}' (expected 'clean clean clean <LANG>'): 'make verify' and 'bash scripts/verify_repo.sh' would disagree."; rmguard_errors=1; }
+[ -z "${COMPOSE_PROJECT_NAME:-}${HOST_WORKSPACE_PATH:-}${MAKELEVEL:-}" ] \
+    || { log_err "this run inherits make's exports (COMPOSE_PROJECT_NAME/HOST_WORKSPACE_PATH/MAKELEVEL); the probes above are not hermetic."; rmguard_errors=1; }
 
 # …and the sync fence must refuse BEFORE anything writes into the directory it
 # is protecting: it used to run after `vcs import` had already populated it.
@@ -1572,14 +1606,6 @@ rmguard_sync() {   # rmguard_sync <label> <expect refused|ran> [env…]
         || { log_err "sync --force on ${label}: ${got}, expected ${want} (a refusal must precede every command)."; rmguard_errors=1; }
 }
 rmguard_sync "a target that resolves outside the workspace" refused \
-# The suite itself must not carry make's exports into these probes: the scrub
-# at the top, run against a leaked environment, and the live environment now.
-rmguard_scrub="$(MAKELEVEL=1 COMPOSE_PROJECT_NAME=leaked HOST_WORKSPACE_PATH=/leaked IMAGE_TAG=leaked LANG="${LANG:-C.UTF-8}" \
-    bash -c "$(sed -n '/^if \[ -n "\${MAKELEVEL:-}" \]; then$/,/^fi$/p' scripts/verify_repo.sh); echo \"\${COMPOSE_PROJECT_NAME:-clean} \${HOST_WORKSPACE_PATH:-clean} \${IMAGE_TAG:-clean} \${LANG:-lost}\"" 2>/dev/null)"
-[ "$rmguard_scrub" = "clean clean clean ${LANG:-C.UTF-8}" ] \
-    || { log_err "the make-export scrub leaves '${rmguard_scrub}' (expected 'clean clean clean <LANG>'): 'make verify' and 'bash scripts/verify_repo.sh' would disagree."; rmguard_errors=1; }
-[ -z "${COMPOSE_PROJECT_NAME:-}${HOST_WORKSPACE_PATH:-}${MAKELEVEL:-}" ] \
-    || { log_err "this run inherits make's exports (COMPOSE_PROJECT_NAME/HOST_WORKSPACE_PATH/MAKELEVEL); the probes above are not hermetic."; rmguard_errors=1; }
     SYNC_TARGET_DIR="src/thirdparty/../../../outside"
 rmguard_sync "the same target, explicitly allowed" ran \
     SYNC_TARGET_DIR="src/thirdparty/../../../outside" DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET=1
