@@ -543,7 +543,7 @@ term:
 	@$(REQUIRE_CONTAINER); \
 	$(EXEC_USER_FLAG); \
 	TERM_BIN="$${TERMINAL:-terminator}"; \
-	if ! docker exec $$CONTAINER command -v "$$TERM_BIN" >/dev/null 2>&1; then \
+	if ! docker exec $$CONTAINER sh -c 'command -v "$$1"' _ "$$TERM_BIN" >/dev/null 2>&1; then \
 		echo -e "  $(ERROR) '$$TERM_BIN' is not installed in this image." >&2; \
 		echo -e "  $(INFO) Uncomment 'terminator # gui' in dependencies/apt.txt and run 'make build' (or set TERMINAL= in .env)."; \
 		exit 1; \

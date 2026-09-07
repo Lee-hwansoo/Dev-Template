@@ -45,6 +45,13 @@ log_info(){ echo -e "  \033[0;34m[INFO]\033[0m $*"; }
 # broke every such probe on a host that keeps bash in /usr/local/bin.
 probe_min_path="$(dirname "$(command -v bash)"):$(dirname "$(command -v sed)"):/usr/bin:/bin"
 
+# docker_live — a usable docker daemon on this host. The few probes that need a
+# real container run only here (the macOS runner has none) and say so.
+docker_live() {
+    [ -n "${DOCKER_LIVE:-}" ] || { DOCKER_LIVE=no; command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && DOCKER_LIVE=yes; }
+    [ "$DOCKER_LIVE" = yes ]
+}
+
 probe_dir() {
     local dir name
     dir="$(mktemp -d "${TMPDIR:-/tmp}/devkit.XXXXXX")"
@@ -2534,6 +2541,22 @@ grep -qE '^[^#]*/root/\.local/share/uv' docker/Dockerfile \
 # Ownership is taken in the layer that INSTALLS the interpreter. A chown -R in
 # a later stage rewrites the whole tree into a second ~90 MB layer (measured
 # with docker history). Continuations joined, so one RUN is one line.
+# The dev snapshot is `COPY .`: what the kit itself generates beside the tree
+# (catkin's devel/, the bake's own *.oci.tar) must not ride into the next
+# snapshot. Statically, and against a real build context where docker runs.
+for ctx_pat in 'devel/' '*.oci.tar' '!dependencies/*.tar.gz'; do
+    grep -qxF "$ctx_pat" .dockerignore \
+        || { log_err ".dockerignore lacks '${ctx_pat}': a dev snapshot would carry (or drop) it."; sif_errors=1; }
+done
+if docker_live; then
+    ctx_probe="$(probe_dir)"; mkdir -p "$ctx_probe/devel" "$ctx_probe/dependencies" "$ctx_probe/src"
+    cp .dockerignore "$ctx_probe/"; : > "$ctx_probe/devel/setup.bash"; : > "$ctx_probe/old.oci.tar"; : > "$ctx_probe/dependencies/dep.tar.gz"; : > "$ctx_probe/src/main.py"
+    printf 'FROM busybox\nCOPY . /ctx\nCMD find /ctx -type f\n' > "$ctx_probe/Dockerfile"
+    ctx_files="$( (docker build -q -t devkit-verify-ctx "$ctx_probe" >/dev/null 2>&1 && docker run --rm devkit-verify-ctx 2>/dev/null; docker rmi -f devkit-verify-ctx >/dev/null 2>&1) | grep -vE '^/ctx/(Dockerfile|\.dockerignore)$' | sort | tr '\n' ' ')"
+    [ "$ctx_files" = "/ctx/dependencies/dep.tar.gz /ctx/src/main.py " ] \
+        || { log_err "a real build context with this .dockerignore holds '${ctx_files}' (expected only dependencies/dep.tar.gz and src/main.py)."; sif_errors=1; }
+    rm -rf "$ctx_probe"
+fi
 # Comment LINES dropped rather than '^[^#]*': the dev-core RUN carries a '#'
 # inside a printf, which hid exactly the chown this looks for.
 uv_chown_stray="$(sed -e :a -e '/\\$/N; s/\\\n//; ta' docker/Dockerfile | grep -v '^[[:space:]]*#' \
@@ -2752,8 +2775,22 @@ grep -qE '^# terminator # gui' dependencies/apt.txt \
     || { log_err "dependencies/apt.txt no longer offers the commented 'terminator # gui' line; there is no way left to opt in."; sec_errors=1; }
 grep -qE '^[^#]*curl [^#]*github\.com' docker/Dockerfile \
     && { log_err "docker/Dockerfile downloads from GitHub into the image (the D2Coding font once did); fonts are opt-in via dependencies/."; sec_errors=1; }
-make -n term 2>/dev/null | grep -q 'command -v "$TERM_BIN"' && make -n term 2>/dev/null | grep -q 'dependencies/apt.txt' \
-    || { log_err "'make term' does not probe for the terminal binary and point at dependencies/apt.txt; with terminator opt-in it would silently launch nothing."; sec_errors=1; }
+# The probe must run INSIDE a shell: `command` is a builtin, and `docker exec
+# <c> command -v x` exec'd it as a program — "not found" (127) in every image,
+# so `make term` refused even with terminator installed. The exact probe the
+# recipe uses is lifted from the dry run and executed in a real minimal
+# container where one is available.
+term_probe="$(make -n term 2>/dev/null | sed -n "s/.*docker exec \$CONTAINER \(sh -c '[^']*' _\) \"\$TERM_BIN\".*/\1/p" | head -n 1)"
+[ -n "$term_probe" ] && make -n term 2>/dev/null | grep -q 'dependencies/apt.txt' \
+    || { log_err "'make term' does not probe for the terminal binary through 'sh -c' and point at dependencies/apt.txt (found: '${term_probe:-no sh -c probe}')."; sec_errors=1; }
+term_live=""
+if [ -n "$term_probe" ] && docker_live; then
+    term_live=" (run in ubuntu:22.04)"
+    eval "docker run --rm ubuntu:22.04 $term_probe bash" >/dev/null 2>&1 \
+        || { log_err "the 'make term' binary probe reports an installed program (bash) as missing in a real container."; sec_errors=1; }
+    eval "docker run --rm ubuntu:22.04 $term_probe devkit-no-such-binary" >/dev/null 2>&1 \
+        && { log_err "the 'make term' binary probe reports a missing program as installed in a real container."; sec_errors=1; }
+fi
 grep -qE '(^|[[:space:]])x11-utils([[:space:]\\]|$)' docker/Dockerfile \
     || { log_err "x11-utils dropped from the image; 'make term' has no way left to probe the display."; sec_errors=1; }
 grep -Eq '^[^#]*for E in.*"local:' Makefile \
