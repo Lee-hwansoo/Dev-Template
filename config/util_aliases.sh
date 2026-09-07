@@ -302,9 +302,8 @@ uvs() {
 # Project type: ROS | CPP | PYTHON.
 # `-print -quit`: bare -quit suppresses find's implicit -print and yields "".
 # __cmake_entry — the directory whose CMakeLists.txt a build would configure,
-# or nothing. ONE answer for the detector and for mbuild: they used to search
-# different places, so a repository-root project was reported PYTHON (and never
-# built) while a thirdparty-only tree was reported CPP (and then failed).
+# or nothing. The ONE answer for the detector, mbuild and the prod builder's
+# COPY set; root first, then src/, never thirdparty.
 __cmake_entry() {
     local src="${WS_SRC:-${WS_ROOT}/src}"
     if   [ -f "${WS_ROOT}/CMakeLists.txt" ]; then printf '%s' "${WS_ROOT}"
@@ -381,6 +380,7 @@ mksync() {
     uvs "${uvs_args[@]}" && \
     bash "${WS_SCRIPTS}/setup_sync_deps.sh" --rosdep || return 1
 
+    # 2. Build with whatever the project layout calls for
     mkbuild
 }
 
@@ -389,20 +389,20 @@ mksync() {
 #   sourced), CMake → mbuild, pure Python → nothing. The one dispatcher mksync
 #   and the IDE's pre-launch task share.
 mkbuild() {
-    # 2. Build with whatever the project layout calls for
     local project_type
     project_type=$(__detect_project_type)
     case "$project_type" in
         "ROS")
             log_info "ROS workspace detected — building..."
-            cbuild && __smart_source ;;
+            cbuild "$@" && __smart_source ;;
         "CPP")
             log_info "Pure C++ project detected — running mbuild..."
-            mbuild ;;
+            mbuild "$@" ;;
         *)
             log_ok "Pure Python project — no build step needed." ;;
     esac
 }
+
 # mdebugenv
 #   Write the SOURCED environment (ROS + overlay + venv + GPU) to
 #   .vscode/.debug.env for the VS Code debuggers' envFile. A debugger's parent
@@ -424,7 +424,6 @@ mdebugenv() {
     n="$(grep -c . "$out" 2>/dev/null || echo 0)"
     log_ok "Debugger environment written: ${out#"$WS_ROOT"/} (${n} variables)"
 }
-
 
 # --- Quality loop (test / lint) -----------------------------------------------
 # mtest [<runner args>…]
@@ -637,7 +636,6 @@ mbuild() {
           -DCMAKE_BUILD_TYPE="${DEVKIT_BUILD_TYPE_ARG}" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
           -DCMAKE_INSTALL_PREFIX="${WS_ROOT}/install" "${DEVKIT_CMAKE_EXTRA[@]}" "${DEVKIT_BUILD_PASSTHRU[@]}" \
         && cmake --build "${WS_ROOT}/build" -j"$(nproc 2>/dev/null || echo 4)" || return 1
-    __refresh_links
 
     if [ "${DEVKIT_BUILD_TYPE:-dev}" = "prod" ]; then
         cmake --install "${WS_ROOT}/build" || return 1
