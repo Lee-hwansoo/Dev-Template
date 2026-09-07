@@ -106,6 +106,10 @@ probe_dir() {
     printf '%s' "$dir"
 }
 
+# The libraries that are SOURCED only: they define functions and never look at
+# argv, so the CLI convention and the bash 3.2 run both skip them. One list.
+sourced_only='util_logging.sh util_gpu_detect.sh util_sif_common.sh verify_repo.sh'
+
 # probe_farm <dir> [extra tool…] — a PATH directory holding only the tools named
 # (plus the shell basics every script needs), so a probe measures the code and
 # not what the host happens to have installed. Three probes hand-rolled this
@@ -284,6 +288,8 @@ rm -rf "$wf_probe"
 # job that builds an image passes the contracts gate first (the reclaim step
 # rides inside it, so no job may spell either out by hand).
 wf_bad=()
+wf_gates=0
+wf_jobs=0
 for wf in .github/workflows/*.yml; do
     # The whole block, not just the presence of one line: `packages: write`
     # added underneath satisfied a two-line check while widening the token.
@@ -292,7 +298,33 @@ for wf in .github/workflows/*.yml; do
     grep -qE 'actions/checkout@v[0-4]([^0-9]|$)' "$wf" && wf_bad+=("${wf##*/}: actions/checkout older than v5")
     grep -qE '^[[:space:]]+run: (sudo )?rm -rf /usr/share/dotnet|^[[:space:]]+run: make verify$' "$wf" && [ "${wf##*/}" != verify.yml ] \
         && wf_bad+=("${wf##*/}: hand-written gate step; use ./.github/actions/gate")
+    # The keys directly under `on:`, read where they are — the awk stops at the
+    # next top-level key, so `push:` inside a job cannot pass for a trigger.
+    # No YAML parser: PyYAML is absent from the macOS runner's interpreter, and
+    # a parse that silently returns nothing read as "no triggers at all".
+    wf_on="$(awk '/^on:/{o=1; next} o && /^[^ ]/{exit} o && /^  [a-z_]+:/{gsub(/[[:space:]:]/,""); print}' "$wf" | sort | tr '\n' ' ')"
+    case "${wf##*/}" in
+        # The full-image tier costs 15-45 min a job and can say nothing a push
+        # has not been told by the cheap tiers, so it must never run on one:
+        # skipped jobs also left five rows (with unexpanded matrix names) on
+        # every commit's check list.
+        images-deep.yml)
+            [ "$wf_on" = "schedule workflow_dispatch " ] \
+                || wf_bad+=("images-deep.yml triggers on '${wf_on:-nothing}'; the full-image tier is cron and request only") ;;
+        *)  case "$wf_on" in
+                *pull_request*) ;;
+                *) wf_bad+=("${wf##*/} does not run on a pull request (triggers: '${wf_on:-nothing}')") ;;
+            esac ;;
+    esac
+    # Every job that BUILDS an image passes the gate first. Counted in this one
+    # pass: project.yml is the fork's file and may be replaced wholesale.
+    case "${wf##*/}" in
+        images.yml|images-deep.yml)
+            wf_jobs=$((wf_jobs + $(awk '/^jobs:/{j=1; next} j && /^  [a-z0-9-]+:$/{n++} END{print n+0}' "$wf")))
+            wf_gates=$((wf_gates + $(grep -c 'uses: ./.github/actions/gate' "$wf" || true))) ;;
+    esac
 done
+[ "$wf_gates" -ge 5 ] || wf_bad+=("only ${wf_gates} of the ${wf_jobs} image jobs use ./.github/actions/gate")
 # A fork that did what GETTING_STARTED says — adopted a name, removed the
 # starters, replaced README — must still pass: verify.yml runs the suite on
 # such a copy (the suite cannot run itself here without recursing).
@@ -307,18 +339,6 @@ for wf_fork in 'make adopt NAME=' 'rm -rf src/example docs' 'terminator # gui' '
     grep -qF "$wf_fork" .github/workflows/verify.yml \
         || wf_bad+=("verify.yml's fork probe does not exercise '${wf_fork}'; a contract on a fork-owned file would go unnoticed")
 done
-# Every job that BUILDS an image runs the gate (docker/compose/buildx versions,
-# and the disk reclaim the full builds need). Counted over both image tiers:
-# project.yml is the fork's file and may be replaced wholesale.
-wf_gates="$(grep -hc 'uses: ./.github/actions/gate' .github/workflows/images.yml .github/workflows/images-deep.yml 2>/dev/null | awk '{s+=$1} END{print s+0}')"
-wf_builders="$(grep -hcE '^  [a-z0-9-]+:$' .github/workflows/images.yml .github/workflows/images-deep.yml 2>/dev/null | awk '{s+=$1} END{print s+0}')"
-[ "${wf_gates:-0}" -ge 5 ] \
-    || wf_bad+=("only ${wf_gates} of the ${wf_builders} image jobs use ./.github/actions/gate")
-# The full-image jobs must NOT run on a push or a pull request: they cost
-# 15-45 minutes each and only added "Skipped" rows to every commit.
-wf_deep_on="$(python3 -c "import yaml,sys; d=yaml.safe_load(open('.github/workflows/images-deep.yml')); print(' '.join(sorted((d.get('on') or d.get(True)).keys())))" 2>/dev/null || true)"
-[ "$wf_deep_on" = "schedule workflow_dispatch" ] \
-    || wf_bad+=("images-deep.yml triggers on '${wf_deep_on}'; the full-image tier is cron and request only")
 [ ${#wf_bad[@]} -eq 0 ] && log_ok "Workflows: read-only token, checkout@v5+, image jobs gated by ./.github/actions/gate." \
     || { for b in "${wf_bad[@]}"; do log_err "$b"; done; }
 
@@ -4019,9 +4039,7 @@ cli_count=0
 # libraries (they define functions and never look at argv) and this script,
 # which is checked below with a recursion guard.
 for cli_path in scripts/*.sh; do
-    case "$cli_path" in
-        scripts/util_logging.sh|scripts/util_gpu_detect.sh|scripts/util_sif_common.sh|scripts/verify_repo.sh) continue ;;
-    esac
+    case " $sourced_only " in *" ${cli_path##*/} "*) continue ;; esac
     cli_count=$((cli_count + 1))
     bash "$cli_path" --help >/dev/null 2>&1 \
         || { log_err "${cli_path} does not answer --help with exit 0."; cli_errors=1; }
@@ -4062,10 +4080,10 @@ gpu_typo="$(bash --norc -c "WORKSPACE_PATH='${ROOT_DIR}' source config/util_alia
 #      and the macOS runner answers with whatever bash is first on its PATH.
 # =============================================================================
 if docker_live; then
-    legacy_out="$(docker run --rm -v "${ROOT_DIR}:/w:ro" -w /w bash:3.2 bash -c '
+    legacy_out="$(docker run --rm -v "${ROOT_DIR}:/w:ro" -w /w -e SOURCED_ONLY="$sourced_only" bash:3.2 bash -c '
         [ "${BASH_VERSINFO[0]}" = 3 ] || { echo "WRONG-BASH ${BASH_VERSION}"; exit 1; }
         for s in scripts/*.sh; do
-            case "$s" in scripts/util_logging.sh|scripts/util_gpu_detect.sh|scripts/util_sif_common.sh|scripts/verify_repo.sh) continue ;; esac
+            case " $SOURCED_ONLY " in *" ${s##*/} "*) continue ;; esac
             bash "$s" --help >/dev/null 2>&1 || echo "HELP-FAILED $s"
         done
         source config/util_paths.sh >/dev/null 2>&1 || { echo "SOURCE-FAILED util_paths"; exit 1; }
