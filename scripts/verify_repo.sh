@@ -331,6 +331,16 @@ done
 #     entrypoint, so setup_gpu.sh must leave its env in GPU_ENV_FILE.
 # =============================================================================
 gpu_env_probe="$(probe_dir)"
+# …and a NEW shell reads the image default (/etc/profile.d copy of the first
+# mode) and then the user's file: a switch cpu → intel left the cpu-only
+# variables (QT_XCB_FORCE_SOFTWARE_OPENGL, llvmpipe) standing, so the file must
+# reset every owned variable before it exports the new mode's.
+gpu_switch_ok=0
+if ( GPU_ENV_FILE="${gpu_env_probe}/default.sh" HOME="$gpu_env_probe" bash -c 'source scripts/setup_gpu.sh cpu' >/dev/null 2>&1 ) \
+   && ( GPU_ENV_FILE="${gpu_env_probe}/user.sh" HOME="$gpu_env_probe" bash -c 'source scripts/setup_gpu.sh intel' >/dev/null 2>&1 ); then
+    gpu_after="$(bash -c "source '${gpu_env_probe}/default.sh'; source '${gpu_env_probe}/user.sh'; echo \"\${QT_XCB_FORCE_SOFTWARE_OPENGL:-unset} \${LIBGL_ALWAYS_SOFTWARE:-unset} \${DEVKIT_GPU_MODE_ACTIVE:-unset}\"" 2>/dev/null)"
+    [ "$gpu_after" = "unset 0 intel" ] && gpu_switch_ok=1
+fi
 if ( GPU_ENV_FILE="${gpu_env_probe}/gpu_env.sh" HOME="$gpu_env_probe" \
      bash -c 'source scripts/setup_gpu.sh cpu' >/dev/null 2>&1 ) \
    && grep -q "LIBGL_ALWAYS_SOFTWARE" "${gpu_env_probe}/gpu_env.sh" 2>/dev/null && [ "$gpu_switch_ok" -eq 1 ]; then
@@ -347,16 +357,6 @@ fi
 gpu_ld_probe="$(probe_dir)"
 ( LD_LIBRARY_PATH=/probe/boot GPU_ENV_FILE="${gpu_ld_probe}/gpu_env.sh" HOME="$gpu_ld_probe" \
   bash -c 'source scripts/setup_gpu.sh igpu' ) >/dev/null 2>&1
-# …and a NEW shell reads the image default (/etc/profile.d copy of the first
-# mode) and then the user's file: a switch cpu → intel left the cpu-only
-# variables (QT_XCB_FORCE_SOFTWARE_OPENGL, llvmpipe) standing, so the file must
-# reset every owned variable before it exports the new mode's.
-gpu_switch_ok=0
-if ( GPU_ENV_FILE="${gpu_env_probe}/default.sh" HOME="$gpu_env_probe" bash -c 'source scripts/setup_gpu.sh cpu' >/dev/null 2>&1 ) \
-   && ( GPU_ENV_FILE="${gpu_env_probe}/user.sh" HOME="$gpu_env_probe" bash -c 'source scripts/setup_gpu.sh intel' >/dev/null 2>&1 ); then
-    gpu_after="$(bash -c "source '${gpu_env_probe}/default.sh'; source '${gpu_env_probe}/user.sh'; echo \"\${QT_XCB_FORCE_SOFTWARE_OPENGL:-unset} \${LIBGL_ALWAYS_SOFTWARE:-unset} \${DEVKIT_GPU_MODE_ACTIVE:-unset}\"" 2>/dev/null)"
-    [ "$gpu_after" = "unset 0 intel" ] && gpu_switch_ok=1
-fi
 if grep -qE '^export LD_LIBRARY_PATH=' "${gpu_ld_probe}/gpu_env.sh" 2>/dev/null; then
     log_err "setup_gpu.sh persists LD_LIBRARY_PATH as an assignment; re-sourcing it drops the ROS library path."
 elif [ -s "${gpu_ld_probe}/gpu_env.sh" ]; then
@@ -2541,6 +2541,22 @@ grep -qxF 'FULL_CUDA=true' <<< "$(bake_argv prod dev FULL_CUDA=false PROD_FULL_C
     || { log_err "PROD_FULL_CUDA=1 does not reach the bake as FULL_CUDA=true."; sif_errors=1; }
 grep -qxF 'FULL_CUDA=false' <<< "$(bake_argv prod dev FULL_CUDA=true)" \
     || { log_err "with PROD_FULL_CUDA unset a bake inherits FULL_CUDA=true instead of the documented default false."; sif_errors=1; }
+# The dev snapshot is `COPY .`: what the kit itself generates beside the tree
+# (catkin's devel/, the bake's own *.oci.tar) must not ride into the next
+# snapshot. Statically, and against a real build context where docker runs.
+for ctx_pat in 'devel/' '*.oci.tar' '!dependencies/*.tar.gz'; do
+    grep -qxF "$ctx_pat" .dockerignore \
+        || { log_err ".dockerignore lacks '${ctx_pat}': a dev snapshot would carry (or drop) it."; sif_errors=1; }
+done
+if docker_live; then
+    ctx_probe="$(probe_dir)"; mkdir -p "$ctx_probe/devel" "$ctx_probe/dependencies" "$ctx_probe/src"
+    cp .dockerignore "$ctx_probe/"; : > "$ctx_probe/devel/setup.bash"; : > "$ctx_probe/old.oci.tar"; : > "$ctx_probe/dependencies/dep.tar.gz"; : > "$ctx_probe/src/main.py"
+    printf 'FROM busybox\nCOPY . /ctx\nCMD find /ctx -type f\n' > "$ctx_probe/Dockerfile"
+    ctx_files="$( (docker build -q -t devkit-verify-ctx "$ctx_probe" >/dev/null 2>&1 && docker run --rm devkit-verify-ctx 2>/dev/null; docker rmi -f devkit-verify-ctx >/dev/null 2>&1) | grep -vE '^/ctx/(Dockerfile|\.dockerignore)$' | sort | tr '\n' ' ')"
+    [ "$ctx_files" = "/ctx/dependencies/dep.tar.gz /ctx/src/main.py " ] \
+        || { log_err "a real build context with this .dockerignore holds '${ctx_files}' (expected only dependencies/dep.tar.gz and src/main.py)."; sif_errors=1; }
+    rm -rf "$ctx_probe"
+fi
 grep -qxF 'PROD_ENV=dev' <<< "$(bake_argv prod dev)" \
     || { log_err "a prod bake for ENV=dev does not pass PROD_ENV=dev; the ROS builder base would be used."; sif_errors=1; }
 # …and every ENV the bake accepts needs its builder base, or `FROM
@@ -2567,22 +2583,6 @@ grep -qE '^[^#]*/root/\.local/share/uv' docker/Dockerfile \
 # Ownership is taken in the layer that INSTALLS the interpreter. A chown -R in
 # a later stage rewrites the whole tree into a second ~90 MB layer (measured
 # with docker history). Continuations joined, so one RUN is one line.
-# The dev snapshot is `COPY .`: what the kit itself generates beside the tree
-# (catkin's devel/, the bake's own *.oci.tar) must not ride into the next
-# snapshot. Statically, and against a real build context where docker runs.
-for ctx_pat in 'devel/' '*.oci.tar' '!dependencies/*.tar.gz'; do
-    grep -qxF "$ctx_pat" .dockerignore \
-        || { log_err ".dockerignore lacks '${ctx_pat}': a dev snapshot would carry (or drop) it."; sif_errors=1; }
-done
-if docker_live; then
-    ctx_probe="$(probe_dir)"; mkdir -p "$ctx_probe/devel" "$ctx_probe/dependencies" "$ctx_probe/src"
-    cp .dockerignore "$ctx_probe/"; : > "$ctx_probe/devel/setup.bash"; : > "$ctx_probe/old.oci.tar"; : > "$ctx_probe/dependencies/dep.tar.gz"; : > "$ctx_probe/src/main.py"
-    printf 'FROM busybox\nCOPY . /ctx\nCMD find /ctx -type f\n' > "$ctx_probe/Dockerfile"
-    ctx_files="$( (docker build -q -t devkit-verify-ctx "$ctx_probe" >/dev/null 2>&1 && docker run --rm devkit-verify-ctx 2>/dev/null; docker rmi -f devkit-verify-ctx >/dev/null 2>&1) | grep -vE '^/ctx/(Dockerfile|\.dockerignore)$' | sort | tr '\n' ' ')"
-    [ "$ctx_files" = "/ctx/dependencies/dep.tar.gz /ctx/src/main.py " ] \
-        || { log_err "a real build context with this .dockerignore holds '${ctx_files}' (expected only dependencies/dep.tar.gz and src/main.py)."; sif_errors=1; }
-    rm -rf "$ctx_probe"
-fi
 # Comment LINES dropped rather than '^[^#]*': the dev-core RUN carries a '#'
 # inside a printf, which hid exactly the chown this looks for.
 uv_chown_stray="$(sed -e :a -e '/\\$/N; s/\\\n//; ta' docker/Dockerfile | grep -v '^[[:space:]]*#' \

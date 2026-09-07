@@ -13,13 +13,15 @@
 .gitignore
 .gitattributes
 
-# Build Artifacts
+# Build Artifacts (devel/ is catkin's; *.oci.tar is the bake's own export)
 build/
+devel/
 install/
 log/
 logs/
 .docker_cache/
 *.sif
+*.oci.tar
 
 # Thirdparty (Cloned inside the container via vcs import)
 src/thirdparty/*
