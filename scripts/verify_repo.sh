@@ -2106,12 +2106,24 @@ esac
 src_probe="$(probe_dir)"; mkdir -p "$src_probe/pkg/lib/python3/site-packages/pkg" "$src_probe/pkg/share/pkg/launch"
 printf 'SECRET=1\n' > "$src_probe/pkg/lib/python3/site-packages/pkg/core.py"
 printf 'x\n'        > "$src_probe/pkg/share/pkg/launch/a.launch.py"
+# Entry points are called by NAME: an executable node (ROS install(PROGRAMS))
+# and a shebang script without the bit. The strip deleted both and exited 0,
+# leaving a .pyc nothing invokes.
+mkdir -p "$src_probe/pkg/lib/pkg"
+printf '#!/usr/bin/env python3\nprint(1)\n' > "$src_probe/pkg/lib/pkg/node.py"; chmod 755 "$src_probe/pkg/lib/pkg/node.py"
+printf '#!/usr/bin/env python3\nprint(2)\n' > "$src_probe/pkg/lib/pkg/tool.py"
 DEVKIT_STRIP_SOURCE=1 bash scripts/check_deps.sh "$src_probe" >/dev/null 2>&1 || true
 if [ -f "$src_probe/pkg/lib/python3/site-packages/pkg/core.py" ]; then
     log_err "DEVKIT_STRIP_SOURCE=1 did not remove plaintext source from the install tree."; repro_errors=1
 elif [ ! -f "$src_probe/pkg/share/pkg/launch/a.launch.py" ]; then
     log_err "Source strip removed a launch file; 'ros2 launch' reads those as source."; repro_errors=1
+elif [ ! -x "$src_probe/pkg/lib/pkg/node.py" ] || [ ! -f "$src_probe/pkg/lib/pkg/tool.py" ]; then
+    log_err "Source strip deleted an executable/shebang entry point; the .pyc it leaves is never invoked by name."; repro_errors=1
 fi
+# With the no-source policy on top, the conflict must FAIL, naming the file.
+src_rc=0; src_out="$(DEVKIT_STRIP_SOURCE=1 DEVKIT_FAIL_ON_SOURCE=1 bash scripts/check_deps.sh "$src_probe" 2>&1)" || src_rc=$?
+{ [ "$src_rc" -ne 0 ] && grep -q 'lib/pkg/node.py' <<< "$src_out"; } \
+    || { log_err "DEVKIT_FAIL_ON_SOURCE=1 with an unstrippable entry point exits ${src_rc} (must fail and name the file)."; repro_errors=1; }
 rm -rf "$src_probe"
 grep -q 'cmake --install' config/util_aliases.sh \
     || { log_err "mbuild must install into install/ for prod builds; the runtime image never copies build/."; repro_errors=1; }
