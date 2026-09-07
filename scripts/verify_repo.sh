@@ -4050,6 +4050,44 @@ gpu_typo="$(bash --norc -c "WORKSPACE_PATH='${ROOT_DIR}' source config/util_alia
 [ "$cli_errors" -eq 0 ] && log_ok "CLI convention holds (${cli_count} scripts: --help exits 0, unknown flags rejected)."
 
 # =============================================================================
+# [legacy-bash] The support matrix claims bash 3.2 (macOS, and the RHEL 7/8
+#      SLURM login nodes): RUN the shared helpers and the host CLIs there, not
+#      just `bash -n` them. Syntax passes on constructs whose behaviour differs,
+#      and the macOS runner answers with whatever bash is first on its PATH.
+# =============================================================================
+if docker_live; then
+    legacy_out="$(docker run --rm -v "${ROOT_DIR}:/w:ro" -w /w bash:3.2 bash -c '
+        [ "${BASH_VERSINFO[0]}" = 3 ] || { echo "WRONG-BASH ${BASH_VERSION}"; exit 1; }
+        for s in scripts/*.sh; do
+            case "$s" in scripts/util_logging.sh|scripts/util_gpu_detect.sh|scripts/util_sif_common.sh|scripts/verify_repo.sh) continue ;; esac
+            bash "$s" --help >/dev/null 2>&1 || echo "HELP-FAILED $s"
+        done
+        source config/util_paths.sh >/dev/null 2>&1 || { echo "SOURCE-FAILED util_paths"; exit 1; }
+        source scripts/util_logging.sh >/dev/null 2>&1 || { echo "SOURCE-FAILED util_logging"; exit 1; }
+        printf "K=one\nK=two\n" > /tmp/legacy.env
+        [ "$(devkit_env_value K /tmp/legacy.env)" = two ] || echo "BROKEN devkit_env_value"
+        [ "$(devkit_resolve_path scripts/../config)" = /w/config ] || echo "BROKEN devkit_resolve_path"
+        devkit_is_true yes || echo "BROKEN devkit_is_true"
+        devkit_timeout 2 true || echo "BROKEN devkit_timeout"
+        devkit_env_entries config >/dev/null 2>&1 || true
+        VIRTUAL_ENV_PROMPT="(name) "; devkit_venv_prompt
+        [ "$VIRTUAL_ENV_PROMPT" = name ] || echo "BROKEN devkit_venv_prompt"
+        # The recipe in `make gpus` probes device nodes with compgen -G.
+        compgen -G "/dev/null" >/dev/null 2>&1 || echo "BROKEN compgen-G"
+        echo LEGACY-OK' 2>&1 | grep -vE '^\s*$' || true)"
+    # Any diagnostic on the way counts, not just a failed test: bash 3.2 prints
+    # "bad substitution" for a bash-4 expansion and CARRIES ON, so a probe that
+    # only watched exit codes reported a helper working that had already failed.
+    legacy_bad="$(grep -E 'WRONG-BASH|HELP-FAILED|SOURCE-FAILED|BROKEN|bad substitution|syntax error|unexpected|command not found' <<< "$legacy_out" | tr '\n' ' ' || true)"
+    { grep -q '^LEGACY-OK$' <<< "$legacy_out" && [ -z "$legacy_bad" ]; } \
+        || log_err "the shared helpers or a host CLI do not run under bash 3.2, which the support matrix claims: ${legacy_bad:-no LEGACY-OK marker}"
+    { grep -q '^LEGACY-OK$' <<< "$legacy_out" && [ -z "$legacy_bad" ]; } \
+        && log_ok "The helpers and every host CLI run under real bash 3.2 (macOS / RHEL SLURM nodes)."
+else
+    log_warn "bash 3.2 execution skipped (no docker): here the macOS/SLURM-node claim rests on CI alone."
+fi
+
+# =============================================================================
 # [doc-references] Every check slug cited in docs or comments must resolve.
 #      Numbered ids drifted silently — two checks were both cited as [22].
 # =============================================================================
@@ -4662,7 +4700,7 @@ echo ""
 # repo codename refusal, the entrypoint boot and ownership probes, the real
 # build-context probe, the `make term` binary probe); without one the report
 # used to be byte-identical to a full run and still read as complete coverage.
-docker_live || log_warn "No docker daemon: 5 container-backed groups were checked statically only (ROS repo codename, entrypoint boot, first-run ownership, build context, terminal probe)."
+docker_live || log_warn "No docker daemon: 6 container-backed groups were checked statically only (ROS repo codename, entrypoint boot, first-run ownership, build context, terminal probe, bash 3.2)."
 if [ "$FAILED" -gt 0 ]; then
     echo -e "  \033[0;31m[FAIL]\033[0m ${FAILED} verification check(s) failed!" >&2
     exit 1
