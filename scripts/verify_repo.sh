@@ -1976,10 +1976,25 @@ snap_rc() { local rc=0; ( PATH="$snap_probe:$probe_min_path" env "$@" bash scrip
     || { log_err "configure-snapshot accepts a date that is not YYYYMMDDTHHMMSSZ; apt would be pointed at a mirror path that does not exist."; repro_errors=1; }
 [ "$(SNAP_DATE=20260101T000000Z snap_rc)" = 1 ] \
     || { log_err "configure-snapshot proceeds while snapshot.ubuntu.com is unreachable; the build would silently fall back to rolling mirrors."; repro_errors=1; }
-[ "$(SNAP_DATE=20260101T000000Z snap_rc APT_SNAPSHOT_FALLBACK=1)" = 0 ] \
+[ "$(SNAP_DATE=20260101T000000Z snap_rc APT_SNAPSHOT_FALLBACK=1 DEVKIT_APT_STATE_DIR="$snap_probe/state")" = 0 ] \
     || { log_err "APT_SNAPSHOT_FALLBACK=1 no longer lets a build past an unreachable snapshot server."; repro_errors=1; }
 [ "$(SNAP_DATE=latest snap_rc)" = 0 ] \
     || { log_err "configure-snapshot latest is not a no-op."; repro_errors=1; }
+# The opt-out is not the default anywhere the build arg is declared or passed…
+grep -qxF 'ARG APT_SNAPSHOT_FALLBACK=false' docker/Dockerfile \
+    || { log_err "the Dockerfile defaults APT_SNAPSHOT_FALLBACK on; a pinned build whose snapshot server is down would silently use rolling mirrors."; repro_errors=1; }
+grep -qE '^\s+APT_SNAPSHOT_FALLBACK: \$\{APT_SNAPSHOT_FALLBACK:-false\}' docker-compose.common.yml \
+    || { log_err "compose does not pass APT_SNAPSHOT_FALLBACK (default false) as a build arg; the .env knob would be dead for 'make build'."; repro_errors=1; }
+# …and a fallback that WAS taken is written into the artifact: the helper leaves
+# a marker and the release manifest reports apt_snapshot_applied=false.
+[ "$(cat "$snap_probe/state/apt-snapshot-fallback" 2>/dev/null)" = 20260101T000000Z ] \
+    || { log_err "a snapshot fallback leaves no marker behind; the manifest could not tell a pinned build from a fallen-back one."; repro_errors=1; }
+snap_manifest() { local name="$1"; shift; ( cd "$snap_probe" && env "$@" APT_SNAPSHOT_DATE=20260101T000000Z WS_ROOT="$snap_probe" \
+    bash "${ROOT_DIR}/scripts/util_release_metadata.sh" "$snap_probe/$name.json" >/dev/null 2>&1; cat "$snap_probe/$name.json" 2>/dev/null ) ; }
+grep -q '"apt_snapshot_applied":false' <<< "$(snap_manifest fallen DEVKIT_APT_STATE_DIR="$snap_probe/state")" \
+    || { log_err "the release manifest does not report apt_snapshot_applied=false after a fallback."; repro_errors=1; }
+grep -q '"apt_snapshot_applied":true' <<< "$(snap_manifest pinned DEVKIT_APT_STATE_DIR="$snap_probe/nostate")" \
+    || { log_err "the release manifest does not report apt_snapshot_applied=true for a pinned build that held."; repro_errors=1; }
 rm -rf "$snap_probe"
 # The timestamp reaches the image build as a build arg (the manifest's build_date).
 grep -qxF 'SOURCE_DATE_EPOCH=1700000000' <<< "$(bake_argv prod dev SOURCE_DATE_EPOCH=1700000000)" \

@@ -133,6 +133,12 @@ metadata = {
     # Reproducibility inputs, recorded so a build can be audited or re-pinned.
     "base_image": os.environ.get("BASE_IMAGE", "unknown"),
     "apt_snapshot": os.environ.get("APT_SNAPSHOT_DATE", "latest"),
+    # False when the date was requested but the build fell back to rolling
+    # mirrors (util_apt_helper.sh leaves the marker); 'latest' pins nothing.
+    "apt_snapshot_applied": os.environ.get("APT_SNAPSHOT_DATE", "latest") != "latest"
+    and not os.path.exists(
+        os.path.join(os.environ.get("DEVKIT_APT_STATE_DIR", "/etc/devkit"), "apt-snapshot-fallback")
+    ),
     "source_date_epoch": os.environ.get("SOURCE_DATE_EPOCH", ""),
     "build_type": os.environ.get("DEVKIT_BUILD_TYPE", "dev"),
     "architecture": platform.machine(),

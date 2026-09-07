@@ -166,6 +166,11 @@ case "$COMMAND" in
                 1|true|yes|on)
                     log_error "snapshot.ubuntu.com unreachable — APT_SNAPSHOT_FALLBACK set, using rolling mirrors."
                     log_error "WARNING: build reproducibility (SOURCE_DATE_EPOCH) is VOIDED for this build."
+                    # Leave the fact in the image: the release manifest reports
+                    # apt_snapshot_applied=false, so the artifact is never
+                    # mistaken for the pinned build it was asked to be.
+                    state_dir="${DEVKIT_APT_STATE_DIR:-/etc/devkit}"
+                    mkdir -p "$state_dir" && printf '%s\n' "$snap_date" > "$state_dir/apt-snapshot-fallback"
                     exit 0 ;;
                 *)
                     log_error "snapshot.ubuntu.com is unreachable (APT_SNAPSHOT_DATE=${snap_date})."

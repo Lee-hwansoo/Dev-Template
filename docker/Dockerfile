@@ -11,7 +11,9 @@ ARG BASE_IMAGE=ubuntu:22.04
 ARG WORKSPACE_PATH=/workspace
 ARG ROS_DISTRO=humble
 ARG APT_SNAPSHOT_DATE=latest
-ARG APT_SNAPSHOT_FALLBACK=true
+# Fail closed: a pinned date whose snapshot server is unreachable stops the
+# build unless the caller opts into rolling mirrors explicitly.
+ARG APT_SNAPSHOT_FALLBACK=false
 ARG ROS_SNAPSHOT_DATE=latest
 ARG STRICT_GPG_CHECK=true
 ARG UV_VERSION=0.10.10
