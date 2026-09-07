@@ -137,6 +137,20 @@ ln -s "${ROOT_DIR}/config/util_logging.sh" "$link_probe/config/util_logging.sh" 
 : > "$link_probe/config/colcon.meta"
 ( WORKSPACE_PATH="$link_probe" bash "$link_probe/scripts/util_setup_links.sh" ) >/dev/null 2>&1 || true
 link_target="$(readlink "$link_probe/colcon.meta" 2>/dev/null || echo '<none>')"
+# The aggregated compile_commands.json follows its inputs: written from the
+# per-package files, REMOVED with the last of them (the editor kept a deleted
+# file's flags), and a plain-CMake build/ (CMakeCache.txt) keeps its own.
+link_run() { ( WORKSPACE_PATH="$link_probe" bash "$link_probe/scripts/util_setup_links.sh" ) >/dev/null 2>&1 || true; }
+mkdir -p "$link_probe/build/pkg"; printf '[{"file":"removed.cpp","command":"cc","directory":"/w"}]\n' > "$link_probe/build/pkg/compile_commands.json"
+link_run
+grep -q 'removed.cpp' "$link_probe/build/compile_commands.json" 2>/dev/null && [ -L "$link_probe/compile_commands.json" ] \
+    || log_err "util_setup_links.sh did not aggregate a package's compile_commands.json (or link it at the root)."
+rm -rf "$link_probe/build/pkg"; link_run
+{ [ ! -e "$link_probe/build/compile_commands.json" ] && [ ! -L "$link_probe/compile_commands.json" ]; } \
+    || log_err "after the last package is removed, the aggregated compile_commands.json (or its root link) is left behind with stale entries."
+: > "$link_probe/build/CMakeCache.txt"; printf '[]\n' > "$link_probe/build/compile_commands.json"; link_run
+[ -f "$link_probe/build/compile_commands.json" ] \
+    || log_err "util_setup_links.sh deleted a compile_commands.json that plain CMake (CMakeCache.txt) wrote."
 case "$link_target" in
     /*) log_err "util_setup_links.sh writes an ABSOLUTE link (${link_target}); across a bind mount it dangles on the other side." ;;
     '<none>') log_err "util_setup_links.sh created no colcon.meta link; cbuild --meta would find nothing." ;;
