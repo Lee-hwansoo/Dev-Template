@@ -2488,6 +2488,14 @@ grep -qxF 'CUDA_VERSION=12.4' <<< "$sif_argv" \
     || { log_err "apptainer_bake.sh no longer forwards CUDA_VERSION — baked SIFs would silently ship without CUDA."; sif_errors=1; }
 grep -qxF 'PROD_ENV=ros' <<< "$sif_argv" && grep -qxF 'prod-runtime' <<< "$sif_argv" \
     || { log_err "a prod bake for ENV=ros does not build '--target prod-runtime --build-arg PROD_ENV=ros'."; sif_errors=1; }
+# The SIF's CUDA footprint follows PROD_FULL_CUDA alone: FULL_CUDA is the dev
+# image's knob and make exports it, so it used to shadow the SIF's own answer.
+grep -qxF 'FULL_CUDA=false' <<< "$(bake_argv prod dev FULL_CUDA=true PROD_FULL_CUDA=false)" \
+    || { log_err "a bake lets the dev image's FULL_CUDA override PROD_FULL_CUDA=false."; sif_errors=1; }
+grep -qxF 'FULL_CUDA=true' <<< "$(bake_argv prod dev FULL_CUDA=false PROD_FULL_CUDA=1)" \
+    || { log_err "PROD_FULL_CUDA=1 does not reach the bake as FULL_CUDA=true."; sif_errors=1; }
+grep -qxF 'FULL_CUDA=false' <<< "$(bake_argv prod dev FULL_CUDA=true)" \
+    || { log_err "with PROD_FULL_CUDA unset a bake inherits FULL_CUDA=true instead of the documented default false."; sif_errors=1; }
 grep -qxF 'PROD_ENV=dev' <<< "$(bake_argv prod dev)" \
     || { log_err "a prod bake for ENV=dev does not pass PROD_ENV=dev; the ROS builder base would be used."; sif_errors=1; }
 # …and every ENV the bake accepts needs its builder base, or `FROM
