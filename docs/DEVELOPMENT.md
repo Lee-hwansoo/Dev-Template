@@ -326,6 +326,7 @@ make verify && make build && make test
 | :--- | :--- | :--- |
 | `apt-key-paths` | push마다 | 컨테이너 안(tty 없음)에서 `setup-ros-repo` 실행 — noetic/20.04, humble/22.04, humble 스냅샷 키 — 와 CUDA 저장소 핀 |
 | `apt-lists-resolve` | push마다 | Dockerfile 의 apt 목록을 뽑아 20.04 · 22.04 · 24.04 에서 후보 유무만 확인 (빌드 없이 ~30 s) |
+| `ros-lists-resolve` | push마다 | `apt*.txt` 의 dev 선택 전체가 foxy(final) · noetic · humble · jazzy 각자의 apt 인덱스에서 해석되는지 (빌드 없이 ~1 min) |
 | `image-stages` | push마다 | `base`·`build-core` 실제 빌드 — BASH_ENV 배선, 관리 인터프리터의 non-root 실행, uid/gid 충돌 해소(macOS 501:20, 이름 충돌 시 원인 명시) |
 | `runtime-smoke` | cron · 수동 | 전체 ROS 이미지 → `make start` → 비-bash 프로세스에서 `import rclpy` → `mksync` 후 venv 활성·명명 → ROS venv 가 시스템 인터프리터인지 |
 | `arm64-image` | cron · 수동 | QEMU 로 arm64 `base` 빌드, 아키텍처 태그와 `sif_arch` 일치 |

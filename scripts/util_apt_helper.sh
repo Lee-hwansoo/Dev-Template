@@ -59,7 +59,9 @@ verify_key_fingerprint() {
 #   builder  prod build stages : drops '# dev' and '# gui'
 #   runtime  deploy artifacts  : keeps ONLY '# runtime'
 # An empty distro skips apt_ros.txt entirely, which is what stops the non-ROS
-# stages from requesting ros-* on an image with no ROS repository.
+# stages from requesting ros-* on an image with no ROS repository. A '!<distro>'
+# tag drops the line for that distro alone: packages move between releases
+# (tf2_ros_py exists from Galactic), and ros1/ros2 cannot say so.
 # =============================================================================
 select_packages() {
     local filter="$1" distro="${2:-}"
@@ -97,6 +99,7 @@ select_packages() {
                 if (mode == "runtime" && comment !~ /(^|[[:space:],])runtime([[:space:],]|$)/) next
                 if (mode == "builder" && comment ~  /(^|[[:space:],])(dev|gui)([[:space:],]|$)/) next
                 if (other_tag != "none" && comment ~ "(^|[[:space:],])" other_tag "([[:space:],]|$)") next
+                if (distro != "" && comment ~ "(^|[[:space:],])!" distro "([[:space:],]|$)") next
                 gsub(/\$\{ROS_DISTRO\}|\$ROS_DISTRO/, distro, line)
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
                 if (line != "") print line

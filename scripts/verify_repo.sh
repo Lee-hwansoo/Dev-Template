@@ -339,7 +339,21 @@ for tagged in $(awk -F'#' '/#[^#]*(dev|gui)([[:space:],]|$)/ && !/^[[:space:]]*#
         apt_errors=1
     fi
 done
-[ "$apt_errors" -eq 0 ] && log_ok "APT tag-filter contract holds (no-distro selection excludes ros-*, runtime excludes dev/gui)."
+# '!<distro>' drops a line for that distro alone: tf2-ros-py exists from
+# Galactic, and the manifest written against Humble broke every Foxy build.
+apt_tag_probe="$(probe_dir)"
+printf 'a-${ROS_DISTRO}-x # runtime,ros2,!foxy\nb-${ROS_DISTRO}-y # runtime,ros2\n' > "$apt_tag_probe/apt_ros.txt"; : > "$apt_tag_probe/apt.txt"
+apt_tag_foxy="$(DEVKIT_DRY_RUN=1 DEVKIT_DEPS_DIR="$apt_tag_probe" bash scripts/util_apt_helper.sh install-packages runtime foxy 2>/dev/null | tr '\n' ' ')"
+apt_tag_humble="$(DEVKIT_DRY_RUN=1 DEVKIT_DEPS_DIR="$apt_tag_probe" bash scripts/util_apt_helper.sh install-packages runtime humble 2>/dev/null | tr '\n' ' ')"
+{ [ "$apt_tag_foxy" = "b-foxy-y " ] && [ "$apt_tag_humble" = "a-humble-x b-humble-y " ]; } \
+    || { log_err "the '!<distro>' tag does not exclude per distro (foxy: '${apt_tag_foxy}', humble: '${apt_tag_humble}')."; apt_errors=1; }
+rm -rf "$apt_tag_probe"
+grep -qE '^ros-\$\{ROS_DISTRO\}-tf2-ros-py #.*!foxy' dependencies/apt_ros.txt \
+    || { log_err "apt_ros.txt requests tf2-ros-py on foxy, where the package does not exist (Galactic+): tag it '!foxy'."; apt_errors=1; }
+# …and CI resolves the whole selection against each distro's own index, foxy included.
+grep -q 'ros-lists-resolve:' .github/workflows/images.yml && grep -qE "distro: foxy,\s+snapshot: final" .github/workflows/images.yml \
+    || { log_err "images.yml has no ros-lists-resolve job covering foxy (snapshot final); a package missing from one distro's index is found four minutes into a build."; apt_errors=1; }
+[ "$apt_errors" -eq 0 ] && log_ok "APT tag-filter contract holds (no-distro selection excludes ros-*, runtime excludes dev/gui, '!<distro>' excludes per distro)."
 
 # =============================================================================
 # [gpu-env-persist] GPU environment persistence: `docker exec` shells do not run the

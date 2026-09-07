@@ -86,6 +86,43 @@ jobs:
               bash scripts/util_apt_helper.sh setup-cuda-repo 12.4
               apt-cache policy cuda-nvcc-12-4 | grep -q Candidate:'
 
+  ros-lists-resolve:
+    # The ROS manifests were written against Humble and inherited by every other
+    # distro: `tf2-ros-py` (Galactic+) broke a Foxy build four minutes in while
+    # the only Foxy contract checked base-image derivation. Resolve the full dev
+    # selection against each distro's own apt index — no build, ~1 min each.
+    name: ROS apt lists resolve (${{ matrix.distro }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: 'ubuntu:20.04', distro: foxy,   snapshot: final }
+          - { image: 'ubuntu:20.04', distro: noetic, snapshot: latest }
+          - { image: 'ubuntu:22.04', distro: humble, snapshot: latest }
+          - { image: 'ubuntu:24.04', distro: jazzy,  snapshot: latest }
+    steps:
+      - uses: actions/checkout@v5
+      - name: every selected package has a candidate on ${{ matrix.distro }}
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w -e DEBIAN_FRONTEND=noninteractive \
+            -e ROS_SNAPSHOT_DATE=${{ matrix.snapshot }} -e WORKSPACE_PATH=/w \
+            ${{ matrix.image }} bash -c '
+              set -e
+              apt-get update -qq
+              apt-get install -y -qq curl gnupg lsb-release ca-certificates >/dev/null
+              bash scripts/util_apt_helper.sh setup-ros-repo ${{ matrix.distro }} >/dev/null
+              apt-get update -qq
+              pkgs=$(DEVKIT_DRY_RUN=1 bash scripts/util_apt_helper.sh install-packages all ${{ matrix.distro }})
+              [ "$(wc -w <<< "$pkgs")" -ge 10 ] || { echo "selection collapsed: $pkgs"; exit 1; }
+              missing=""
+              for p in $pkgs; do
+                apt-cache policy "${p%%=*}" 2>/dev/null | grep -q "Candidate: [^(]" || missing="$missing $p"
+              done
+              [ -z "$missing" ] || { echo "no candidate on ${{ matrix.distro }}:$missing"; exit 1; }
+              echo "all $(wc -w <<< "$pkgs") packages resolve on ${{ matrix.distro }}"'
+
   apt-lists-resolve:
     # The dev image's apt list is spelled once in the Dockerfile, for three
     # Ubuntu releases the kit advertises. `libgl1-mesa-glx` vanished in 24.04
