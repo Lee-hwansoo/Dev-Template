@@ -289,7 +289,7 @@ setup:
 		U="$$(printf '%s' "$$U" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-')"; U="$${U%-}"; U="$${U:-user}"; \
 		awk -v u="$$U" '/^COMPOSE_PROJECT_NAME=myproject\r?$$/{print "COMPOSE_PROJECT_NAME=myproject-" u; next} {print}' \
 			.env.example > .env.tmp && mv .env.tmp .env; \
-		echo -e "  $(OK) Created .env (project: myproject-$$U)"; \
+		echo -e "  $(OK) Created .env (project: $$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' .env | tail -n 1))"; \
 	fi
 	@bash config/devkit_make_completion.bash --install
 	@$(MAKE) xauth
@@ -308,7 +308,10 @@ adopt:
 	@# silently mangle a name that would break `docker compose` later.
 	@printf '%s' "$(ADOPT_NAME)" | grep -qE '^[a-z0-9][a-z0-9_-]*$$' || { \
 		echo -e "  $(ERROR) NAME must match [a-z0-9][a-z0-9_-]* (got: '$(ADOPT_NAME)')" >&2; exit 2; }
-	@if [ -n "$$(git status --porcelain 2>/dev/null)" ]; then \
+	@# .devcontainer/devcontainer.json is excluded: `make setup` rewrites it to
+	@# the host's own compose service (ide-config), so the documented order
+	@# setup → adopt refused on every host that is not the committed default.
+	@if [ -n "$$(git status --porcelain 2>/dev/null | grep -v ' .devcontainer/devcontainer.json$$')" ]; then \
 		echo -e "  $(ERROR) Working tree is not clean; commit or stash first." >&2; \
 		echo -e "  $(INFO) Adoption rewrites tracked files — keep the diff reviewable." >&2; exit 1; \
 	fi
@@ -326,15 +329,35 @@ adopt:
 		inproj && d != "" && /^description = / { print "description = \"" d "\""; next } \
 		{ print }' src/pyproject.toml > src/pyproject.toml.tmp
 	@# Publish only what parses: a half-written identity file is worse than none.
-	@python3 -c 'import sys,tomllib; tomllib.load(open(sys.argv[1],"rb"))' src/pyproject.toml.tmp \
+	@# tomllib is 3.11+ (22.04 ships 3.10, macOS CLT 3.9): an older interpreter
+	@# skips the check rather than reporting the file as broken TOML.
+	@python3 -c 'import sys; exec("try:\n    import tomllib\nexcept ImportError:\n    sys.exit(0)"); tomllib.load(open(sys.argv[1],"rb"))' src/pyproject.toml.tmp \
 		|| { rm -f src/pyproject.toml.tmp; \
 		     echo -e "  $(ERROR) The generated src/pyproject.toml is not valid TOML; nothing was changed." >&2; exit 1; }
 	@mv src/pyproject.toml.tmp src/pyproject.toml
+	@# The lock records the project's own name, and `uv sync --locked` (every
+	@# production build) refuses a lock that names another project. Rewriting
+	@# the one virtual entry is what a relock would do to it; the resolution
+	@# itself does not depend on the name.
+	@if [ -f src/uv.lock ]; then \
+		awk -v n="$(ADOPT_NAME)" ' \
+			/^\[\[package\]\]$$/ { flush(); block = $$0 "\n"; inblock = 1; next } \
+			inblock { block = block $$0 "\n"; if ($$0 ~ /^source = \{ virtual/) virtual = 1; next } \
+			{ flush(); print } \
+			END { flush() } \
+			function flush() { \
+				if (!inblock) return; \
+				if (virtual) sub(/\nname = "[^"]*"\n/, "\nname = \"" n "\"\n", block); \
+				printf "%s", block; block = ""; inblock = 0; virtual = 0; \
+			}' src/uv.lock > src/uv.lock.tmp && mv src/uv.lock.tmp src/uv.lock; \
+	fi
 	@if [ -f .env ]; then \
 		sed 's/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=$(ADOPT_NAME)/' .env > .env.tmp && mv .env.tmp .env; \
 	fi
-	@sed 's/^COMPOSE_PROJECT_NAME=myproject$$/COMPOSE_PROJECT_NAME=$(ADOPT_NAME)/' .env.example > .env.example.tmp && mv .env.example.tmp .env.example
-	@echo -e "  $(OK) Adopted as '$(ADOPT_NAME)': src/pyproject.toml, .env, .env.example"
+	@# Whatever name it carries now, not the literal 'myproject': a second adopt
+	@# left the committed default pointing at the first adoption.
+	@sed 's/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=$(ADOPT_NAME)/' .env.example > .env.example.tmp && mv .env.example.tmp .env.example
+	@echo -e "  $(OK) Adopted as '$(ADOPT_NAME)': src/pyproject.toml, .env.example$$([ -f .env ] && printf ', .env')"
 	@echo -e "  $(INFO) Run mksync in the container and commit the updated src/uv.lock."
 	@echo -e "  $(INFO) Two files are yours to decide — DevKit cannot guess them:"
 	@echo -e "  $(INFO)   README.md   this front page still describes DevKit"

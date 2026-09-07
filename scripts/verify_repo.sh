@@ -115,7 +115,7 @@ for f in \
     scripts/util_sif_common.sh scripts/util_logging.sh \
     dependencies/apt.txt dependencies/apt_ros.txt \
     VERSION .clang-format \
-    docs/GETTING_STARTED.md docs/DEVELOPMENT.md docs/DEPENDENCIES.md docs/DEPLOY.md docs/DIAGNOSTICS.md \
+    $(upstream_checks && echo docs/GETTING_STARTED.md docs/DEVELOPMENT.md docs/DEPENDENCIES.md docs/DEPLOY.md docs/DIAGNOSTICS.md) \
     $(upstream_checks && echo src/example/starter_node.cpp src/example/starter_node.py src/example/test_starter_node.py)
 do
     [ -f "$f" ] || log_err "Missing required file: $f"
@@ -239,7 +239,10 @@ rm -rf "$wf_probe"
 # rides inside it, so no job may spell either out by hand).
 wf_bad=()
 for wf in .github/workflows/*.yml; do
-    grep -qE '^permissions:' "$wf" && grep -qE '^  contents: read$' "$wf" || wf_bad+=("${wf##*/}: no top-level 'permissions: contents: read'")
+    # The whole block, not just the presence of one line: `packages: write`
+    # added underneath satisfied a two-line check while widening the token.
+    wf_perms="$(awk '/^permissions:/{p=1; next} p && /^[^ ]/{p=0} p && NF' "$wf" | tr -d ' ' | sort | tr '\n' ',')"
+    [ "$wf_perms" = "contents:read," ] || wf_bad+=("${wf##*/}: top-level permissions are '${wf_perms:-none}', not exactly 'contents: read'")
     grep -qE 'actions/checkout@v[0-4]([^0-9]|$)' "$wf" && wf_bad+=("${wf##*/}: actions/checkout older than v5")
     grep -qE '^[[:space:]]+run: (sudo )?rm -rf /usr/share/dotnet|^[[:space:]]+run: make verify$' "$wf" && [ "${wf##*/}" != verify.yml ] \
         && wf_bad+=("${wf##*/}: hand-written gate step; use ./.github/actions/gate")
@@ -247,10 +250,16 @@ done
 # A fork that did what GETTING_STARTED says — adopted a name, removed the
 # starters, replaced README — must still pass: verify.yml runs the suite on
 # such a copy (the suite cannot run itself here without recursing).
-grep -q 'rm -rf src/example' .github/workflows/verify.yml && grep -q 'make adopt NAME=' .github/workflows/verify.yml \
-    || wf_bad+=("verify.yml: no fork probe (adopt + rm -rf src/example + replaced README + make verify)")
-[ "$(grep -c 'uses: ./.github/actions/gate' .github/workflows/images.yml .github/workflows/project.yml | awk -F: '{s+=$2} END{print s}')" -ge 6 ] \
-    || wf_bad+=("fewer image jobs use the gate action than exist (images.yml 5 + project.yml 1)")
+for wf_fork in 'make adopt NAME=' 'rm -rf src/example docs' 'terminator # gui' 'DEVKIT_SLURM_' 'BASE_IMAGE=ubuntu:22.04@sha256'; do
+    grep -qF "$wf_fork" .github/workflows/verify.yml \
+        || wf_bad+=("verify.yml's fork probe does not exercise '${wf_fork}'; a contract on a fork-owned file would go unnoticed")
+done
+# Counted from the kit's own workflows: project.yml is the fork's file and may
+# be replaced wholesale, so it is not part of the sum.
+wf_gates="$(grep -c 'uses: ./.github/actions/gate' .github/workflows/images.yml 2>/dev/null || echo 0)"
+wf_heavy="$(grep -cE '^  [a-z0-9-]+:$' .github/workflows/images.yml 2>/dev/null || echo 0)"
+[ "$wf_gates" -ge 5 ] \
+    || wf_bad+=("only ${wf_gates} of images.yml's ${wf_heavy} jobs use ./.github/actions/gate")
 [ ${#wf_bad[@]} -eq 0 ] && log_ok "Workflows: read-only token, checkout@v5+, image jobs gated by ./.github/actions/gate." \
     || { for b in "${wf_bad[@]}"; do log_err "$b"; done; }
 
@@ -625,26 +634,6 @@ cache_out="$(cd "$cache_probe" && env -u DOCKER_DEV_CACHE_DIR make -n bake-prod 
 (cd "$cache_probe" && env -u DOCKER_DEV_CACHE_DIR make -n bake-prod) >/dev/null 2>&1 || true
 [ "$(find "$cache_probe/.docker_cache" -name 'detected-env*' 2>/dev/null | wc -l)" -eq 1 ] \
     || { log_err "a successful host probe did not leave exactly one detected-env*.mk (found: $(cd "$cache_probe/.docker_cache" 2>/dev/null && ls detected-env* 2>/dev/null | tr '\n' ' '))."; cache_errors=1; }
-rm -rf "$cache_probe"
-[ "$cache_errors" -eq 0 ] && log_ok "Host detection cache: a failed probe stops make and leaves no file; a good one leaves exactly one."
-
-# =============================================================================
-# [advertised-shortcuts] Every shortcut the help screen or MOTD names must
-#      resolve in an interactive shell.
-# =============================================================================
-# The NAME column only, and per source: if one extraction collapses, the
-# other must not quietly cover for it.
-adv_names() { tr '/' '\n' | sed 's/\[.*//; s/<.*//' | tr -d ' ' | grep -E '^[a-z_][a-z_0-9]*$'; }
-adv_help="$(sed -n 's/.*%-20s.*\\n" *"\([^"]*\)".*/\1/p' config/util_aliases.sh | adv_names || true)"
-adv_motd="$(sed -n 's/^ *"\([a-z_0-9 /]*\)|.*/\1/p' scripts/show_welcome.sh | adv_names || true)"
-[ "$(wc -w <<< "$adv_help")" -ge 20 ] \
-    || log_err "Help-text shortcut extraction collapsed ($(wc -w <<< "$adv_help") names, expected ≥20) — did the printf format change?"
-[ "$(wc -w <<< "$adv_motd")" -ge 5 ] \
-    || log_err "MOTD shortcut extraction collapsed ($(wc -w <<< "$adv_motd") names, expected ≥5)."
-advertised="$(printf '%s\n%s\n' "$adv_help" "$adv_motd" | sort -u | sed '/^$/d')"
-defined="$(bash --norc -ic 'WORKSPACE_PATH='"$ROOT_DIR"' source config/util_aliases.sh >/dev/null 2>&1
-    compgen -a; compgen -A function' 2>/dev/null | sort -u || true)"
-undefined="$(comm -23 <(echo "$advertised") <(echo "$defined") | grep -vE '^(help|noetic|share)$' || true)"
 # …and the cache must still DESCRIBE this host. A copy of the checkout kept
 # mounting the ORIGINAL directory as /workspace, and session-scoped paths (the
 # X cookie, the ssh-agent socket) survived a re-login, so compose created
@@ -684,6 +673,26 @@ cache_ro_rc=0; cache_ro_out="$( cd "$cache_ro" && make -n help 2>&1 )" || cache_
 { [ "$cache_ro_rc" -ne 0 ] && grep -qi 'docker_cache' <<< "$cache_ro_out"; } \
     || { log_err "an unwritable .docker_cache does not stop make (rc ${cache_ro_rc}); every .env setting would be ignored in silence."; cache_errors=1; }
 chmod 755 "$cache_ro/.docker_cache"; rm -rf "$cache_ro"
+rm -rf "$cache_probe"
+[ "$cache_errors" -eq 0 ] && log_ok "Host detection cache: a failed probe stops make, a moved checkout and dead session paths are re-probed, and .env's include is atomic and fatal."
+
+# =============================================================================
+# [advertised-shortcuts] Every shortcut the help screen or MOTD names must
+#      resolve in an interactive shell.
+# =============================================================================
+# The NAME column only, and per source: if one extraction collapses, the
+# other must not quietly cover for it.
+adv_names() { tr '/' '\n' | sed 's/\[.*//; s/<.*//' | tr -d ' ' | grep -E '^[a-z_][a-z_0-9]*$'; }
+adv_help="$(sed -n 's/.*%-20s.*\\n" *"\([^"]*\)".*/\1/p' config/util_aliases.sh | adv_names || true)"
+adv_motd="$(sed -n 's/^ *"\([a-z_0-9 /]*\)|.*/\1/p' scripts/show_welcome.sh | adv_names || true)"
+[ "$(wc -w <<< "$adv_help")" -ge 20 ] \
+    || log_err "Help-text shortcut extraction collapsed ($(wc -w <<< "$adv_help") names, expected ≥20) — did the printf format change?"
+[ "$(wc -w <<< "$adv_motd")" -ge 5 ] \
+    || log_err "MOTD shortcut extraction collapsed ($(wc -w <<< "$adv_motd") names, expected ≥5)."
+advertised="$(printf '%s\n%s\n' "$adv_help" "$adv_motd" | sort -u | sed '/^$/d')"
+defined="$(bash --norc -ic 'WORKSPACE_PATH='"$ROOT_DIR"' source config/util_aliases.sh >/dev/null 2>&1
+    compgen -a; compgen -A function' 2>/dev/null | sort -u || true)"
+undefined="$(comm -23 <(echo "$advertised") <(echo "$defined") | grep -vE '^(help|noetic|share)$' || true)"
 if [ -z "$undefined" ]; then
     log_ok "Every advertised in-container shortcut resolves to an alias or function."
 else
@@ -698,13 +707,13 @@ bridge_errors=0
 grep -q '__DEVKIT_ENV_BRIDGE' docker/entrypoint.sh || { log_err "entrypoint.sh must bridge /etc/profile.d into /etc/bash.bashrc (interactive shells)."; bridge_errors=1; }
 # Non-interactive bash reads only $BASH_ENV — and it must NOT point at ~/.bashrc,
 # whose stock "return if not interactive" guard discards everything after it.
-grep -q 'BASH_ENV=/etc/devkit/shell-env.sh' docker/Dockerfile \
+grep -qE '^[^#]*BASH_ENV=/etc/devkit/shell-env.sh' docker/Dockerfile \
     || { log_err "Dockerfile BASH_ENV must point at the guard-free hook (/etc/devkit/shell-env.sh), not ~/.bashrc."; bridge_errors=1; }
 grep -q 'DEVKIT_SHELL_ENV' docker/entrypoint.sh \
     || { log_err "entrypoint.sh must generate the BASH_ENV hook for non-interactive shells."; bridge_errors=1; }
 # The image stages the rosdep cache as root; without seeding it, every non-root
 # shell fails `mksync` with "rosdep has not been initialized".
-grep -q 'seed_rosdep_cache' docker/entrypoint.sh \
+grep -qE '^seed_rosdep_cache$' docker/entrypoint.sh \
     || { log_err "entrypoint.sh must seed /opt/ros_cache into the container user's HOME."; bridge_errors=1; }
 # init_ros_env.sh is reached only through ~/.bashrc: its DDS settings must be
 # persisted too, or scripted runs silently use a different RMW configuration.
@@ -745,6 +754,16 @@ child_fns="$(__DEVKIT_ENV_READY="$ROOT_DIR" WORKSPACE_PATH="$ROOT_DIR" bash -c \
     2>/dev/null || true)"
 [ -z "$child_fns" ] \
     || { log_err "shell functions missing in a child shell ($(tr '\n' ' ' <<< "$child_fns")): 'make exec CMD=mksync' would fail."; bridge_errors=1; }
+# …and the ALIAS-shaped shortcuts too: `make exec CMD='h'` runs `bash -c`, where
+# bash expands no aliases unless asked, so every one of them answered "command
+# not found" on the path the docs call the default for automation.
+child_alias="$(printf 'source %s/config/init_bash.sh\n' "$ROOT_DIR" > "$ROOT_DIR/.devkit-bashenv.$$" \
+    && WORKSPACE_PATH="$ROOT_DIR" BASH_ENV="$ROOT_DIR/.devkit-bashenv.$$" bash -c 'type -t h; type -t sync_deps' 2>/dev/null | tr '\n' ' ' || true)"
+rm -f "$ROOT_DIR/.devkit-bashenv.$$"
+case "$child_alias" in
+    *alias*|*function*) ;;
+    *) log_err "alias shortcuts do not resolve in a non-interactive shell (got: '${child_alias:-nothing}'); 'make exec CMD=h' would fail."; bridge_errors=1 ;;
+esac
 # The entrypoint itself, run as this user in a probe workspace: it must reach
 # the command, keep its boot log, and its --env mode must hand the command a
 # resolved environment. The root-only parts (profile.d, bashrc bridge, the
@@ -824,8 +843,13 @@ done
 # derivation for every local override — fails here rather than at apt.
 distro_probe="$(probe_dir)"
 printf 'ROS_DISTRO=foxy\n' > "$distro_probe/.env"
+# Upstream reads the shipped .env.example, where no BASE_IMAGE may be pinned; a
+# fork pins one deliberately (DEPLOY.md), so there the derivation is probed on
+# its own defaults file.
+distro_defaults="${ROOT_DIR}/.env.example"
+upstream_checks || { printf 'ROS_DISTRO=humble\n' > "$distro_probe/defaults"; distro_defaults="$distro_probe/defaults"; }
 distro_base="$( unset ROS_DISTRO BASE_IMAGE
-    DEVKIT_ENV_FILE="$distro_probe/.env" DEVKIT_ENV_DEFAULTS="${ROOT_DIR}/.env.example" \
+    DEVKIT_ENV_FILE="$distro_probe/.env" DEVKIT_ENV_DEFAULTS="$distro_defaults" \
     bash scripts/check_env.sh --makefile 2>/dev/null | sed -n 's/^BASE_IMAGE := //p' || true )"
 rm -rf "$distro_probe"
 [ "$distro_base" = "ubuntu:20.04" ] \
@@ -1218,11 +1242,20 @@ grep -qxF 'from-run-args' "$submit_probe/argv" 2>/dev/null \
 # The dangerous one: no sbatch must NOT mean "run it here".
 rm -f "$submit_probe/argv"
 submit_norc=0
-( export PATH="$probe_min_path" WORKSPACE_PATH="$submit_probe" \
+# apptainer present and RECORDING, sbatch absent: without the runtime any
+# failure satisfied a bare "exits non-zero", so a local fallback would have
+# passed. The proof is that the runtime was never invoked.
+mkdir -p "$submit_probe/norun"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/ran"\n' "$submit_probe/norun" > "$submit_probe/norun/apptainer"
+chmod +x "$submit_probe/norun/apptainer"
+rm -f "$submit_probe/norun/ran"
+( export PATH="$submit_probe/norun:$probe_min_path" WORKSPACE_PATH="$submit_probe" \
          SIF_FILE="$submit_probe/artifact.sif"
   bash scripts/apptainer_run.sh --mode slurm --env dev 'python3 -c "pass"' ) >/dev/null 2>&1 || submit_norc=$?
 [ "$submit_norc" -ne 0 ] \
     || { log_err "SIF_MODE=slurm without sbatch exits 0; a job you believed was queued ran on the login node."; submit_errors=1; }
+[ ! -f "$submit_probe/norun/ran" ] \
+    || { log_err "SIF_MODE=slurm without sbatch ran the container locally (apptainer argv: $(tr '\n' ' ' < "$submit_probe/norun/ran"))."; submit_errors=1; }
 grep -qE '^[^#]*Falling back to local execution' scripts/apptainer_run.sh \
     && { log_err "apptainer_run.sh still falls back to local execution when sbatch is missing."; submit_errors=1; }
 
@@ -1310,7 +1343,7 @@ grep -q 'DEVKIT_REPO_ROOT' <<< "$slurmdef_far" \
 [ "$slurmdef_far_rc" -ne 0 ] \
     || { log_err "a job whose workspace is unreachable exits 0; SLURM would record it as successful."; slurmdef_errors=1; }
 # …and the prerequisite must be written down, not only discovered at 3am.
-grep -qE '(컴퓨트 노드|compute node).*(마운트|mount)' docs/SLURM.md \
+[ ! -f docs/SLURM.md ] || grep -qE '(컴퓨트 노드|compute node).*(마운트|mount)' docs/SLURM.md \
     || { log_err "docs/SLURM.md does not state that the workspace must sit on a filesystem the compute nodes mount."; slurmdef_errors=1; }
 [ "$slurmdef_errors" -eq 0 ] \
     && log_ok "SLURM job defaults agree between #SBATCH and .env.example, every knob becomes its flag, and the submitter creates the log directory."
@@ -1329,6 +1362,7 @@ hostdep_tools="$(cut -d'|' -f1 <<< "$hostdep_table")"
 [ "$(wc -l <<< "$hostdep_tools")" -ge 4 ] \
     || { log_err "check_preflight.sh no longer carries a HOST_REQUIRED table; the host prerequisites are unchecked."; hostdep_errors=1; }
 for hostdep in $hostdep_tools; do
+    [ -f docs/DEPENDENCIES.md ] || continue   # a fork may keep only its own docs
     grep -qF "**${hostdep}**" docs/DEPENDENCIES.md \
         || { log_err "preflight requires '${hostdep}' but docs/DEPENDENCIES.md does not list it; a fresh host hits it as a surprise."; hostdep_errors=1; }
 done
@@ -1338,8 +1372,8 @@ done
 hostdep_documented="$(awk -F'|' '/preflight 차단/ {
         n = split($2, cell, /\*\*/)
         for (i = 2; i <= n; i += 2) if (cell[i] ~ /^[a-z0-9-]+$/) print cell[i]
-    }' docs/DEPENDENCIES.md || true)"
-[ -n "$hostdep_documented" ] \
+    }' docs/DEPENDENCIES.md 2>/dev/null || true)"
+{ [ -n "$hostdep_documented" ] || [ ! -f docs/DEPENDENCIES.md ]; } \
     || { log_err "docs/DEPENDENCIES.md lists no blocking host prerequisite; the table or its wording changed and the check went blind."; hostdep_errors=1; }
 for hostdep in $hostdep_documented; do
     grep -qE "^${hostdep}\|yes\|" <<< "$hostdep_table" \
@@ -1422,7 +1456,40 @@ hostdep_gpu_out="$(hostdep_gpu_run GPU_MODE=auto HAS_NVIDIA=true)"
 hostdep_gpu_out="$(hostdep_gpu_run GPU_MODE=auto HAS_NVIDIA=false)"
 { [ "${hostdep_gpu_out%% *}" -eq 0 ] && ! grep -q 'nvidia-ctk' <<< "$hostdep_gpu_out"; } \
     || { log_err "check_preflight.sh mentions the NVIDIA runtime on a host with no NVIDIA GPU."; hostdep_errors=1; }
+# A host merely NAMED nvidia has no runtime: the check reads the Runtimes list,
+# not the word anywhere in `docker info`.
+printf '#!/bin/sh\ncase "$1 $2" in "info ") echo "Name: nvidia-box"; echo "Runtimes: io.containerd.runc.v2 runc" ;; "compose version") echo 2.30.0 ;; "buildx version") echo v0.20.0 ;; esac\nexit 0\n' \
+    > "$hostdep_gpu/docker"
+hostdep_gpu_out="$(hostdep_gpu_run GPU_MODE=nvidia HAS_NVIDIA=true)"
+[ "${hostdep_gpu_out%% *}" -ne 0 ] \
+    || { log_err "check_preflight.sh accepts GPU_MODE=nvidia because the word 'nvidia' appears in docker info (the host's name); 'docker compose up' would fail with unknown runtime."; hostdep_errors=1; }
+# …and an unreachable daemon is reported as such, not as a missing toolkit.
+printf '#!/bin/sh\ncase "$1 $2" in "info ") exit 1 ;; "compose version") echo 2.30.0 ;; "buildx version") echo v0.20.0 ;; esac\nexit 0\n' \
+    > "$hostdep_gpu/docker"
+hostdep_gpu_out="$(hostdep_gpu_run GPU_MODE=nvidia HAS_NVIDIA=true)"
+{ grep -q 'daemon is not reachable' <<< "$hostdep_gpu_out" && ! grep -q 'nvidia-ctk' <<< "$hostdep_gpu_out"; } \
+    || { log_err "with the docker daemon down, preflight blames the NVIDIA runtime instead of the daemon."; hostdep_errors=1; }
 rm -rf "$hostdep_gpu"
+# The detector reads the same two facts the same way. A driverless nvidia-smi is
+# not a GPU, and a daemon that cannot answer must not be cached as "no runtime":
+# every later run would silently pick the iGPU/CPU profile.
+hostdep_det="$(probe_dir config scripts)"
+printf '#!/bin/sh\n[ "$1" = "-L" ] && { echo "NVIDIA-SMI has failed" >&2; exit 9; }\nexit 0\n' > "$hostdep_det/nvidia-smi"
+printf '#!/bin/sh\n[ "$1" = info ] && exit 1\nexit 0\n' > "$hostdep_det/docker"
+chmod +x "$hostdep_det/nvidia-smi" "$hostdep_det/docker"
+hostdep_det_out="$( PATH="$hostdep_det:$probe_min_path" HOST_CACHE_DIR="$hostdep_det/cache" bash scripts/check_env.sh --makefile 2>/dev/null || true )"
+grep -qx 'HAS_NVIDIA := false' <<< "$hostdep_det_out" \
+    || { log_err "an nvidia-smi that cannot talk to the driver still sets HAS_NVIDIA := true; 'auto' would pick the nvidia profile and the container would not start."; hostdep_errors=1; }
+printf '#!/bin/sh\n[ "$1" = "-L" ] && { echo "GPU 0: NVIDIA"; exit 0; }\nexit 0\n' > "$hostdep_det/nvidia-smi"
+hostdep_det_rc=0
+( PATH="$hostdep_det:$probe_min_path" HOST_CACHE_DIR="$hostdep_det/cache" bash scripts/check_env.sh --makefile ) >/dev/null 2>&1 || hostdep_det_rc=$?
+[ "$hostdep_det_rc" -ne 0 ] \
+    || { log_err "with a GPU present and the docker daemon unreachable, the detector still writes a cache (HAS_TOOLKIT := false); every later run would use the iGPU profile in silence."; hostdep_errors=1; }
+printf '#!/bin/sh\n[ "$1" = info ] && { echo "Name: nvidia-box"; exit 0; }\nexit 0\n' > "$hostdep_det/docker"
+hostdep_det_out="$( PATH="$hostdep_det:$probe_min_path" HOST_CACHE_DIR="$hostdep_det/cache" bash scripts/check_env.sh --makefile 2>/dev/null || true )"
+grep -qx 'HAS_TOOLKIT := false' <<< "$hostdep_det_out" \
+    || { log_err "the detector reads 'nvidia' anywhere in docker info as the container runtime; a host merely named nvidia-box resolved to the nvidia profile."; hostdep_errors=1; }
+rm -rf "$hostdep_det"
 grep -q 'CHECK_GPU_RUNTIME' Makefile \
     && { log_err "the Makefile carries its own NVIDIA-runtime notice again; check_preflight.sh owns it."; hostdep_errors=1; }
 # vcstool lives in the IMAGE; claiming it as a host prerequisite sends people
@@ -1545,6 +1612,9 @@ for bake_pair in "noetic ubuntu:20.04 3.8" "jazzy ubuntu:24.04 3.12"; do
     # env -u: the Makefile exports everything to its recipes, so this script
     # already carries the repo's own BASE_IMAGE/UV_PYTHON and the inner make
     # would read them as environment overrides — exactly what is under test.
+    # Upstream only: DEPLOY.md tells a release branch to pin BASE_IMAGE by
+    # digest in .env.example, which by design overrides the derivation.
+    upstream_checks || continue
     bake_db="$( cd "$bake_cli" && env -u ROS_DISTRO -u BASE_IMAGE -u UV_PYTHON \
         -u WORKSPACE_PATH -u DOCKER_DEV_CACHE_DIR \
         make -np bake-prod ROS_DISTRO="$1" 2>/dev/null || true )"
@@ -2017,6 +2087,7 @@ rm -rf "$env_probe"
 # is not listed there is one nobody will find.
 undocumented_libs=""
 for lib in config/util_paths.sh scripts/util_*.sh; do
+    [ -f docs/DEVELOPMENT.md ] || continue   # a fork may keep only its own docs
     grep -qF "\`${lib}\`" docs/DEVELOPMENT.md || undocumented_libs="${undocumented_libs} ${lib}"
 done
 [ -z "$undocumented_libs" ] \
@@ -2430,6 +2501,50 @@ awk '
 # stale lock must stop the build rather than silently resolve a fresh set.
 [ ! -f src/pyproject.toml ] || [ -f src/uv.lock ] \
     || log_err "src/pyproject.toml has no src/uv.lock; 'make bake-prod' passes --locked and would fail."
+# …and the lock must still describe THIS pyproject. Presence alone let a
+# dependency added without `mksync` through: `uv sync --locked` then failed
+# minutes into the production build, which is the one place it must not.
+lock_state="$(python3 - <<'PYLOCK' 2>/dev/null || echo 'parse failed'
+import pathlib, tomllib
+from collections import Counter
+proj = tomllib.loads(pathlib.Path('src/pyproject.toml').read_text())
+lock = tomllib.loads(pathlib.Path('src/uv.lock').read_text())
+p = proj.get('project', {})
+def names(reqs):     # 'ruff>=0.6' → ('ruff', '>=0.6')
+    out = Counter()
+    for r in reqs:
+        r = r.split(';')[0].strip()
+        for i, ch in enumerate(r):
+            if ch in '=<>!~[ ':
+                out[(r[:i].lower().replace('_', '-'), r[i:].replace(' ', '').strip())] += 1
+                break
+        else:
+            out[(r.lower().replace('_', '-'), '')] += 1
+    return out
+declared = names(p.get('dependencies', []))
+for extra in (p.get('optional-dependencies') or {}).values():
+    declared += names(extra)
+for group in (proj.get('dependency-groups') or {}).values():
+    declared += names([g for g in group if isinstance(g, str)])
+own = [e for e in lock.get('package', []) if e.get('name') == p.get('name')]
+if not own:
+    print(f"the lock has no entry for '{p.get('name')}'")
+    raise SystemExit
+meta = own[0].get('metadata', {})
+locked = Counter()
+for entry in meta.get('requires-dist', []):
+    locked[(entry['name'].lower().replace('_', '-'), (entry.get('specifier') or '').replace(' ', ''))] += 1
+for group in (meta.get('requires-dev') or {}).values():
+    for entry in group:
+        locked[(entry['name'].lower().replace('_', '-'), (entry.get('specifier') or '').replace(' ', ''))] += 1
+missing = declared - locked
+extra = locked - declared
+print('in sync' if not missing and not extra else
+      f"declared but not locked: {sorted(missing.elements())}; locked but not declared: {sorted(extra.elements())}")
+PYLOCK
+)"
+[ "$lock_state" = "in sync" ] \
+    || log_err "src/uv.lock is stale — ${lock_state}. Run mksync in the container and commit the lock, or 'make bake-prod' dies at 'uv sync --locked'."
 rm -f "$prod_probe/src/uv.lock"
 missing_lock_rc=0
 missing_lock_out="$(sync_flags prod 2>&1)" || missing_lock_rc=$?
@@ -2477,7 +2592,11 @@ fi
 dead_knobs=""
 for knob in $(grep -oE 'opts="[^"]*"' config/devkit_make_completion.bash \
               | grep -oE '[A-Z][A-Z0-9_]+=' | tr -d '=' | sort -u); do
-    grep -rqE "\b${knob}\b" Makefile scripts/ docker-compose.common.yml docker-compose.dev.yml .env.example \
+    # Anchored to CODE, and neither .env.example nor this very completion
+    # script counts: a knob named only in a comment there vouched for itself.
+    grep -rqE "^[^#]*(^|[^A-Za-z0-9_])${knob}([^A-Za-z0-9_]|$)" \
+        --exclude=devkit_make_completion.bash --exclude=verify_repo.sh \
+        Makefile scripts/ config/ docker-compose.common.yml docker-compose.dev.yml docker/Dockerfile \
         || dead_knobs="${dead_knobs} ${knob}"
 done
 [ -z "$dead_knobs" ] \
@@ -2528,6 +2647,7 @@ done
 # which one to pick, and it still named a "Host (Bind Mount)" profile that had
 # been renamed twice.
 while IFS= read -r ide_profile; do
+    [ -f docs/DEBUGGING.md ] || continue
     grep -qF "$ide_profile" docs/DEBUGGING.md \
         || { log_err "IntelliSense profile '${ide_profile}' is not documented in docs/DEBUGGING.md."; vscode_errors=1; }
 done < <(grep -oE '"name": "[^"]+"' .vscode/c_cpp_properties.json | sed 's/"name": "//; s/"$//')
@@ -2544,6 +2664,7 @@ PYLAUNCH
 [ "$(grep -c . <<< "$ide_launch_names")" -ge 10 ] \
     || { log_err "launch.json name extraction collapsed ($(grep -c . <<< "$ide_launch_names") found)."; vscode_errors=1; }
 while IFS= read -r ide_launch; do
+    [ -f docs/DEBUGGING.md ] || continue
     grep -qF "$ide_launch" docs/DEBUGGING.md \
         || { log_err "debug configuration '${ide_launch}' is not documented in docs/DEBUGGING.md."; vscode_errors=1; }
 done <<< "$ide_launch_names"
@@ -2606,9 +2727,12 @@ printf '%s' "$devkit_version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
 # derives it (make from the file, the manifest from the environment), so the
 # pieces cannot disagree by construction. src/ is exempt — a fork's
 # src/pyproject.toml carries its OWN application version.
+# README and docs/ are the fork's to rewrite, and its own release number may
+# well coincide, so the scan covers the kit's files and, upstream, its prose.
 hardcoded_version="$(grep -rn --fixed-strings "$devkit_version" \
-    Makefile README.md docs config scripts docker docker-compose.common.yml \
-    docker-compose.dev.yml .env.example .github 2>/dev/null || true)"
+    Makefile config scripts docker docker-compose.common.yml \
+    docker-compose.dev.yml .env.example .github \
+    $(upstream_checks && echo README.md docs) 2>/dev/null || true)"
 [ -z "$hardcoded_version" ] \
     || { log_err "the template version is hardcoded outside VERSION: $(cut -d: -f1,2 <<< "$hardcoded_version" | tr '\n' ' ')"; version_errors=1; }
 # Asserted by EXECUTION: the manifest is what a deployed artifact carries, and
@@ -2652,6 +2776,32 @@ adopt_recipe="$(awk '/^adopt:/{inside=1} inside && /^[a-z]/ && !/^adopt:/{inside
                 | grep -v $'^\t@#')"
 grep -q '\[project\]' <<< "$adopt_recipe" \
     || { log_err "'make adopt' does not scope its pyproject edit to the [project] table."; adopt_errors=1; }
+# The committed default follows every adopt, not only the first: matching the
+# literal 'myproject' left .env.example naming the previous adoption.
+grep -qF "s/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=\$(ADOPT_NAME)/' .env.example" Makefile \
+    || { log_err "'make adopt' rewrites .env.example only when it still says 'myproject'; a second adopt leaves the committed default behind."; adopt_errors=1; }
+# `make setup` rewrites .devcontainer/devcontainer.json to the host's service,
+# so the documented order (setup, then adopt) refused on every non-cpu host.
+grep -qF 'grep -v ' <<< "$(awk '/^adopt:/{i=1} i && /git status --porcelain/{print} /^$/{if(i)i=0}' Makefile)" \
+    || { log_err "'make adopt' treats the devcontainer.json that 'make setup' rewrites as an unclean tree; the documented order cannot be followed."; adopt_errors=1; }
+# tomllib is 3.11+: an older interpreter must not report "not valid TOML".
+grep -q 'except ImportError' <<< "$(grep -A2 'tomllib' Makefile)" \
+    || { log_err "'make adopt' requires python 3.11 (tomllib) and reports its absence as invalid TOML."; adopt_errors=1; }
+# The lock names the project too, and `uv sync --locked` refuses one that names
+# another: adopt must rename its virtual entry, or the first production build
+# after an adoption dies at the sync.
+adopt_lock_probe="$(cd "$(probe_dir)" && pwd -P)"
+cp Makefile "$adopt_lock_probe/"; mkdir -p "$adopt_lock_probe/src"
+cp src/pyproject.toml src/uv.lock "$adopt_lock_probe/src/"
+for adopt_link in config scripts docker dependencies; do ln -s "${ROOT_DIR}/${adopt_link}" "$adopt_lock_probe/${adopt_link}"; done
+cp "${ROOT_DIR}/.env.example" "${ROOT_DIR}/.gitignore" "$adopt_lock_probe/"
+( cd "$adopt_lock_probe" && git init -q . && git add -A \
+  && git -c user.email=probe@devkit -c user.name=probe commit -qm probe \
+  && make adopt NAME=lockprobe DESC=probe ) >/dev/null 2>&1 || true
+adopt_lock_name="$(awk '/^\[\[package\]\]$/{n=""} /^name = /{n=$0} /^source = \{ virtual/{print n; exit}' "$adopt_lock_probe/src/uv.lock" 2>/dev/null || true)"
+[ "$adopt_lock_name" = 'name = "lockprobe"' ] \
+    || { log_err "'make adopt' leaves src/uv.lock naming the old project (${adopt_lock_name:-nothing}); 'uv sync --locked' in the production build refuses it."; adopt_errors=1; }
+rm -rf "$adopt_lock_probe"
 grep -q 'origin NAME' Makefile \
     || { log_err "'make adopt' trusts an inherited NAME; the environment carries one (WSL exports NAME=<hostname>)."; adopt_errors=1; }
 # By message, not by code: make turns EVERY recipe failure into exit 2, so an
@@ -2663,8 +2813,9 @@ grep -q 'Usage: make adopt NAME=' <<< "$adopt_usage" \
 # breaks, and uv fails only later, at sync time.
 # …and the shipped default must already satisfy the rule adopt enforces: a fork
 # that never runs adopt still has to `uv sync`.
-uv_index_ok="$(python3 - <<'PYINDEX' 2>/dev/null || true
-import re, tomllib, pathlib
+uv_index_ok="$(DEVKIT_UPSTREAM_CHECKS="$(upstream_checks && echo 1 || echo 0)" python3 - <<'PYINDEX' 2>/dev/null || true
+import os, re, tomllib, pathlib
+upstream = os.environ.get('DEVKIT_UPSTREAM_CHECKS') == '1'
 d = tomllib.loads(pathlib.Path('src/pyproject.toml').read_text())
 uv = d.get('tool', {}).get('uv', {})
 index = {i['name'] for i in uv.get('index', [])}
@@ -2678,9 +2829,9 @@ elif 'build-system' in d:
     print("a [build-system] makes `uv sync` build src/ as a wheel; there is no package there to build")
 elif uv.get('package') is not False:
     print("[tool.uv] package is not declared false; whether src/ is installed as a package is left to inference")
-elif d.get('project', {}).get('optional-dependencies') or uv.get('index') or uv.get('sources'):
+elif upstream and (d.get('project', {}).get('optional-dependencies') or uv.get('index') or uv.get('sources')):
     print("the template declares optional-dependencies / uv indexes for real; the torch split is a commented example so no fork pays for a resolution it did not ask for")
-elif not re.search(r'(?m)^# \[project\.optional-dependencies\]', pathlib.Path('src/pyproject.toml').read_text()):
+elif upstream and not re.search(r'(?m)^# \[project\.optional-dependencies\]', pathlib.Path('src/pyproject.toml').read_text()):
     print("the commented optional-dependencies example is gone; docs/DEPENDENCIES.md still points at it")
 else:
     # The example, uncommented the way the docs say, must be one valid TOML
@@ -2766,6 +2917,8 @@ ec_cpp_indent="$(ec_section_value '[*.{c,cpp' indent_size)"
 # Anti-vacuous: an empty parse would make every comparison below pass.
 { [ -n "$ec_py" ] && [ -n "$ec_cpp" ] && [ -n "$ec_cpp_indent" ]; } \
     || { log_err ".editorconfig parse yielded no widths (py='${ec_py}' cpp='${ec_cpp}' indent='${ec_cpp_indent}')."; style_errors=1; }
+# The WIDTHS are the fork's to choose; what must hold is that the two files
+# agree, so format-on-save and the linter cannot fight.
 ruff_cols="$(grep -oE '^line-length[[:space:]]*=[[:space:]]*[0-9]+' src/pyproject.toml | grep -oE '[0-9]+' || true)"
 [ "${ruff_cols:-}" = "$ec_py" ] \
     || { log_err "ruff line-length is '${ruff_cols:-unset}' but .editorconfig says ${ec_py} — format-on-save fights the declared style."; style_errors=1; }
@@ -3079,8 +3232,9 @@ grep -qE 'terminator -g ' <<< "$term_recipe" && ! grep -qE 'terminator -u' <<< "
 # how to opt in, since a detached exec cannot report a missing program.
 grep -v '^[[:space:]]*#' docker/Dockerfile | grep -qE '(^|[[:space:]])terminator([[:space:]\\]|$)' \
     && { log_err "docker/Dockerfile installs terminator into every dev image; it is opt-in through dependencies/apt.txt."; sec_errors=1; }
-grep -qE '^# terminator # gui' dependencies/apt.txt \
-    || { log_err "dependencies/apt.txt no longer offers the commented 'terminator # gui' line; there is no way left to opt in."; sec_errors=1; }
+# Upstream only: DEPENDENCIES.md tells a fork to uncomment this very line.
+! upstream_checks || grep -qE '^#? ?terminator # gui' dependencies/apt.txt \
+    || { log_err "dependencies/apt.txt no longer offers the 'terminator # gui' line; there is no way left to opt in."; sec_errors=1; }
 grep -qE '^[^#]*curl [^#]*github\.com' docker/Dockerfile \
     && { log_err "docker/Dockerfile downloads from GitHub into the image (the D2Coding font once did); fonts are opt-in via dependencies/."; sec_errors=1; }
 # The probe must run INSIDE a shell: `command` is a builtin, and `docker exec
@@ -3238,8 +3392,8 @@ gpu_typo="$(bash --norc -c "WORKSPACE_PATH='${ROOT_DIR}' source config/util_alia
 # [doc-references] Every check slug cited in docs or comments must resolve.
 #      Numbered ids drifted silently — two checks were both cited as [22].
 # =============================================================================
-cited="$(grep -rhoE '(check|verify|verify`) \[[a-z][a-z-]+\]' README.md docs/*.md docker/Dockerfile \
-             config/*.sh scripts/*.sh 2>/dev/null | grep -oE '\[[a-z][a-z-]+\]' | tr -d '[]' | sort -u)"
+cited="$( { grep -rhoE '(check|verify|verify`) \[[a-z][a-z-]+\]' README.md docs/*.md docker/Dockerfile \
+             config/*.sh scripts/*.sh 2>/dev/null || true; } | grep -oE '\[[a-z][a-z-]+\]' | tr -d '[]' | sort -u)"
 # Anti-vacuous: the citations exist (docs reference the suite in several places).
 [ "$(wc -w <<< "$cited")" -ge 5 ] \
     || log_err "check-citation scan collapsed ($(wc -w <<< "$cited") found) — did the reference style change?"
@@ -3296,6 +3450,10 @@ upstream = os.environ.get('DEVKIT_UPSTREAM_CHECKS') == '1'
 files = sorted(pathlib.Path('.github').glob('*.md')) + sorted(pathlib.Path('docs').glob('*.md'))
 if upstream:
     files.insert(0, pathlib.Path('README.md'))
+elif not pathlib.Path('docs').is_dir():
+    # A fork may delete docs/ wholesale (the ownership table says so); the kit's
+    # remaining guides then link into a directory that is gone by its choice.
+    files = []
 for f in files:
     text = f.read_text()
     for m in re.finditer(r'\[[^\]]*\]\(([^)]+)\)', text):
@@ -3693,7 +3851,7 @@ query_errors=0
 # The verdict leaves on fd 9: a redirection on the CALL would scope the exec
 # under test and hide exactly the effect being measured, so the command runs
 # with the shell's own stdout.
-query_fd() {   # query_fd <command…>
+query_fd() {   # query_fd <command…> → same | changed | unsupported
     local out; out="$(mktemp "${TMPDIR:-/tmp}/devkit.XXXXXX")"
     # No display: the question is the file descriptor, and with one set the
     # three status calls ran glxinfo/eglinfo/vulkaninfo for real — 6.6 s, 44 %
@@ -3701,16 +3859,23 @@ query_fd() {   # query_fd <command…>
     ( cd "$ROOT_DIR" && env -u DISPLAY -u WAYLAND_DISPLAY WORKSPACE_PATH="$ROOT_DIR" bash -c '
         exec 9>"'"$out"'"
         source config/util_aliases.sh >/dev/null 2>&1
-        before="$(readlink /proc/$$/fd/1)"
+        before="$(readlink /proc/$$/fd/1 2>/dev/null || true)"
+        # An empty read is not evidence of "unchanged": without /proc (macOS)
+        # both reads came back empty and every rewire passed as same.
+        [ -n "$before" ] || { echo unsupported >&9; exit 0; }
         '"$1"'
-        after="$(readlink /proc/$$/fd/1)"
+        after="$(readlink /proc/$$/fd/1 2>/dev/null || true)"
         [ "$before" = "$after" ] && echo same >&9 || echo changed >&9' ) >/dev/null 2>&1 || true
     cat "$out" 2>/dev/null; rm -f "$out"
 }
 # Three calls, not one: a rewire that reinstalls itself each time stacks filter
 # processes on the caller's stdout, and one call cannot tell that apart.
-[ "$(query_fd 'NO_COLOR=1 gpu status; NO_COLOR=1 gpu status; NO_COLOR=1 gpu status')" = "same" ] \
-    || { log_err "'gpu status' leaves the caller's stdout rewired; every later line goes through a filter it never asked for."; query_errors=1; }
+query_verdict="$(query_fd 'NO_COLOR=1 gpu status; NO_COLOR=1 gpu status; NO_COLOR=1 gpu status')"
+case "$query_verdict" in
+    same) ;;
+    unsupported) log_warn "fd check skipped: this host has no /proc/<pid>/fd (the Linux runners cover it)." ;;
+    *) log_err "'gpu status' leaves the caller's stdout rewired (${query_verdict:-no verdict}); every later line goes through a filter it never asked for."; query_errors=1 ;;
+esac
 # …while a mode change must still reach the caller: that is why it is sourced.
 query_mode="$( WORKSPACE_PATH="$ROOT_DIR" bash -c '
     source config/util_aliases.sh >/dev/null 2>&1

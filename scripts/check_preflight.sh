@@ -91,7 +91,11 @@ fi
 # deep in docker with "could not select device driver", so refuse here; a GPU
 # the detector saw (HAS_NVIDIA, exported by make) with auto merely warns, since
 # auto falls back to the iGPU/CPU profile.
-if command -v docker >/dev/null 2>&1 && ! grep -qi nvidia <<< "${docker_info:-}"; then
+# The runtime NAME (docker info's Runtimes list), and only when the daemon
+# answered at all: an unreachable daemon blamed the missing toolkit instead,
+# and a host whose NAME contains 'nvidia' passed with no runtime at all.
+docker_runtimes="$(timeout 10 docker info --format '{{range $r, $_ := .Runtimes}}{{$r}} {{end}}' 2>/dev/null || true)"
+if command -v docker >/dev/null 2>&1 && [ -n "${docker_info:-}" ] && ! grep -qw nvidia <<< " ${docker_runtimes} "; then
     if [ "${GPU_MODE:-auto}" = nvidia ]; then
         log_error "GPU_MODE=nvidia, but Docker has no NVIDIA runtime (nvidia-container-toolkit)."
         log_info  "Fix: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"

@@ -72,10 +72,24 @@ HAS_TOOLKIT="false"
 HAS_DRI="false"
 
 if [ "$IS_MACOS" = "false" ]; then
-    if command -v nvidia-smi >/dev/null 2>&1; then
+    # The BINARY is not the GPU: a machine with the tools but no working driver
+    # answers `nvidia-smi -L` with an error, and the same rule already lives in
+    # util_gpu_detect.sh's has_nvidia. A timeout because a hung daemon or a
+    # wedged driver would otherwise stall every make in the read phase.
+    if timeout 10 nvidia-smi -L >/dev/null 2>&1; then
         HAS_NVIDIA="true"
-        if command -v docker >/dev/null 2>&1 && docker info 2>/dev/null | grep -qi nvidia; then
-            HAS_TOOLKIT="true"
+        # The runtime NAME, not the word 'nvidia' anywhere in `docker info` — a
+        # host called nvidia-box answered true and `docker compose up` then died
+        # with "unknown runtime". An unreachable daemon is unknown, not false:
+        # caching false here sent every later run to the iGPU profile in silence.
+        if command -v docker >/dev/null 2>&1; then
+            if docker_runtimes="$(timeout 10 docker info --format '{{range $r, $_ := .Runtimes}}{{$r}} {{end}}' 2>/dev/null)"; then
+                case " $docker_runtimes " in *" nvidia "*) HAS_TOOLKIT="true" ;; esac
+            elif [ "$1" = "--makefile" ]; then
+                log_error "Docker is installed but its daemon is unreachable, so the NVIDIA runtime cannot be probed." >&2
+                log_detail "Start Docker (or Docker Desktop's WSL integration) and retry; caching 'no runtime' now would silently pin this project to the iGPU/CPU profile." >&2
+                exit 2
+            fi
         fi
     fi
 
@@ -98,7 +112,13 @@ env_setting() {
     [ -n "$value" ] || value="$(devkit_env_value "$1" "$DEVKIT_ENV_DEFAULTS")"
     printf '%s' "$value"
 }
+# Advertised in .env.example: a fork can pin the host path the container mounts.
+HOST_WORKSPACE_PATH="${HOST_WORKSPACE_PATH:-$(env_setting HOST_WORKSPACE_PATH)}"
 HOST_WORKSPACE_PATH="${HOST_WORKSPACE_PATH:-$(pwd)}"
+case "$HOST_WORKSPACE_PATH" in
+    /*) ;;
+    *)  log_error "HOST_WORKSPACE_PATH must be an absolute path (got: ${HOST_WORKSPACE_PATH})." >&2; exit 1 ;;
+esac
 # Read through the same two layers as ROS_DISTRO: a WORKSPACE_PATH or a
 # relocated cache set in .env used to be emitted as the default here, and the
 # include that follows then overwrote the user's answer with it.
@@ -187,11 +207,17 @@ if [ "$IS_MACOS" = "true" ]; then
         *) HOST_DISPLAY="$DISPLAY" ;;
     esac
 else
-    HOST_DISPLAY="${DISPLAY:-:0}"
+    HOST_DISPLAY="${DISPLAY:-$(env_setting DISPLAY)}"
+    HOST_DISPLAY="${HOST_DISPLAY:-:0}"
 fi
 
-HOST_WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}"
-HOST_XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}"
+# The advertised .env knobs (.env.example section 5) go through the same two
+# layers as HOST_XAUTHORITY: set in .env they were emitted and then ignored,
+# because detection only ever read the live session.
+HOST_WAYLAND_DISPLAY="${HOST_WAYLAND_DISPLAY:-$(env_setting HOST_WAYLAND_DISPLAY)}"
+HOST_WAYLAND_DISPLAY="${HOST_WAYLAND_DISPLAY:-${WAYLAND_DISPLAY:-}}"
+HOST_XDG_RUNTIME_DIR="${HOST_XDG_RUNTIME_DIR:-$(env_setting HOST_XDG_RUNTIME_DIR)}"
+HOST_XDG_RUNTIME_DIR="${HOST_XDG_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-}}"
 
 # WSLg publishes its own X11 socket dir, Wayland socket and runtime dir.
 if [ "$IS_WSL" = "true" ] && [ -d /mnt/wslg/runtime-dir ]; then
@@ -209,7 +235,10 @@ if [ -n "$HOST_WAYLAND_DISPLAY" ]; then
 fi
 [ -d "${HOST_XDG_RUNTIME_DIR:-}" ] || HOST_XDG_RUNTIME_DIR="$(placeholder xdg_runtime)"
 
-if [ -d /tmp/.X11-unix ]; then
+if [ -n "${HOST_X11_DIR:-$(env_setting HOST_X11_DIR)}" ]; then
+    HOST_X11_DIR="${HOST_X11_DIR:-$(env_setting HOST_X11_DIR)}"
+    [ -d "$HOST_X11_DIR" ] || { log_error "HOST_X11_DIR=${HOST_X11_DIR} is not a directory (set in .env or the environment)." >&2; exit 1; }
+elif [ -d /tmp/.X11-unix ]; then
     HOST_X11_DIR="/tmp/.X11-unix"
 elif [ "$IS_WSL" = "true" ] && [ -d /mnt/wslg/.X11-unix ]; then
     HOST_X11_DIR="/mnt/wslg/.X11-unix"
@@ -230,7 +259,10 @@ else
 fi
 
 # ssh-agent forwarding & host git identity (mounted read-only into the container)
-if [ -S "${SSH_AUTH_SOCK:-}" ]; then
+HOST_SSH_AUTH_SOCK="${HOST_SSH_AUTH_SOCK:-$(env_setting HOST_SSH_AUTH_SOCK)}"
+if [ -n "$HOST_SSH_AUTH_SOCK" ]; then
+    [ -S "$HOST_SSH_AUTH_SOCK" ] || { log_error "HOST_SSH_AUTH_SOCK=${HOST_SSH_AUTH_SOCK} is not a socket (set in .env or the environment)." >&2; exit 1; }
+elif [ -S "${SSH_AUTH_SOCK:-}" ]; then
     HOST_SSH_AUTH_SOCK="${SSH_AUTH_SOCK}"
 else
     HOST_SSH_AUTH_SOCK=""

@@ -78,6 +78,11 @@ if [ "${__DEVKIT_ENV_READY:-}" != "$WS_ROOT" ]; then
     export __DEVKIT_ENV_READY="$WS_ROOT"
 fi
 
+# `make exec CMD='h'` and `bash -lc sync_deps` are the advertised automation
+# path, and bash expands aliases only in interactive shells unless asked: every
+# alias-shaped shortcut answered "command not found" there.
+shopt -s expand_aliases 2>/dev/null || true
+
 # Functions live PER PROCESS, so this stays outside the guard above: a child
 # shell inherits the marker but not the definitions.
 declare -F mksync >/dev/null 2>&1 \
