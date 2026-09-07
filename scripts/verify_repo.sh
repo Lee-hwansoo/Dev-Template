@@ -464,6 +464,35 @@ cache_out="$(cd "$cache_probe" && env -u DOCKER_DEV_CACHE_DIR make -n bake-prod 
 { [ "$cache_rc" -ne 0 ] && grep -q 'Host environment detection failed' <<< "$cache_out"; } \
     || { log_err "a failed host probe does not stop make with 'Host environment detection failed' (rc ${cache_rc})."; cache_errors=1; }
 [ -z "$(find "$cache_probe/.docker_cache" -name 'detected-env*' 2>/dev/null)" ] \
+# =============================================================================
+# [device-groups] A GPU node exposed into the container carries the HOST's gid
+#      (root:render 0660 on native Linux); the account setpriv --init-groups
+#      switches to must be in a group with that gid or it sees the node and
+#      cannot open it. The entrypoint's function, executed against stubs that
+#      record what usermod/groupadd are handed.
+# =============================================================================
+devgrp_errors=0
+devgrp_probe="$(probe_dir)"
+mkdir -p "$devgrp_probe/bin" "$devgrp_probe/dev"
+: > "$devgrp_probe/dev/renderD128"; : > "$devgrp_probe/dev/card0"; : > "$devgrp_probe/dev/dxg"; : > "$devgrp_probe/dev/video0"
+# stat: renderD128 → 44 (a known group), card0 → 999 (no group yet), dxg → 0, video0 → 27 (already a member)
+printf '#!/bin/sh\nfor a; do :; done\ncase "$a" in *renderD128) echo 44;; *card0) echo 999;; *video0) echo 27;; *) echo 0;; esac\n' > "$devgrp_probe/bin/stat"
+printf '#!/bin/sh\ncase "$1" in -u) echo 0;; -G) echo "1000 27";; esac\n' > "$devgrp_probe/bin/id"
+printf '#!/bin/sh\n[ "$2" = 44 ] && echo "render:x:44:"\n' > "$devgrp_probe/bin/getent"
+printf '#!/bin/sh\necho "groupadd $*" >> "%s/calls"\n' "$devgrp_probe" > "$devgrp_probe/bin/groupadd"
+printf '#!/bin/sh\necho "usermod $*" >> "%s/calls"\n' "$devgrp_probe" > "$devgrp_probe/bin/usermod"
+chmod +x "$devgrp_probe/bin/"*
+awk '/^grant_device_groups\(\)/{f=1} f{print} f && /^}/{exit}' docker/entrypoint.sh > "$devgrp_probe/fn.sh"
+( cd "$devgrp_probe" && PATH="$devgrp_probe/bin:$probe_min_path" CONTAINER_USER=user \
+  bash -c 'log_ok() { :; }; log_warn() { :; }; source ./fn.sh; grant_device_groups dev/renderD128 dev/card0 dev/dxg dev/video0 dev/absent' ) >/dev/null 2>&1 || true
+devgrp_calls="$( { cat "$devgrp_probe/calls" 2>/dev/null || true; } | tr '\n' ';')"
+[ "$devgrp_calls" = "usermod -aG render user;groupadd -g 999 devkit-dev-999;usermod -aG devkit-dev-999 user;" ] \
+    || { log_err "grant_device_groups handed '${devgrp_calls:-nothing}' to usermod/groupadd (expected: render for gid 44, a new devkit-dev-999 for gid 999, nothing for gid 0 or a group the user already has)."; devgrp_errors=1; }
+grep -qE '^grant_device_groups$' docker/entrypoint.sh \
+    || { log_err "docker/entrypoint.sh defines grant_device_groups but never calls it before the privilege drop."; devgrp_errors=1; }
+rm -rf "$devgrp_probe"
+[ "$devgrp_errors" -eq 0 ] && log_ok "Device groups: the container user joins the group of every exposed GPU node before privileges drop."
+
     || { log_err "a failed host probe left a cache file behind ($(cd "$cache_probe/.docker_cache" && ls detected-env* | tr '\n' ' ')); the freshness guard would reuse it forever."; cache_errors=1; }
 (cd "$cache_probe" && env -u DOCKER_DEV_CACHE_DIR make -n bake-prod) >/dev/null 2>&1 || true
 [ "$(find "$cache_probe/.docker_cache" -name 'detected-env*' 2>/dev/null | wc -l)" -eq 1 ] \

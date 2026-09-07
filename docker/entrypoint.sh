@@ -301,6 +301,30 @@ if [ -f "$REPOS_FILE" ] && [ -f "$SYNC_DEPS" ] && \
 fi
 
 # =============================================================================
+# [6b] Device access. /dev/dri/* (and /dev/dxg) arrive with the HOST's gid —
+# root:render 0660 on native Linux — and setpriv --init-groups below keeps
+# only the account's own groups, so the user could see the node and not open
+# it. Put the account in a group carrying each device gid: a later
+# `docker exec` session inherits it too. Devices owned by gid 0 are left alone.
+# =============================================================================
+grant_device_groups() {   # [device…]; default: every DRI node and the WSL D3D12 node
+    [ "$(id -u)" = "0" ] && [ -n "${CONTAINER_USER:-}" ] && [ "${CONTAINER_USER}" != "root" ] || return 0
+    local dev gid name
+    [ $# -gt 0 ] || set -- /dev/dri/* /dev/dxg
+    for dev in "$@"; do
+        [ -e "$dev" ] || continue
+        gid="$(stat -c %g "$dev" 2>/dev/null)" && [ "$gid" != 0 ] || continue
+        id -G "${CONTAINER_USER}" 2>/dev/null | tr ' ' '\n' | grep -qx "$gid" && continue
+        name="$(getent group "$gid" 2>/dev/null | cut -d: -f1)"
+        [ -n "$name" ] || { name="devkit-dev-${gid}"; groupadd -g "$gid" "$name" 2>/dev/null || continue; }
+        usermod -aG "$name" "${CONTAINER_USER}" 2>/dev/null \
+            && log_ok "Device group ${name} (gid ${gid}) granted for ${dev}" \
+            || log_warn "Could not add ${CONTAINER_USER} to ${name} for ${dev}"
+    done
+}
+grant_device_groups
+
+# =============================================================================
 # [7] Execute (with privilege drop if CONTAINER_USER set)
 # =============================================================================
 if [ "$(id -u)" = "0" ] && [ -n "${CONTAINER_USER:-}" ] && [ "${CONTAINER_USER}" != "root" ]; then
