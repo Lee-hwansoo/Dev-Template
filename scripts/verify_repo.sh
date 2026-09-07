@@ -1822,18 +1822,53 @@ rm -rf "$hostdep_ro"
 # the farm above with gh taken out.
 ci_probe="$(probe_dir .github scripts config docker dependencies)"
 cp Makefile "${ROOT_DIR}/.env.example" "$ci_probe/"; mkdir -p "$ci_probe/bin"
-printf '#!/bin/sh\necho "$*" >> "%s/gh.log"\n[ "$1 $2" = "workflow list" ] && printf "verify\\tactive\\t1\\nimages\\tdisabled_manually\\t2\\nproject\\tactive\\t3\\n"\nexit 0\n' \
-    "$ci_probe" > "$ci_probe/bin/gh"; chmod +x "$ci_probe/bin/gh"
-ci_workflows="$(cd "$ci_probe" && ls .github/workflows/*.yml | sed 's|.*/||' | sort | tr '\n' ' ')"
-for ci_case in "ci-off disable" "ci-on enable"; do
-    set -- $ci_case
+# A gh that answers the way GitHub does: workflows are addressed by id or name,
+# and enable/disable returns 403 when the state already holds. The old stub
+# always succeeded, which is why nobody noticed that one 403 aborted the loop
+# and left the rest of the workflows untouched.
+cat > "$ci_probe/bin/gh" <<'CIGH'
+#!/bin/sh
+STATE="$(dirname "$0")/../state"
+[ -f "$STATE" ] || printf 'verify\tactive\t1\nimages\tdisabled_manually\t2\nproject\tactive\t3\n' > "$STATE"
+case "$1 $2" in
+  "workflow list") cat "$STATE" ;;
+  "workflow enable"|"workflow disable")
+      echo "$2 $3" >> "$(dirname "$0")/../gh.log"
+      want=$([ "$2" = enable ] && echo active || echo disabled_manually)
+      row=$(awk -F'\t' -v k="${3%.yml}" '$1==k || $3==k {print; exit}' "$STATE")
+      [ -n "$row" ] || { echo "could not find any workflow named \"$3\"" >&2; exit 1; }
+      case "$(printf '%s' "$row" | cut -f2)" in
+        "$want"*) echo "HTTP 403: Unable to $2 a workflow that is not $want." >&2; exit 1 ;;
+      esac
+      awk -F'\t' -v k="${3%.yml}" -v w="$want" 'BEGIN{OFS="\t"} {if($1==k || $3==k)$2=w; print}' "$STATE" > "$STATE.t" && mv "$STATE.t" "$STATE"
+      ;;
+esac
+exit 0
+CIGH
+chmod +x "$ci_probe/bin/gh"
+ci_run() {   # ci_run <target> → "<rc> <switch calls made>"
+    local rc=0
     : > "$ci_probe/gh.log"
-    ( cd "$ci_probe" && PATH="$ci_probe/bin:$probe_min_path" make "$1" ) >/dev/null 2>&1 \
-        || log_err "'make $1' fails against a working gh."
-    ci_seen="$(sed -n "s/^workflow $2 //p" "$ci_probe/gh.log" | sort | tr '\n' ' ')"
-    [ "$ci_seen" = "$ci_workflows" ] \
-        || log_err "'make $1' ${2}s '${ci_seen}' but the repository has '${ci_workflows}'."
-done
+    ( cd "$ci_probe" && PATH="$ci_probe/bin:$probe_min_path" make "$1" ) >/dev/null 2>&1 || rc=$?
+    printf '%s %s' "$rc" "$(sort "$ci_probe/gh.log" 2>/dev/null | tr '\n' ' ')"
+}
+# From a MIXED state only the workflows that differ are switched — one already
+# disabled must not be asked again, and must not abort the ones behind it.
+ci_seen="$(ci_run ci-off)"
+[ "$ci_seen" = "0 disable 1 disable 3 " ] \
+    || log_err "'make ci-off' from a mixed state should disable only the two active workflows and exit 0 (got: '${ci_seen}')."
+# …and running it again is a no-op that still succeeds: this is the failure a
+# fork reported — 'HTTP 403: Unable to disable a workflow that is not active'.
+ci_seen="$(ci_run ci-off)"
+[ "$ci_seen" = "0 " ] \
+    || log_err "'make ci-off' on an already-off repository must make no call and exit 0 (got: '${ci_seen}')."
+ci_seen="$(ci_run ci-on)"
+[ "$ci_seen" = "0 enable 1 enable 2 enable 3 " ] \
+    || log_err "'make ci-on' must enable every disabled workflow and exit 0 (got: '${ci_seen}')."
+ci_seen="$(ci_run ci-on)"
+[ "$ci_seen" = "0 " ] \
+    || log_err "'make ci-on' on an already-on repository must make no call and exit 0 (got: '${ci_seen}')."
+printf 'verify\tactive\t1\nimages\tdisabled_manually\t2\nproject\tactive\t3\n' > "$ci_probe/state"
 ci_state="$(cd "$ci_probe" && PATH="$ci_probe/bin:$probe_min_path" make ci 2>/dev/null || true)"
 grep -q 'mixed (2/3 active)' <<< "$ci_state" && grep -q 'images.*disabled_manually' <<< "$ci_state" \
     || log_err "'make ci' does not report the summary and the per-workflow table gh returned (got: ${ci_state%%$'\n'*})."
