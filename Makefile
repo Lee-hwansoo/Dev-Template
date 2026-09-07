@@ -32,22 +32,24 @@ OK     := $(GREEN)[OK]$(NC)
 WARN   := $(YELLOW)[WARN]$(NC)
 ERROR  := $(RED)[ERROR]$(NC)
 
-# make gives file assignments priority over the environment, so snapshot a
-# `GPU_MODE=nvidia make start` override and restore it after the include.
-ifeq ($(origin GPU_MODE),environment)
-USER_GPU_MODE := $(GPU_MODE)
-endif
-# Capture detector overrides before file assignments hide their origin.
+# The .env files are DEFAULTS, read the way compose reads them: the command
+# line beats the environment, the environment beats .env, .env beats
+# .env.example, and a value's surrounding quotes are dropped. Rendered to `?=`
+# through the one .env parser (config/util_paths.sh): included as make syntax,
+# the file beat an explicit `APT_SNAPSHOT_DATE=… make bake-prod` and a quoted
+# UV_SYNC_FLAGS reached compose with its quotes. ENV_AMBIENT names every shell
+# exports; for those the file still wins, or the host locale lands in the image.
+ENV_AMBIENT := LANG|TZ|DEBIAN_FRONTEND
+ENV_MK      := .docker_cache/env.mk
+$(shell mkdir -p .docker_cache && bash -c 'source config/util_paths.sh >/dev/null 2>&1; devkit_env_render "$$@"' \
+	_ '$(ENV_AMBIENT)' $(wildcard .env) .env.example > $(ENV_MK) 2>/dev/null)
+-include $(ENV_MK)
 shell_quote = '$(subst ','"'"',$(1))'
+# Detector inputs the user set explicitly — from any layer, since `?=` keeps
+# their origin — are handed to the probe and key its cache.
 DETECT_INPUTS := ROS_DISTRO BASE_IMAGE UV_PYTHON WORKSPACE_PATH DOCKER_DEV_CACHE_DIR
 DETECT_OVERRIDES := $(strip $(foreach v,$(DETECT_INPUTS),\
 	$(if $(filter command line environment override,$(origin $(v))),$(call shell_quote,$(v)=$($(v))))))
-# Committed defaults, followed by local overrides.
--include .env.example
--include .env
-ifdef USER_GPU_MODE
-GPU_MODE := $(USER_GPU_MODE)
-endif
 
 # Template revision. VERSION is committed, so it travels with a fork even when
 # the project was created from the GitHub template button and carries none of

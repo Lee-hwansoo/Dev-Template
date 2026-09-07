@@ -365,6 +365,58 @@ done
     && log_ok "Build and quality entry points are functions on both ROS generations — callable from docker build and 'make exec'."
 
 # =============================================================================
+# [config-precedence] One order for every public setting, whichever door it
+#      comes through: command line > environment > .env > .env.example, with
+#      LANG/TZ/DEBIAN_FRONTEND file-first. Included as make syntax, the files
+#      beat the environment (`APT_SNAPSHOT_DATE=… make bake-prod` built
+#      'latest'), a quoted UV_SYNC_FLAGS reached compose quoted, and an
+#      explicit HOST_XAUTHORITY was replaced by the detector's placeholder.
+# =============================================================================
+prec_errors=0
+prec_probe="$(probe_dir config scripts docker dependencies)"
+cp Makefile "$prec_probe/"
+printf 'IMAGE_TAG=fromexample\nAPT_SNAPSHOT_DATE=latest\nLANG=C.UTF-8\nUV_SYNC_FLAGS=\nDESC=plain\n' > "$prec_probe/.env.example"
+printf 'IMAGE_TAG=fromenv\nUV_SYNC_FLAGS="--extra gpu"\nDESC=a value # a comment\nSIF_FILE='"'"'/tmp/x y.sif'"'"'\n' > "$prec_probe/.env"
+# prec_value <VAR> [env…] — the value make resolves for VAR in the probe tree.
+prec_value() {
+    local var="$1"; shift
+    ( cd "$prec_probe" && env "$@" make -pn help 2>/dev/null | sed -n "s/^${var} = //p" | head -n 1 )
+}
+while IFS='|' read -r label want var envs; do
+    # shellcheck disable=SC2086  # deliberate word split: the env assignments
+    got="$(prec_value "$var" $envs)"
+    [ "$got" = "$want" ] \
+        || { log_err "config precedence, ${label}: ${var}='${got}', expected '${want}'."; prec_errors=1; }
+done <<'CASES'
+.env beats .env.example|fromenv|IMAGE_TAG|DEVKIT_UNUSED=1
+the environment beats .env|fromshell|IMAGE_TAG|IMAGE_TAG=fromshell
+the environment beats .env.example|20260801T000000Z|APT_SNAPSHOT_DATE|APT_SNAPSHOT_DATE=20260801T000000Z
+the file beats an ambient LANG|C.UTF-8|LANG|LANG=ko_KR.UTF-8
+a quoted value loses its quotes|--extra gpu|UV_SYNC_FLAGS|DEVKIT_UNUSED=1
+an unquoted ' # …' tail is a comment|a value|DESC|DEVKIT_UNUSED=1
+a single-quoted value keeps its spaces|/tmp/x y.sif|SIF_FILE|DEVKIT_UNUSED=1
+CASES
+[ "$(cd "$prec_probe" && make -pn help IMAGE_TAG=fromcli 2>/dev/null | sed -n 's/^IMAGE_TAG = //p' | head -n 1)" = fromcli ] \
+    || { log_err "config precedence: the make command line does not beat .env."; prec_errors=1; }
+# The one parser, read from a script too.
+[ "$(bash -c 'source config/util_paths.sh; devkit_env_value UV_SYNC_FLAGS "$1"' _ "$prec_probe/.env")" = "--extra gpu" ] \
+    || { log_err "devkit_env_value reads a quoted value differently from make."; prec_errors=1; }
+# HOST_XAUTHORITY: an explicit existing file is emitted verbatim, a missing one fails, unset detects.
+: > "$prec_probe/my.xauth"
+prec_xauth() { ( cd "$prec_probe" && env "$@" HOST_CACHE_DIR="$prec_probe/cache" bash scripts/check_env.sh --makefile 2>&1 ); }
+grep -q "^HOST_XAUTHORITY := $prec_probe/my.xauth$" <<< "$(prec_xauth HOST_XAUTHORITY="$prec_probe/my.xauth")" \
+    || { log_err "an explicit HOST_XAUTHORITY is not the one the detector emits."; prec_errors=1; }
+printf 'HOST_XAUTHORITY=%s\n' "$prec_probe/my.xauth" >> "$prec_probe/.env"
+grep -q "^HOST_XAUTHORITY := $prec_probe/my.xauth$" <<< "$(prec_xauth DEVKIT_ENV_FILE="$prec_probe/.env")" \
+    || { log_err "a HOST_XAUTHORITY set in .env is not the one the detector emits."; prec_errors=1; }
+prec_rc=0; prec_out="$(prec_xauth HOST_XAUTHORITY="$prec_probe/absent.xauth")" || prec_rc=$?
+{ [ "$prec_rc" -ne 0 ] && grep -q 'HOST_XAUTHORITY.*not a file' <<< "$prec_out"; } \
+    || { log_err "a HOST_XAUTHORITY that names a missing file is downgraded to the placeholder instead of failing (rc=${prec_rc})."; prec_errors=1; }
+rm -rf "$prec_probe"
+[ "$prec_errors" -eq 0 ] \
+    && log_ok "Config precedence: command line > environment > .env > .env.example (LANG/TZ file-first), quotes dropped, HOST_XAUTHORITY honoured."
+
+# =============================================================================
 # [detector-cache] The cache write must be atomic and a failed probe fatal: a
 #     partial cache is reused forever and every mount degrades silently.
 # =============================================================================
@@ -1039,7 +1091,7 @@ done
 # iterates checks nothing.
 hostdep_probe="$(probe_dir)"
 mkdir -p "$hostdep_probe/bin"
-for hostdep_bin in sh bash sed awk grep cut tr cat head tail env dirname basename make ls sort \
+for hostdep_bin in sh bash sed awk grep cut tr cat head tail env dirname basename make ls sort mkdir \
                    $hostdep_tools docker; do
     hostdep_path="$(command -v "$hostdep_bin" 2>/dev/null || true)"
     [ -n "$hostdep_path" ] && ln -sf "$hostdep_path" "$hostdep_probe/bin/$hostdep_bin"
