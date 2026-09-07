@@ -50,11 +50,18 @@ binary_next_line = true
 [*.{yaml,yml}]
 indent_size = 2
 
+# 4, matching the tracked .vscode/*.json and .devcontainer/devcontainer.json:
+# with format-on-save on, declaring 2 reindented the shared IDE contract on
+# every open.
 [*.{json,json5}]
+indent_size = 4
+
+# uv writes uv.lock with 4; reindenting it produces a diff the next mksync undoes.
+[*.toml]
 indent_size = 2
 
-[*.{toml,lock}]
-indent_size = 2
+[*.lock]
+indent_size = 4
 
 [*.xml]
 indent_size = 2

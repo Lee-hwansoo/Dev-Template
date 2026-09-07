@@ -12,7 +12,14 @@ if [ "${ROS_DISTRO:-humble}" = "noetic" ]; then
         ROS_HOSTNAME="$(hostname)"
         export ROS_HOSTNAME
     fi
-    export ROS_MASTER_URI="${ROS_MASTER_URI:-http://${ROS_HOSTNAME}:11311}"
+    # Same treatment as ROS_HOSTNAME above: compose always sets a non-empty
+    # ROS_MASTER_URI (http://localhost:11311), so a ':-' default never fired and
+    # under NETWORK_MODE=bridge the node looked for roscore inside its own
+    # container while advertising the container hostname to it.
+    case "${ROS_MASTER_URI:-}" in
+        ""|*//localhost:*|*//127.0.0.1:*) export ROS_MASTER_URI="http://${ROS_HOSTNAME}:11311" ;;
+        *) export ROS_MASTER_URI ;;
+    esac
 else
     # ROS 2 Specifics
     export ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}

@@ -186,11 +186,21 @@ fi
 # creates a missing mount source as root, breaking the later real mount.
 placeholder() {
     local path="${HOST_CACHE_DIR}/dummy_$1"
-    if [ "${2:-}" = "--file" ]; then
-        [ -f "$path" ] || : > "$path" 2>/dev/null || true
-    else
-        mkdir -p "$path" 2>/dev/null || true
-    fi
+    # Braces around the redirect: a failure to OPEN the file is reported before
+    # 2>/dev/null applies, which is how "Permission denied" leaked into the
+    # makefile output. And emitting a path that does NOT exist is worse than
+    # failing: compose mounts it and Docker creates it as a root-owned
+    # directory — exactly what the placeholder exists to prevent.
+    if [ "${2:-}" = "--file" ]; then { [ -f "$path" ] || : > "$path"; } 2>/dev/null
+    else mkdir -p "$path" 2>/dev/null
+    fi || {
+        if [ "$OUTPUT_MODE" = "--makefile" ]; then
+            log_error "Cannot create the placeholder ${path}; Docker would re-create it as a root-owned directory." >&2
+            log_detail "Check that ${HOST_CACHE_DIR} is writable (DOCKER_DEV_CACHE_DIR relocates it)." >&2
+            exit 2
+        fi
+        log_warn "Cannot create the placeholder ${path}." >&2
+    }
     printf '%s' "$path"
 }
 

@@ -53,6 +53,8 @@ fi
 FAILED=0
 log_ok()  { echo -e "  \033[0;32m[OK]\033[0m $*"; }
 log_err() { echo -e "  \033[0;31m[ERROR]\033[0m $*" >&2; FAILED=$((FAILED+1)); }
+# A skip is not a failure: it says what this host could not check.
+log_warn() { echo -e "  \033[0;33m[WARN]\033[0m $*" >&2; }
 log_info(){ echo -e "  \033[0;34m[INFO]\033[0m $*"; }
 
 # probe_dir [name…] — a scratch tree for one check, with symlinks to the named
@@ -130,7 +132,7 @@ for f in \
     scripts/apptainer_bake.sh scripts/apptainer_run.sh scripts/slurm_run.sh \
     scripts/util_sif_common.sh scripts/util_logging.sh \
     dependencies/apt.txt dependencies/apt_ros.txt \
-    VERSION .clang-format \
+    VERSION .clang-format .gitattributes \
     $(upstream_checks && echo docs/GETTING_STARTED.md docs/DEVELOPMENT.md docs/DEPENDENCIES.md docs/DEPLOY.md docs/DIAGNOSTICS.md) \
     $(upstream_checks && echo src/example/starter_node.cpp src/example/starter_node.py src/example/test_starter_node.py)
 do
@@ -169,6 +171,18 @@ print(' '.join(sorted(bad)))
 PYBOM
 )"
 [ -z "$bom_files" ] || log_err "file(s) start with a UTF-8 BOM: ${bom_files}"
+# `* text=auto eol=lf` in .gitattributes is the only thing standing between a
+# Windows clone and CRLF in every shebang; nothing referenced it before.
+grep -qE '^\*[[:space:]]+text=auto[[:space:]]+eol=lf' .gitattributes 2>/dev/null \
+    || log_err ".gitattributes does not force LF ('* text=auto eol=lf'); a core.autocrlf clone breaks every script."
+# A tracked file must not be ignored: the bare 'colcon.meta' pattern also hid
+# config/colcon.meta, so a tree bootstrapped from an export shipped without it
+# and 'cbuild --meta' found nothing.
+# --no-index: without it check-ignore stays silent for files already tracked,
+# which is exactly the case being tested.
+ignored_tracked="$(git ls-files 2>/dev/null | git check-ignore --no-index --stdin 2>/dev/null | tr '\n' ' ' || true)"
+[ -z "$ignored_tracked" ] \
+    || log_err "tracked file(s) are matched by .gitignore: ${ignored_tracked}"
 
 # The workspace is BIND-MOUNTED, so a helper link written with an absolute
 # container path is written into the host tree too, where it dangles. One
@@ -343,7 +357,7 @@ fi
 #     and both anchors must carry a healthcheck.
 # =============================================================================
 compose_errors=0
-[ "$(grep -cE '^  healthcheck: \*(dev|ros)-healthcheck$' docker-compose.dev.yml)" -eq 2 ] \
+[ "$(grep -cE '^  healthcheck: \*(dev|ros)-healthcheck\r?$' docker-compose.dev.yml)" -eq 2 ] \
     || { log_err "docker-compose.dev.yml must give both ENV anchors a healthcheck (the common templates no longer do)."; compose_errors=1; }
 # Concrete services are the ones with a profile; each must inherit an ENV anchor.
 compose_services="$(grep -cE '^    <<: \*(dev|ros-dev)-shared$' docker-compose.dev.yml)"
@@ -425,6 +439,57 @@ fi
 # …and CI resolves the whole selection against each distro's own index, foxy included.
 grep -q 'ros-lists-resolve:' .github/workflows/images.yml && grep -qE "distro: foxy,\s+snapshot: final" .github/workflows/images.yml \
     || { log_err "images.yml has no ros-lists-resolve job covering foxy (snapshot final); a package missing from one distro's index is found four minutes into a build."; apt_errors=1; }
+# `make lint` is the CI style gate, so "Lint clean" must mean a checker ran on
+# every tree the build can reach: a root-level project (cbuild's first choice)
+# was never linted, and C/C++ sources with no clang-format installed reported
+# clean. Against a stubbed interpreter that records what ruff was pointed at.
+lint_probe="$(probe_dir config scripts)"
+mkdir -p "$lint_probe/src" "$lint_probe/bin" "$lint_probe/venv"
+: > "$lint_probe/CMakeLists.txt"; : > "$lint_probe/root.py"; : > "$lint_probe/src/a.cpp"
+printf '#!/bin/sh\ncase "$*" in *"ruff --version"*) echo 0.6.0; exit 0 ;; esac\nprintf "%%s\\n" "$@" >> "%s/ruff.log"\nexit 0\n' \
+    "$lint_probe" > "$lint_probe/venv/python3"; chmod +x "$lint_probe/venv/python3"
+lint_rc=0
+( cd "$lint_probe" && PATH="$lint_probe/bin:$probe_min_path" WORKSPACE_PATH="$lint_probe" \
+  bash -c 'source config/util_paths.sh >/dev/null 2>&1; source config/util_aliases.sh >/dev/null 2>&1
+           WS_VENV_PY='"$lint_probe"'/venv/python3 mlint' ) >/dev/null 2>&1 || lint_rc=$?
+[ "$lint_rc" -ne 0 ] \
+    || { log_err "mlint reports success with C/C++ sources present and no clang-format; the CI style gate is decorative."; apt_errors=1; }
+grep -qF "$lint_probe" "$lint_probe/ruff.log" 2>/dev/null && grep -qxF "$lint_probe" "$lint_probe/ruff.log" 2>/dev/null \
+    || { log_err "mlint does not point ruff at the repository root, where a root CMake project's python lives (args: $(tr '\n' ' ' < "$lint_probe/ruff.log" 2>/dev/null))."; apt_errors=1; }
+# …and a CMake project's python tests must still run: ctest alone dropped them
+# while `make test` stayed green.
+mkdir -p "$lint_probe/build"; : > "$lint_probe/src/test_thing.py"
+printf '#!/bin/sh\necho "ctest $*" >> "%s/run.log"\n' "$lint_probe" > "$lint_probe/bin/ctest"; chmod +x "$lint_probe/bin/ctest"
+printf '#!/bin/sh\ncase "$*" in *pytest*) echo "pytest $*" >> "%s/run.log" ;; esac\nexit 0\n' "$lint_probe" > "$lint_probe/venv/py2"; chmod +x "$lint_probe/venv/py2"
+( cd "$lint_probe" && PATH="$lint_probe/bin:$probe_min_path" WORKSPACE_PATH="$lint_probe" \
+  bash -c 'source config/util_paths.sh >/dev/null 2>&1; source config/util_aliases.sh >/dev/null 2>&1
+           WS_VENV_PY='"$lint_probe"'/venv/py2 mtest' ) >/dev/null 2>&1 || true
+{ grep -q '^ctest ' "$lint_probe/run.log" && grep -q 'pytest' "$lint_probe/run.log"; } \
+    || { log_err "mtest on a CMake project runs '$(tr '\n' ' ' < "$lint_probe/run.log" 2>/dev/null)' — the python tests beside it are dropped and 'make test' stays green."; apt_errors=1; }
+rm -rf "$lint_probe"
+
+# ROS 1 rewrites BOTH sides of the master pairing: compose always sets a
+# non-empty ROS_MASTER_URI (localhost), so a ':-' default never fired and under
+# NETWORK_MODE=bridge the node looked for roscore inside its own container.
+for ros1_case in "http://localhost:11311 rewritten" "http://127.0.0.1:11311 rewritten" "http://robot1:11311 kept"; do
+    set -- $ros1_case
+    ros1_out="$( ROS_DISTRO=noetic ROS_MASTER_URI="$1" bash -c 'source config/util_paths.sh >/dev/null 2>&1
+        source config/init_ros_env.sh >/dev/null 2>&1; printf %s "$ROS_MASTER_URI"' 2>/dev/null || true )"
+    case "$2" in
+        rewritten) [ "$ros1_out" != "$1" ] || { log_err "ROS 1 keeps ROS_MASTER_URI=$1; under bridge networking roscore is looked for inside the container."; apt_errors=1; } ;;
+        kept)      [ "$ros1_out" = "$1" ] || { log_err "ROS 1 rewrites an explicit ROS_MASTER_URI=$1 to '${ros1_out}'."; apt_errors=1; } ;;
+    esac
+done
+# A half-initialised venv must be recoverable: an empty root-created .venv made
+# every later mksync fail with uv's raw error and no way out.
+grep -qE '^[^#]*clear=\(--clear\)' config/util_aliases.sh \
+    || { log_err "mkenv does not pass --clear when the venv directory exists without an interpreter; mksync then fails forever."; apt_errors=1; }
+# hwcheck must name the kit's own default RMW and not invent an OOM.
+grep -q 'rmw_cyclonedds_cpp (DevKit default)' scripts/check_hardware.sh \
+    || { log_err "hwcheck reports a default RMW the kit does not use."; apt_errors=1; }
+grep -q 'this kernel reports no MemAvailable' scripts/check_hardware.sh \
+    || { log_err "hwcheck computes 100% memory used where MemAvailable is absent and reports an OOM risk on a healthy host."; apt_errors=1; }
+
 # mtest's CMake branch must RUN from build/: --test-dir arrived in CMake 3.20 and
 # 20.04 (noetic) ships 3.16, which ignores the flag and tests the CWD instead —
 # a green mtest that ran none of the project's tests. Against a ctest stub that
@@ -732,6 +797,29 @@ grep -q 'Detected Host Wiring' <<< "$cache_status_out" \
 grep -qE '^status:$' Makefile \
     || { log_err "'status' depends on 'check' again, so a failing preflight aborts the report."; cache_errors=1; }
 rm -rf "$cache_status"
+
+# The template revision must come from THIS tree: an extracted copy inside
+# another git repository reported the enclosing project's commit as the kit's.
+cache_outer="$(cd "$(probe_dir)" && pwd -P)"
+( cd "$cache_outer" && git init -q . && git -c user.email=p@d -c user.name=p commit -q --allow-empty -m outer ) >/dev/null 2>&1
+mkdir -p "$cache_outer/kit"; cp Makefile "${ROOT_DIR}/.env.example" "${ROOT_DIR}/VERSION" "$cache_outer/kit/"
+for cache_link in scripts config docker dependencies; do ln -s "${ROOT_DIR}/${cache_link}" "$cache_outer/kit/${cache_link}"; done
+cache_commit="$( cd "$cache_outer/kit" && make -pn help 2>/dev/null | sed -n 's/^DEVKIT_COMMIT := //p' | head -n 1 || true)"
+[ -z "$cache_commit" ] \
+    || { log_err "an extracted template inside another repository reports that repository's commit ('${cache_commit}') as the template revision."; cache_errors=1; }
+rm -rf "$cache_outer"
+# A placeholder that could not be created must never be emitted as a mount
+# source: compose mounts it and Docker creates a root-owned directory there.
+cache_ro2="$(cd "$(probe_dir config scripts)" && pwd -P)"
+# HOST_CACHE_DIR is derived from the workspace, so the workspace's own cache
+# directory is what has to be unwritable.
+mkdir -p "$cache_ro2/.docker_cache"; chmod 555 "$cache_ro2/.docker_cache"
+cache_ro2_rc=0
+( PATH="$probe_min_path" HOST_WORKSPACE_PATH="$cache_ro2" XAUTHORITY="$cache_ro2/absent" \
+    bash scripts/check_env.sh --makefile ) >/dev/null 2>&1 || cache_ro2_rc=$?
+[ "$cache_ro2_rc" -ne 0 ] \
+    || { log_err "check_env.sh emits a placeholder path it could not create; Docker turns it into a root-owned directory and X auth is silently gone."; cache_errors=1; }
+chmod 755 "$cache_ro2/.docker_cache"; rm -rf "$cache_ro2"
 
 # The suite itself must leave nothing behind: every probe lives under one
 # per-run directory removed by the EXIT trap, on a clean run and on Ctrl-C
@@ -1965,6 +2053,23 @@ rmguard_ws="$rmguard_probe/cachedir/ws" rmguard_case "a parent directory of the 
     FORCE=1 "DOCKER_DEV_CACHE_DIR=$rmguard_probe/cachedir"
 rmguard_ws="$rmguard_probe/cachedir/ws" rmguard_case "the root directory" refused FORCE=1 "DOCKER_DEV_CACHE_DIR=/"
 rmguard_case "a cache path containing a space" deleted "DOCKER_DEV_CACHE_DIR=$rmguard_probe/real cache"
+# `clean` removes the live container's mount points: build/ and install/ are
+# bind-mounted, so deleting them from the host split the workspace in two — the
+# container wrote into an unreachable path and the next start remounted the old
+# volume, so a build that reported success ran the pre-clean binary.
+grep -q 'RUNNING=' <<< "$(awk '/^clean:$/{i=1} i{print} i && /^clean-cache:/{exit}' Makefile)" \
+    || { log_err "'make clean' has no running-container guard, though it removes the mount points of a live container (clean-cache guards exactly this)."; rmguard_errors=1; }
+# `start` keeps ONE container per ENV: a sibling GPU variant left running made
+# exec/shell/test/lint attach to whichever docker listed first, so an explicit
+# GPU_MODE=cpu request ran on the GPU.
+grep -q 'one container per ENV' <<< "$(awk '/^start: check$/{i=1} i{print} i && /^$/{exit}' Makefile)" \
+    || { log_err "'make start' does not remove the other GPU variants of this ENV; two containers of one ENV make exec pick arbitrarily."; rmguard_errors=1; }
+# clean-all is not ENV-scoped for volumes; its confirmation must say so.
+grep -q "EVERY ENV of" Makefile \
+    || { log_err "clean-all's confirmation does not say it removes every ENV's volumes and images."; rmguard_errors=1; }
+# adopt must not silently orphan the previous name's containers and volumes.
+grep -q 'still owns' Makefile \
+    || { log_err "'make adopt' renames the project without checking for containers/volumes under the old name; they become unreachable, venv included."; rmguard_errors=1; }
 # `clean-all` is documented as a full reset: the baked artifacts sit in the
 # workspace root and a 100 MB *.oci.tar survived every one of them.
 rmguard_all="$(cd "$(probe_dir scripts config docker dependencies)" && pwd -P)"
@@ -2863,8 +2968,32 @@ for knob in $(grep -oE 'opts="[^"]*"' config/devkit_make_completion.bash \
         Makefile scripts/ config/ docker-compose.common.yml docker-compose.dev.yml docker/Dockerfile \
         || dead_knobs="${dead_knobs} ${knob}"
 done
+# The other direction, and the VALUES: completion offered GPU_MODE without
+# intel/amd (which the Makefile accepts) and a SLURM time of 01:00:00 where the
+# script and .env.example both say 02:00:00 — tab-accepting halved the job's
+# documented wall clock.
+comp_opts="$(grep -oE 'opts="[^"]*"' config/devkit_make_completion.bash | tr ' ' '\n')"
+for comp_mode in auto nvidia igpu intel amd cpu; do
+    grep -qF "GPU_MODE=${comp_mode}" <<< "$comp_opts" \
+        || { log_err "tab completion does not offer GPU_MODE=${comp_mode}, which the Makefile accepts."; dead_knobs="${dead_knobs} GPU_MODE=${comp_mode}"; }
+done
+comp_time="$(grep -oE 'DEVKIT_SLURM_TIME=[0-9:]+' config/devkit_make_completion.bash | head -n 1 | cut -d= -f2)"
+comp_sbatch="$(sed -n 's/^#SBATCH --time=//p' scripts/slurm_run.sh | head -n 1)"
+[ "$comp_time" = "$comp_sbatch" ] \
+    || { log_err "tab completion offers DEVKIT_SLURM_TIME=${comp_time} while the script default is ${comp_sbatch}."; dead_knobs="${dead_knobs} DEVKIT_SLURM_TIME"; }
+# Every knob a SCRIPT reads must be declared in .env.example, or `make check`
+# (which diffs .env against it) cannot see it and `make setup` never offers it.
+for comp_knob in DEVKIT_SLURM_EXTRA_ARGS DEVKIT_VERIFY_SIF_HASH DEVKIT_REPO_ROOT \
+                 APT_SNAPSHOT_FALLBACK DEVKIT_REQUIRE_PINNED DEVKIT_ALLOW_EXTERNAL_SYNC_TARGET; do
+    grep -qE "^#? ?${comp_knob}=" .env.example \
+        || { log_err "${comp_knob} is read by a script but not declared in .env.example; 'make check' cannot see it."; dead_knobs="${dead_knobs} ${comp_knob}"; }
+done
+# `clean` keeps the venv unless asked otherwise, so an UNSET knob must not read
+# as "delete": the two cleanup targets take opposite defaults on purpose.
+grep -qE '^is_false = ' Makefile \
+    || { log_err "the Makefile has no explicit false list; 'clean' would delete the venv whenever KEEP_VENV is merely not truthy."; dead_knobs="${dead_knobs} KEEP_VENV"; }
 [ -z "$dead_knobs" ] \
-    && log_ok "Tab completion advertises no dead knobs." \
+    && log_ok "Tab completion advertises no dead knobs, offers every accepted value, and every script knob is declared." \
     || log_err "tab completion offers knobs nothing consumes:${dead_knobs}"
 
 # =============================================================================
@@ -2969,6 +3098,32 @@ ide_env_probe="$(probe_dir config scripts)"; mkdir -p "$ide_env_probe/.vscode"
 rm -rf "$ide_env_probe"
 grep -qE '^[[:space:]]+mkbuild$' config/util_aliases.sh \
     || { log_err "mksync no longer builds through mkbuild; the IDE pre-launch and mksync would dispatch differently."; vscode_errors=1; }
+# The paths in the IDE contract must be the ones colcon's ISOLATED layout
+# writes (cbuild passes no --merge-install): install/include and
+# install/lib/python3/dist-packages never exist, so IntelliSense and the
+# interpreter resolved nothing.
+grep -q 'install/include' .vscode/c_cpp_properties.json \
+    && { log_err ".vscode/c_cpp_properties.json points at install/include, which the isolated colcon layout never creates (install/<pkg>/include)."; vscode_errors=1; }
+grep -q 'install/lib/python3/dist-packages' .vscode/settings.json \
+    && { log_err ".vscode/settings.json points at install/lib/python3/dist-packages, which neither ROS 2 isolated nor ROS 1 devel/ creates."; vscode_errors=1; }
+# A settings key is worthless if the extension that reads it is host-only.
+grep -q 'code-spell-checker' .devcontainer/devcontainer.json \
+    || { log_err ".vscode/settings.json carries a cSpell word list but the spell checker is not installed in the container."; vscode_errors=1; }
+# The rendered file Dev Containers reads must have its service ENABLED: compose
+# `config` keeps the profiles key (with 'abstract' from the base anchor), and
+# the client then failed with "no service selected".
+grep -q 'pop("profiles"' Makefile \
+    || { log_err "ide-config does not strip the profiles key; the generated compose file enables no service and Dev Containers cannot start it."; vscode_errors=1; }
+if docker_live && [ -f .docker_cache/ide.compose.json ]; then
+    ide_svc="$(docker compose -f .docker_cache/ide.compose.json config --services 2>/dev/null | head -n 1 || true)"
+    [ -n "$ide_svc" ] \
+        || { log_err ".docker_cache/ide.compose.json enables no service; 'Reopen in Container' fails with 'no service selected'."; vscode_errors=1; }
+fi
+# The editor's own formatter must agree with the files it will reformat.
+ide_json_indent="$(awk '/^\[\*\.\{json,json5\}\]/{f=1;next} f && /^indent_size/{print $3; exit}' .editorconfig)"
+ide_real_indent="$(awk '/^ *"/{match($0,/^ */); print RLENGTH; exit}' .vscode/settings.json)"
+[ "$ide_json_indent" = "$ide_real_indent" ] \
+    || { log_err ".editorconfig declares indent_size ${ide_json_indent} for json while the tracked .vscode files use ${ide_real_indent}; format-on-save rewrites the shared IDE contract."; vscode_errors=1; }
 for ide_script in $(grep -ohE '(WS_SCRIPTS\}?|scripts)/[A-Za-z0-9_]+\.sh' .vscode/*.json .devcontainer/*.json 2>/dev/null \
                     | sed 's|.*/||' | sort -u); do
     [ -f "scripts/${ide_script}" ] \
@@ -2993,6 +3148,9 @@ printf '%s' "$devkit_version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
 # src/pyproject.toml carries its OWN application version.
 # README and docs/ are the fork's to rewrite, and its own release number may
 # well coincide, so the scan covers the kit's files and, upstream, its prose.
+# Only with a version to look for: an absent or empty VERSION turns this into a
+# grep for "", which matched every line of every scanned file.
+[ -n "$devkit_version" ] || devkit_version="__devkit_version_unset__"
 hardcoded_version="$(grep -rn --fixed-strings "$devkit_version" \
     Makefile config scripts docker docker-compose.common.yml \
     docker-compose.dev.yml .env.example .github \
@@ -3236,7 +3394,7 @@ grep -qxF 'FULL_CUDA=false' <<< "$(bake_argv prod dev FULL_CUDA=true)" \
 # The dev snapshot is `COPY .`: what the kit itself generates beside the tree
 # (catkin's devel/, the bake's own *.oci.tar) must not ride into the next
 # snapshot. Statically, and against a real build context where docker runs.
-for ctx_pat in 'devel/' '*.oci.tar' '!dependencies/*.tar.gz'; do
+for ctx_pat in '**/devel/' '**/build/' '**/.docker_cache/' '.claude/' '*.oci.tar' '!dependencies/*.tar.gz'; do
     grep -qxF "$ctx_pat" .dockerignore \
         || { log_err ".dockerignore lacks '${ctx_pat}': a dev snapshot would carry (or drop) it."; sif_errors=1; }
 done
@@ -3246,12 +3404,16 @@ if docker_live; then
     # NESTED copies of what the file claims to exclude: docker matches a bare
     # pattern against the context ROOT only, so a fork's src/app/.env and every
     # src/**/.venv and __pycache__ rode into the context and into the snapshot.
-    mkdir -p "$ctx_probe/src/app/.venv/lib" "$ctx_probe/src/pkg/__pycache__" "$ctx_probe/src/app/build"
+    mkdir -p "$ctx_probe/src/app/.venv/lib" "$ctx_probe/src/pkg/__pycache__" "$ctx_probe/src/app/build" \
+             "$ctx_probe/src/.docker_cache" "$ctx_probe/.claude"
     : > "$ctx_probe/src/app/.env"; : > "$ctx_probe/src/app/.venv/lib/big.so"; : > "$ctx_probe/src/pkg/__pycache__/m.pyc"
     : > "$ctx_probe/src/pkg/n.swp"; : > "$ctx_probe/src/app/build/o.o"
+    # A nested build output and per-user agent state (which can hold tokens):
+    # `make bake-dev` is `COPY .`, and its artifact is handed to a cluster.
+    : > "$ctx_probe/src/.docker_cache/x"; : > "$ctx_probe/.claude/settings.local.json"
     printf 'FROM busybox\nCOPY . /ctx\nCMD find /ctx -type f\n' > "$ctx_probe/Dockerfile"
-    ctx_files="$( (docker build -q -t devkit-verify-ctx "$ctx_probe" >/dev/null 2>&1 && docker run --rm devkit-verify-ctx 2>/dev/null; docker rmi -f devkit-verify-ctx >/dev/null 2>&1) | grep -vE '^/ctx/(Dockerfile|\.dockerignore)$' | sort | tr '\n' ' ')"
-    [ "$ctx_files" = "/ctx/dependencies/dep.tar.gz /ctx/src/app/build/o.o /ctx/src/main.py " ] \
+    ctx_files="$( (docker build -q -t devkit-verify-ctx-$$ "$ctx_probe" >/dev/null 2>&1 && docker run --rm devkit-verify-ctx-$$ 2>/dev/null; docker rmi -f devkit-verify-ctx-$$ >/dev/null 2>&1) | grep -vE '^/ctx/(Dockerfile|\.dockerignore)$' | sort | tr '\n' ' ')"
+    [ "$ctx_files" = "/ctx/dependencies/dep.tar.gz /ctx/src/main.py " ] \
         || { log_err "a real build context with this .dockerignore holds '${ctx_files}' (expected only dependencies/dep.tar.gz and src/main.py)."; sif_errors=1; }
     rm -rf "$ctx_probe"
 fi
@@ -4292,6 +4454,11 @@ awk '/^FROM /{stage=$NF} /^ARG OPENCV_CUDA/{declared[stage]=1}
 # Result
 # =============================================================================
 echo ""
+# Say what could NOT be checked here. Five groups need a live daemon (the ROS
+# repo codename refusal, the entrypoint boot and ownership probes, the real
+# build-context probe, the `make term` binary probe); without one the report
+# used to be byte-identical to a full run and still read as complete coverage.
+docker_live || log_warn "No docker daemon: 5 container-backed groups were checked statically only (ROS repo codename, entrypoint boot, first-run ownership, build context, terminal probe)."
 if [ "$FAILED" -gt 0 ]; then
     echo -e "  \033[0;31m[FAIL]\033[0m ${FAILED} verification check(s) failed!" >&2
     exit 1

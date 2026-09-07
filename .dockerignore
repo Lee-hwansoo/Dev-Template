@@ -4,9 +4,10 @@
 # cmake/ when present; everything else is noise.
 # =============================================================================
 
-# AI
+# AI / agent state — per-user, and it can hold tokens and session data
 .agents/
 .codex/
+.claude/
 
 # Git
 .git/
@@ -14,12 +15,6 @@
 .gitattributes
 
 # Build Artifacts (devel/ is catkin's; *.oci.tar is the bake's own export)
-build/
-devel/
-install/
-log/
-logs/
-.docker_cache/
 *.sif
 *.oci.tar
 
@@ -30,6 +25,14 @@ src/thirdparty/*
 # Python. '**/' on everything that can sit at any depth: a bare pattern is
 # matched against the context ROOT only, so src/app/.venv, src/pkg/__pycache__
 # and a nested .env all rode into the context (and into the `COPY .` snapshot).
+# Build outputs at ANY depth: a nested package's build/ and a stray
+# src/.docker_cache rode into the `COPY .` dev snapshot.
+**/build/
+**/devel/
+**/install/
+**/log/
+**/logs/
+**/.docker_cache/
 **/__pycache__/
 **/*.pyc
 **/.venv/
@@ -75,7 +78,11 @@ _build/
 **/*~
 **/*.bak
 **/*.swp
+**/*.swo
 **/*.patch
+*.tar.xz
+*.sif.sha256
+*.sif.provenance
 
 # Markdown is NOT excluded: `make bake-dev` copies the whole tree into the
 # snapshot image, and a workspace without its README is a worse artifact.

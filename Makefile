@@ -76,7 +76,10 @@ DETECT_OVERRIDES := $(strip $(foreach v,$(DETECT_INPUTS),\
 # the project was created from the GitHub template button and carries none of
 # DevKit's history; the short commit is best-effort on top of it.
 DEVKIT_VERSION := $(shell cat VERSION 2>/dev/null || echo unknown)
-DEVKIT_COMMIT  := $(shell git -C $(call shell_quote,$(CURDIR)) rev-parse --short HEAD 2>/dev/null)
+# Only when the repository IS this tree: an extracted template inside another
+# git repo reported the enclosing project's commit as the template revision.
+DEVKIT_COMMIT  := $(shell [ "$$(git -C $(call shell_quote,$(CURDIR)) rev-parse --show-toplevel 2>/dev/null)" = $(call shell_quote,$(CURDIR)) ] \
+	&& git -C $(call shell_quote,$(CURDIR)) rev-parse --short HEAD 2>/dev/null)
 
 # `make adopt` inputs, honoured ONLY from the command line: NAME and DESC are
 # ordinary environment variables (WSL exports NAME=<hostname>) and make imports
@@ -141,11 +144,15 @@ endif
 # One truthiness rule for every switch: FIX/NO_CACHE/SHARE took only 1|true
 # while KEEP_VENV and the in-container devkit_is_true also accept yes/on, so
 # `make lint FIX=yes` quietly linted without fixing.
-is_true = $(filter 1 true TRUE True yes YES Yes on ON On,$(1))
+is_true  = $(filter 1 true TRUE True yes YES Yes on ON On,$(1))
+# The negative is its own list, not "not truthy": `clean` KEEPS the venv unless
+# asked otherwise, so an UNSET KEEP_VENV must not read as "delete it".
+is_false = $(filter 0 false FALSE False no NO No off OFF Off,$(1))
 
 # Fail fast on input that would silently pick the wrong compose profile.
-# Scoped to every target consuming ENV — including down/clean-all, where
-# `make down ENV=ros2` would volume-delete the wrong profile without a word.
+# Scoped to every target consuming ENV — including down, where `make down
+# ENV=ros2` would stop the wrong profile without a word. (clean-all removes
+# EVERY ENV's volumes and images by design; its confirmation says so.)
 ENV_EXEMPT := help h adopt verify ci ci-on ci-off clean clean-cache docker-clean update-gpg xauth gpus slurm-status slurm-cancel completion completion-install
 ifneq ($(filter-out $(ENV_EXEMPT),$(or $(MAKECMDGOALS),help)),)
 ifeq ($(filter ros dev,$(ENV)),)
@@ -281,7 +288,7 @@ help:
 	@echo -e "\n$(CYAN)[ Apptainer SIF & SLURM ] ===========================$(NC)"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "bake-dev / bake-prod" "Bake development / production SIF artifacts"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "run-sif" "Run SIF artifact locally or submit to SLURM"
-	@printf "  $(GREEN)%-24s$(NC) : %s\n" "slurm-status / cancel" "Query active SLURM jobs or cancel jobs"
+	@printf "  $(GREEN)%-24s$(NC) : %s\n" "slurm-status / slurm-cancel" "Query active SLURM jobs or cancel one"
 	@echo -e "\n$(CYAN)[ Cleanup & Maintenance ] ===========================$(NC)"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "clean / clean-cache" "Delete build outputs / wipe .docker_cache"
 	@printf "  $(GREEN)%-24s$(NC) : %s\n" "clean-all / docker-clean" "Reset containers & volumes / prune docker cache"
@@ -369,6 +376,20 @@ adopt:
 				printf "%s", block; block = ""; inblock = 0; virtual = 0; \
 			}' src/uv.lock > src/uv.lock.tmp && mv src/uv.lock.tmp src/uv.lock; \
 	fi
+	@# Renaming the project makes every container and named volume created under
+	@# the old name unreachable — `make status` shows nothing running while they
+	@# are, and clean-all cannot see them either. setup refuses for this reason;
+	@# adopt says it and asks.
+	@OLD="$$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' .env 2>/dev/null | tail -n 1)"; \
+	if [ -n "$$OLD" ] && [ "$$OLD" != "$(ADOPT_NAME)" ]; then \
+		LEFT="$$(docker ps -aq --filter "label=com.docker.compose.project=$$OLD" 2>/dev/null | wc -l)"; \
+		VOLS="$$(docker volume ls -q --filter "label=com.docker.compose.project=$$OLD" 2>/dev/null | wc -l)"; \
+		if [ "$$LEFT" -gt 0 ] || [ "$$VOLS" -gt 0 ]; then \
+			echo -e "  $(WARN) '$$OLD' still owns $$LEFT container(s) and $$VOLS volume(s), including the built venv." >&2; \
+			echo -e "  $(INFO) They become unreachable under the new name. Run 'make clean-all' first, or re-run with FORCE=1." >&2; \
+			bash -c 'source config/util_paths.sh >/dev/null 2>&1; devkit_is_true "$$1"' _ "$(FORCE)" || exit 1; \
+		fi; \
+	fi
 	@if [ -f .env ]; then \
 		sed 's/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=$(ADOPT_NAME)/' .env > .env.tmp && mv .env.tmp .env; \
 	fi
@@ -432,13 +453,16 @@ check:
 ## @target xauth : Refresh X11 GUI authentication
 xauth:
 	$(call GUARD_HOST_ONLY)
+	@# `exit 0` ends this recipe LINE, not the recipe, so the two blocks below
+	@# used to run anyway and a headless host saw "bad display name" plus two
+	@# xhost warnings during its very first `make setup`.
 	@if [ -z "$$DISPLAY" ]; then \
-		echo -e "  $(INFO) DISPLAY is not set — nothing to authorise."; exit 0; \
+		echo -e "  $(INFO) DISPLAY is not set — nothing to authorise."; \
 	fi
 	@# Merge a wildcard-host cookie into HOST_XAUTHORITY. Without this the file
 	@# stays empty, check_env.sh falls back to a dummy and every container start
 	@# warns "Xauthority missing" — granting xhost alone does not fix that.
-	@if command -v xauth >/dev/null 2>&1 && [ -n "$(HOST_XAUTHORITY)" ]; then \
+	@if [ -n "$$DISPLAY" ] && command -v xauth >/dev/null 2>&1 && [ -n "$(HOST_XAUTHORITY)" ]; then \
 		ERR=$$(mktemp "$${TMPDIR:-/tmp}/devkit-xauth.XXXXXX"); \
 		if [ ! -f "$(HOST_XAUTHORITY)" ] && ! touch "$(HOST_XAUTHORITY)" 2>"$$ERR"; then \
 			echo -e "  $(WARN) Cannot create $(HOST_XAUTHORITY)"; sed 's/^/    /' "$$ERR"; \
@@ -457,7 +481,7 @@ xauth:
 		rm -f "$$ERR.list"; \
 		rm -f "$$ERR"; \
 	fi
-	@if command -v xhost >/dev/null 2>&1; then \
+	@if [ -n "$$DISPLAY" ] && command -v xhost >/dev/null 2>&1; then \
 		for E in "si:localuser:root" "si:localuser:$$(whoami)"; do \
 			xhost +$$E >/dev/null 2>&1 || echo -e "  $(WARN) xhost +$$E failed."; \
 		done; \
@@ -519,6 +543,13 @@ start: check
 	$(call GUARD_HOST_ONLY)
 	@$(RESOLVE_SVC_MODE); \
 	echo -e "  $(INFO) Starting $$TARGET_SVC environment..."; \
+	for s in $(ENV_SERVICES); do \
+		[ "$$s" = "$$TARGET_SVC" ] && continue; \
+		docker ps -q --filter "label=com.docker.compose.project=$(COMPOSE_PROJECT_NAME)" \
+			--filter "label=com.docker.compose.service=$$s" | grep -q . || continue; \
+		echo -e "  $(INFO) Removing the other $(ENV) variant still up ($$s): one container per ENV, or exec/shell pick whichever docker lists first."; \
+		$(COMPOSE) --profile "*" rm -sf "$$s" >/dev/null 2>&1 || true; \
+	done; \
 	$(COMPOSE) --profile $$TARGET_SVC up -d $$TARGET_SVC
 
 ## @target ide-config : Point VS Code at the compose service this host resolves to
@@ -528,6 +559,11 @@ start: check
 # Run by `make setup`; re-run after changing ENV or GPU_MODE. A host without
 # compose (a SLURM submit node) has no container to attach to: skip, so that
 # `make setup` still finishes its .env / completion / xauth work there.
+# `docker compose config` KEEPS the profiles key, and 'abstract' rides in from
+# the base-common anchor because `extends` appends: the rendered file then had
+# ZERO services enabled and Dev Containers failed with "no service selected".
+# The rendered file describes one service — the profiles have done their job, so
+# they are stripped.
 ide-config:
 	$(call GUARD_HOST_ONLY)
 	@if ! docker compose version >/dev/null 2>&1; then \
@@ -540,6 +576,7 @@ ide-config:
 	TMP=$$(mktemp .docker_cache/ide.XXXXXX) && \
 	trap 'rm -f "$$TMP" "$$DC.tmp"' EXIT && \
 	$(COMPOSE) --profile "$$TARGET_SVC" config --format json > "$$TMP" && \
+	python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [s.pop("profiles",None) for s in d.get("services",{}).values()]; json.dump(d,open(sys.argv[1],"w"),indent=2)' "$$TMP" && \
 	mv "$$TMP" .docker_cache/ide.compose.json && \
 	sed -E -e 's|("service"[[:space:]]*:[[:space:]]*)"[^"]*"|\1"'"$$TARGET_SVC"'"|' \
 	       -e 's|("remoteUser"[[:space:]]*:[[:space:]]*)"[^"]*"|\1"'"$(CONTAINER_USER)"'"|' "$$DC" > "$$DC.tmp" && \
@@ -738,10 +775,24 @@ down:
 ## @target clean : Delete build and install output directories
 clean:
 	$(call GUARD_HOST_ONLY)
+	@# The same guard clean-cache has, for the same reason: build/ and install/
+	@# are the live container's mount points. Removing them from the host left
+	@# the container writing into an unreachable path, and the next start
+	@# remounted the volume over it — a build that reported success and a
+	@# binary that was the pre-clean one.
+	@if [ -z "$(ROS_INSTALL_VOL)$(DEV_INSTALL_VOL)" ]; then \
+		RUNNING=$$(docker ps -q --filter "label=com.docker.compose.project=$(COMPOSE_PROJECT_NAME)" 2>/dev/null | wc -l); \
+		if [ "$$RUNNING" -gt 0 ]; then \
+			echo -e "  $(ERROR) $$RUNNING container(s) still running with build/ and install/ mounted."; \
+			echo -e "  $(INFO) Deleting them now splits the workspace in two: the container keeps writing"; \
+			echo -e "  $(INFO) to an unreachable path and a later start remounts the old volume. Run 'make down' first."; \
+			exit 1; \
+		fi; \
+	fi
 	@# Ask BEFORE deleting anything: the confirmation used to sit after the rm,
 	@# so a non-interactive `make clean KEEP_VENV=0` removed build/, devel/, log/
 	@# and install/* and only then refused with 'requires FORCE=1'.
-	$(if $(filter 0 false no,$(KEEP_VENV)),$(call CONFIRM,This also deletes install/.venv — recreating it needs a full 'mksync'))
+	$(if $(call is_false,$(KEEP_VENV)),$(call CONFIRM,This also deletes install/.venv — recreating it needs a full 'mksync'))
 	@# devel/ is the ROS 1 (catkin_make) counterpart of install/: it lives next to
 	@# build/ on the workspace root and goes stale exactly the same way. With a
 	@# bind-mounted build/ (ROS_BUILD_VOL=./build) Docker created it as root,
@@ -759,7 +810,7 @@ clean:
 	@if [ -d install ]; then \
 		find install -mindepth 1 -maxdepth 1 ! -name '.venv' -exec rm -rf {} + 2>/dev/null || true; \
 	fi
-	@if [ -n "$(filter 0 false no,$(KEEP_VENV))" ]; then \
+	@if [ -n "$(call is_false,$(KEEP_VENV))" ]; then \
 		rm -rf install/.venv 2>/dev/null || true; \
 		echo -e "  $(OK) Build artifacts and virtualenv removed."; \
 	elif [ -d install/.venv ]; then \
@@ -830,7 +881,7 @@ clean-cache:
 clean-all: KEEP_VENV := $(if $(call is_true,$(KEEP_VENV)),1,0)
 clean-all:
 	$(call GUARD_HOST_ONLY)
-	$(call CONFIRM,This removes '$(COMPOSE_PROJECT_NAME)' containers / named volumes (build/install/log) / compose-built images and host build artifacts$(if $(filter 0,$(KEEP_VENV)), — including install/.venv))
+	$(call CONFIRM,This removes EVERY ENV of '$(COMPOSE_PROJECT_NAME)' — ros and dev alike: containers, all six named volumes (build/install/log), compose-built images, host build artifacts and baked SIF/OCI artifacts$(if $(filter 0,$(KEEP_VENV)), — including install/.venv))
 	@# `clean` runs as a sub-make (not a prerequisite) so this single [y/N]
 	@# covers everything — FORCE=1 suppresses clean's own venv prompt.
 	@$(MAKE) --no-print-directory clean KEEP_VENV=$(KEEP_VENV) FORCE=1

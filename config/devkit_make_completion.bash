@@ -86,13 +86,13 @@ _devkit_make_completion() {
     local opts=""
     case "$target" in
         build)
-            opts="ENV=ros ENV=dev GPU_MODE=auto GPU_MODE=nvidia GPU_MODE=igpu GPU_MODE=cpu NO_CACHE=1"
+            opts="ENV=ros ENV=dev GPU_MODE=auto GPU_MODE=nvidia GPU_MODE=igpu GPU_MODE=intel GPU_MODE=amd GPU_MODE=cpu NO_CACHE=1"
             ;;
         ide-config)
-            opts="ENV=ros ENV=dev GPU_MODE=auto GPU_MODE=nvidia GPU_MODE=igpu GPU_MODE=cpu"
+            opts="ENV=ros ENV=dev GPU_MODE=auto GPU_MODE=nvidia GPU_MODE=igpu GPU_MODE=intel GPU_MODE=amd GPU_MODE=cpu"
             ;;
         start|restart)
-            opts="ENV=ros ENV=dev GPU_MODE=auto GPU_MODE=nvidia GPU_MODE=igpu GPU_MODE=cpu DEVKIT_VCS_ALLOW_FAILURE=1 DEVKIT_ROSDEP_ALLOW_FAILURE=1"
+            opts="ENV=ros ENV=dev GPU_MODE=auto GPU_MODE=nvidia GPU_MODE=igpu GPU_MODE=intel GPU_MODE=amd GPU_MODE=cpu DEVKIT_VCS_ALLOW_FAILURE=1 DEVKIT_ROSDEP_ALLOW_FAILURE=1"
             ;;
         exec)
             opts="CMD="
@@ -128,7 +128,7 @@ _devkit_make_completion() {
             opts="ENV=ros ENV=dev PROD_FULL_CUDA=1 IMAGE_TAG=latest SOURCE_DATE_EPOCH=0 DEVKIT_STRIP_SOURCE=1 DEVKIT_FAIL_ON_SOURCE=1"
             ;;
         run-sif)
-            opts="SIF_MODE=dev SIF_MODE=prod SIF_MODE=slurm ENV=ros ENV=dev SIF_FILE= RUN_ARGS= APP_COMMAND= DEVKIT_SLURM_PARTITION=gpu DEVKIT_SLURM_GRES=gpu:1 DEVKIT_SLURM_CPUS_PER_TASK=8 DEVKIT_SLURM_MEM=32G DEVKIT_SLURM_TIME=01:00:00"
+            opts="SIF_MODE=dev SIF_MODE=prod SIF_MODE=slurm ENV=ros ENV=dev SIF_FILE= RUN_ARGS= APP_COMMAND= DEVKIT_SLURM_PARTITION=gpu DEVKIT_SLURM_GRES=gpu:1 DEVKIT_SLURM_CPUS_PER_TASK=8 DEVKIT_SLURM_MEM=32G DEVKIT_SLURM_TIME=02:00:00"
             ;;
     esac
 

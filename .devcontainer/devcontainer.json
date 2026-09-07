@@ -24,7 +24,8 @@
             "extensions": [
                 "ms-vscode.cpptools",
                 "ms-vscode.cmake-tools",
-                "ms-python.python",
+                "streetsidesoftware.code-spell-checker",
+        "ms-python.python",
                 "ms-python.debugpy",
                 "charliermarsh.ruff",
                 "ms-iot.vscode-ros",
