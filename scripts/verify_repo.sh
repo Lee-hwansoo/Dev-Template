@@ -4128,6 +4128,7 @@ grep -[a-zA-Z]*P 	grep -P, a GNU extension
 (^|[^-_[:alnum:]])timeout +[0-9]	a bare timeout; macOS has neither it nor gtimeout, so use devkit_timeout
 \$\(python3 -c[^)]*yaml	a value read out of PyYAML, which the macOS interpreter does not have (a guarded capability test is fine)
 readlink -f	readlink -f, which macOS does not support (use devkit_resolve_path)
+grep -[a-zA-Z]*E.*(\(\||\|\))	an empty branch in an ERE alternation; BSD grep answers "empty (sub)expression" and exits 2
 LEGACY_RULES
 if docker_live; then
     legacy_out="$(docker run --rm -v "${ROOT_DIR}:/w:ro" -w /w -e SOURCED_ONLY="$sourced_only" bash:3.2 bash -c '
@@ -4180,6 +4181,31 @@ else
     log_err "Docs/comments cite check(s) that do not exist: ${dangling[*]}"
 fi
 
+# The two upstream-merge recipes must not contradict each other: a path the
+# selective one takes from upstream cannot be one the whole-tree one puts back,
+# or the same file changes hands depending on which recipe you read. VERSION is
+# the case that bites — restored, it pins `make status` and the release
+# manifest to a revision this checkout no longer is.
+if upstream_checks && [ -f docs/DEVELOPMENT.md ]; then
+    merge_paths() {   # merge_paths <command prefix> — its arguments, continuations joined, code fences only
+        awk -v pat="$1" '
+            /^```/ { code = !code; next }
+            code && index($0, pat) {
+                joined = $0
+                while (joined ~ /\\$/) { sub(/\\$/, "", joined); getline nxt; joined = joined nxt }
+                sub(/#.*/, "", joined); print joined }' docs/DEVELOPMENT.md \
+        | tr ' ' '\n' | grep -vE '^(git|checkout|upstream/main|HEAD|--)$' | grep -v '^$' | sort -u
+    }
+    merge_take="$(merge_paths 'git checkout upstream/main -- ')"
+    merge_keep="$(merge_paths 'git checkout HEAD -- ')"
+    { [ "$(grep -c . <<< "$merge_take")" -ge 5 ] && [ "$(grep -c . <<< "$merge_keep")" -ge 5 ]; } \
+        || log_err "the upstream-merge recipes could not be read out of docs/DEVELOPMENT.md (${merge_take:+take ok}${merge_keep:+, keep ok}); the consistency check went blind."
+    merge_both="$(comm -12 <(printf '%s\n' "$merge_take") <(printf '%s\n' "$merge_keep") | tr '\n' ' ')"
+    [ -z "${merge_both// /}" ] \
+        || log_err "the upstream-merge recipes disagree about: ${merge_both}— one takes these from upstream, the other puts them back."
+    grep -qx 'VERSION' <<< "$merge_take" && ! grep -qx 'VERSION' <<< "$merge_keep" \
+        || log_err "the upstream-merge recipe does not take VERSION from upstream (or restores it); 'make status' and the release manifest would report a revision this checkout is not."
+fi
 # README advertises how many contracts this suite enforces, and the number went
 # stale twice (24 while 32 groups existed). Derived from the slug headers, which
 # are also what the docs cite.
