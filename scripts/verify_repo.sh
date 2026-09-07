@@ -3913,9 +3913,7 @@ grep -qE '^[^#]*curl [^#]*github\.com' docker/Dockerfile \
 term_probe="$(sed -n "s/.*docker exec \$CONTAINER \(sh -c '[^']*' _\) \"\$TERM_BIN\".*/\1/p" <<< "$term_dry_run")"
 [ -n "$term_probe" ] && grep -q 'dependencies/apt.txt' <<< "$term_dry_run" \
     || log_err "'make term' does not probe for the terminal binary through 'sh -c' and point at dependencies/apt.txt (found: '${term_probe:-no sh -c probe}')."
-term_live=""
 if [ -n "$term_probe" ] && docker_live; then
-    term_live=" (run in ubuntu:22.04)"
     eval "docker run --rm ubuntu:22.04 $term_probe bash" >/dev/null 2>&1 \
         || log_err "the 'make term' binary probe reports an installed program (bash) as missing in a real container."
     eval "docker run --rm ubuntu:22.04 $term_probe devkit-no-such-binary" >/dev/null 2>&1 \
@@ -4139,6 +4137,11 @@ fi
 # are also what the docs cite.
 readme_contracts="$(grep -oE '[0-9]+개 계약' README.md | grep -oE '[0-9]+' | head -1 || true)"
 slug_groups="$(grep -cE '^# \[[a-z][a-z-]+\]' scripts/verify_repo.sh)"
+# Every group opens with `group` and closes with `ok`: without the open, a
+# group inherits the previous verdict and its line goes silently missing —
+# the one failure mode the per-group flags could not have had.
+[ "$(grep -c '^group$' scripts/verify_repo.sh)" = "$(grep -c '^ok "' scripts/verify_repo.sh)" ] \
+    || log_err "the suite has $(grep -c '^group$' scripts/verify_repo.sh) 'group' openers for $(grep -c '^ok \"' scripts/verify_repo.sh) 'ok' lines; a group without its opener reports the previous group's verdict."
 upstream_checks || readme_contracts="$slug_groups"   # a fork's README describes the fork
 [ "${readme_contracts:-0}" = "$slug_groups" ] \
     && log_ok "README's contract count matches the suite (${slug_groups} groups)." \
