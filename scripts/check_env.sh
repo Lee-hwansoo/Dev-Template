@@ -79,14 +79,14 @@ if [ "$IS_MACOS" = "false" ]; then
     # answers `nvidia-smi -L` with an error, and the same rule already lives in
     # util_gpu_detect.sh's has_nvidia. A timeout because a hung daemon or a
     # wedged driver would otherwise stall every make in the read phase.
-    if timeout 10 nvidia-smi -L >/dev/null 2>&1; then
+    if devkit_timeout 10 nvidia-smi -L >/dev/null 2>&1; then
         HAS_NVIDIA="true"
         # The runtime NAME, not the word 'nvidia' anywhere in `docker info` — a
         # host called nvidia-box answered true and `docker compose up` then died
         # with "unknown runtime". An unreachable daemon is unknown, not false:
         # caching false here sent every later run to the iGPU profile in silence.
         if command -v docker >/dev/null 2>&1; then
-            if docker_runtimes="$(timeout 10 docker info --format '{{range $r, $_ := .Runtimes}}{{$r}} {{end}}' 2>/dev/null)"; then
+            if docker_runtimes="$(devkit_timeout 10 docker info --format '{{range $r, $_ := .Runtimes}}{{$r}} {{end}}' 2>/dev/null)"; then
                 case " $docker_runtimes " in *" nvidia "*) HAS_TOOLKIT="true" ;; esac
             else
                 # Do NOT fail: `make check`/`status`/`setup` are what a user runs

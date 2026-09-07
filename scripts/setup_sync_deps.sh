@@ -199,6 +199,20 @@ for name in (doc.get("repositories") or {}):
     print(name)
 PYNAMES
 )"
+        # No python3, or a python3 without PyYAML (macOS ships neither), left
+        # --force a no-op with only a warning. The .repos mapping is flat: the
+        # names are the keys one level under 'repositories:', which awk reads on
+        # every host.
+        [ -n "$managed" ] || managed="$(awk '
+            /^[^[:space:]#]/ { in_repos = ($0 ~ /^repositories:[[:space:]]*$/); next }
+            !in_repos || /^[[:space:]]*(#|$)/ { next }
+            { match($0, /^[[:space:]]*/); indent = RLENGTH
+              if (!base) base = indent
+              if (indent == base) {
+                  name = $0; sub(/^[[:space:]]+/, "", name); sub(/:[[:space:]]*$/, "", name)
+                  if (name != "") print name
+              } }
+        ' "$REPOS_FILE" 2>/dev/null || true)"
         if [ -z "$managed" ]; then
             log_warn "Force mode: no repository names could be read from ${REPOS_FILE##*/}; nothing was reset."
         else

@@ -68,11 +68,7 @@ if [ "${__DEVKIT_ENV_READY:-}" != "$WS_ROOT" ]; then
     if [ -f "${DEVKIT_VENV}/bin/activate" ] \
        && { [ -z "${VIRTUAL_ENV:-}" ] || [ "${VIRTUAL_ENV}" = "${DEVKIT_VENV}" ]; }; then
         source "${DEVKIT_VENV}/bin/activate"
-        # uv reports a bare name, CPython "(name) ": strip to one pair of parens
-        # ${…:-}: an activate written by `python3 -m venv` before 3.11 sets no
-        # VIRTUAL_ENV_PROMPT, and this line then aborted a `set -u` shell.
-        VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT:-}"
-        VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT#\(}"; VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT%\) }"
+        devkit_venv_prompt
     fi
 
     # GPU environment (after ROS, to keep LD_LIBRARY_PATH priority)

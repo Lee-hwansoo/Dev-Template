@@ -131,8 +131,9 @@ DETECTED_ENV_FRESH := $(shell [ -f "$(DETECTED_ENV_FILE)" ] \
 	&& [ ! config/util_paths.sh -nt "$(DETECTED_ENV_FILE)" ] \
 	&& grep -qxF 'HOST_WORKSPACE_PATH := $(CURDIR)' "$(DETECTED_ENV_FILE)" \
 	&& ! grep -q '^DEVKIT_DETECT_INCOMPLETE :=' "$(DETECTED_ENV_FILE)" \
-	&& sed -n 's/^HOST_\(XAUTHORITY\|SSH_AUTH_SOCK\) := //p' "$(DETECTED_ENV_FILE)" \
-		| { while read -r p; do [ -z "$$p" ] || [ -e "$$p" ] || exit 1; done; } && echo yes)
+	&& SESSION_PATHS=$$(sed -n -e 's/^HOST_XAUTHORITY := //p' -e 's/^HOST_SSH_AUTH_SOCK := //p' "$(DETECTED_ENV_FILE)") \
+	&& { printf '%s\n' "$$SESSION_PATHS" \
+		| { while IFS= read -r p; do [ -z "$$p" ] || [ -e "$$p" ] || exit 1; done; }; } && echo yes)
 ifeq ($(DETECTED_ENV_FRESH),)
 # Write via temp + mv: a failed or interrupted probe must never leave a partial
 # cache behind, because the freshness guard above would then reuse it forever and
@@ -645,9 +646,12 @@ test:
 	@$(MAKE) --no-print-directory exec CMD='mtest'
 
 ## @target lint : Check style and lint rules inside the container (FIX=1 applies them)
+# DEVKIT_SKIP_CLANG_FORMAT travels WITH the command: `docker exec` forwards none
+# of the caller's environment, so the escape hatch mlint's own message names had
+# no effect when set on the host — the advertised way out of a fail-closed lint.
 lint:
 	$(call GUARD_HOST_ONLY)
-	@$(MAKE) --no-print-directory exec CMD='mlint $(if $(call is_true,$(FIX)),--fix,)'
+	@$(MAKE) --no-print-directory exec CMD='$(if $(DEVKIT_SKIP_CLANG_FORMAT),DEVKIT_SKIP_CLANG_FORMAT="$(DEVKIT_SKIP_CLANG_FORMAT)" ,)mlint $(if $(call is_true,$(FIX)),--fix,)'
 
 ## @target term : Launch in-container Terminator GUI window (2x2 grid layout)
 # terminator is opt-in (dependencies/apt.txt), so the binary is probed first:

@@ -363,11 +363,7 @@ activate() {
     if [ -f "${venv_dir}/bin/activate" ]; then
         source "${venv_dir}/bin/activate"
         # Re-entrant already: activate calls `deactivate nondestructive` first.
-        # Same paren normalisation as config/init_bash.sh.
-        # ${…:-}: an activate written by `python3 -m venv` before 3.11 sets no
-        # VIRTUAL_ENV_PROMPT, and this line then aborted a `set -u` shell.
-        VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT:-}"
-        VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT#\(}"; VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT%\) }"
+        devkit_venv_prompt
         log_ok "Activated virtualenv: ${venv_dir}"
     else
         log_warn "Virtualenv not found at ${venv_dir}. Run 'mkenv' first."

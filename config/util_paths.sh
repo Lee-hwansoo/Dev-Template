@@ -73,6 +73,33 @@ devkit_is_true() {
     case "$1" in 1|true|TRUE|True|yes|YES|Yes|on|ON|On) return 0 ;; *) return 1 ;; esac
 }
 
+# devkit_venv_prompt — one pair of parens around the venv name, whoever wrote
+# the activate script: uv reports a bare name, CPython "(name) ", and an
+# activate written by `python3 -m venv` before 3.11 sets nothing at all, which
+# aborted a `set -u` shell. Called from init_bash.sh and from activate().
+devkit_venv_prompt() {
+    VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT:-}"
+    VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT#\(}"
+    VIRTUAL_ENV_PROMPT="${VIRTUAL_ENV_PROMPT%\) }"
+}
+
+# devkit_timeout <seconds> <command…> — the command under a wall clock where the
+# host has one. `timeout` is GNU coreutils: macOS ships neither it nor gtimeout,
+# so every probe wrapped in it failed with "command not found" and the caller
+# read that as "no GPU" / "no docker runtime" — the NVIDIA runtime notice never
+# fired on a Mac. Without a timeout the command still runs: a hung driver is a
+# rarer failure than the silence was.
+devkit_timeout() {
+    local secs="$1"; shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$secs" "$@"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$secs" "$@"
+    else
+        "$@"
+    fi
+}
+
 # devkit_overlay_setup — the setup.bash a build in THIS workspace produced.
 # ROS 1's catkin_make writes devel/ and only fills install/ when asked for it,
 # so a dev build's packages were invisible to every shell that looked only at

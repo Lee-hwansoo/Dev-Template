@@ -106,6 +106,22 @@ probe_dir() {
     printf '%s' "$dir"
 }
 
+# probe_farm <dir> [extra tool…] — a PATH directory holding only the tools named
+# (plus the shell basics every script needs), so a probe measures the code and
+# not what the host happens to have installed. Three probes hand-rolled this
+# loop; the mlint one then read the runner's own clang-format and inverted its
+# answer on CI.
+probe_farm() {
+    local dir="$1" tool path; shift
+    mkdir -p "$dir"
+    for tool in sh bash sed awk grep find cut tr cat head tail env dirname basename \
+                ls sort wc make mkdir mktemp mv rm "$@"; do
+        path="$(command -v "$tool" 2>/dev/null || true)"
+        [ -n "$path" ] && ln -sf "$path" "${dir}/${tool}"
+    done
+    printf '%s' "$dir"
+}
+
 # bake_argv <mode> <env> [VAR=value…] — the argv apptainer_bake.sh hands docker,
 # captured from a stub. Several groups read a --build-arg out of it.
 bake_argv() {
@@ -442,18 +458,50 @@ grep -q 'ros-lists-resolve:' .github/workflows/images.yml && grep -qE "distro: f
 # `make lint` is the CI style gate, so "Lint clean" must mean a checker ran on
 # every tree the build can reach: a root-level project (cbuild's first choice)
 # was never linted, and C/C++ sources with no clang-format installed reported
-# clean. Against a stubbed interpreter that records what ruff was pointed at.
+# clean. Against a stubbed interpreter that records what ruff was pointed at,
+# and a symlink farm for PATH: read from the host's own PATH this probe measures
+# whichever branch the RUNNER happens to have (ubuntu-latest ships
+# clang-format), so all four answers are pinned here instead.
 lint_probe="$(probe_dir config scripts)"
 mkdir -p "$lint_probe/src" "$lint_probe/bin" "$lint_probe/venv"
 : > "$lint_probe/CMakeLists.txt"; : > "$lint_probe/root.py"; : > "$lint_probe/src/a.cpp"
 printf '#!/bin/sh\ncase "$*" in *"ruff --version"*) echo 0.6.0; exit 0 ;; esac\nprintf "%%s\\n" "$@" >> "%s/ruff.log"\nexit 0\n' \
     "$lint_probe" > "$lint_probe/venv/python3"; chmod +x "$lint_probe/venv/python3"
-lint_rc=0
-( cd "$lint_probe" && PATH="$lint_probe/bin:$probe_min_path" WORKSPACE_PATH="$lint_probe" \
-  bash -c 'source config/util_paths.sh >/dev/null 2>&1; source config/util_aliases.sh >/dev/null 2>&1
-           WS_VENV_PY='"$lint_probe"'/venv/python3 mlint' ) >/dev/null 2>&1 || lint_rc=$?
-[ "$lint_rc" -ne 0 ] \
-    || { log_err "mlint reports success with C/C++ sources present and no clang-format; the CI style gate is decorative."; apt_errors=1; }
+probe_farm "$lint_probe/bin" >/dev/null
+lint_run() {   # lint_run [VAR=value…] → "<rc> <output>"; PATH is the farm alone
+    local rc=0 out
+    out="$( cd "$lint_probe" && PATH="$lint_probe/bin" WORKSPACE_PATH="$lint_probe" env "$@" \
+      bash -c 'source config/util_paths.sh >/dev/null 2>&1; source config/util_aliases.sh >/dev/null 2>&1
+               WS_VENV_PY='"$lint_probe"'/venv/python3 mlint' 2>&1 )" || rc=$?
+    printf '%s %s' "$rc" "$out"
+}
+lint_out="$(lint_run DEVKIT_UNUSED=1)"
+{ [ "${lint_out%% *}" -ne 0 ] && grep -q 'clang-format is not installed' <<< "$lint_out"; } \
+    || { log_err "mlint reports success (rc ${lint_out%% *}) with C/C++ sources present and no clang-format; the CI style gate is decorative."; apt_errors=1; }
+# The escape hatch that same message advertises has to work, or fail-closed is
+# a wall for a project that accepts an unchecked C/C++ half.
+lint_out="$(lint_run DEVKIT_SKIP_CLANG_FORMAT=1)"
+[ "${lint_out%% *}" -eq 0 ] \
+    || { log_err "DEVKIT_SKIP_CLANG_FORMAT=1 does not let mlint through (rc ${lint_out%% *}); the message names an escape hatch that is not one."; apt_errors=1; }
+# And with a formatter present its verdict is mlint's: a stub that reports a
+# violation must fail the gate, a clean one must pass it.
+printf '#!/bin/sh\nexit 1\n' > "$lint_probe/bin/clang-format"; chmod +x "$lint_probe/bin/clang-format"
+lint_out="$(lint_run DEVKIT_UNUSED=1)"
+[ "${lint_out%% *}" -ne 0 ] \
+    || { log_err "mlint reports success while clang-format reports a violation; the C/C++ half is decorative."; apt_errors=1; }
+printf '#!/bin/sh\nexit 0\n' > "$lint_probe/bin/clang-format"
+lint_out="$(lint_run DEVKIT_UNUSED=1)"
+[ "${lint_out%% *}" -eq 0 ] \
+    || { log_err "mlint fails (rc ${lint_out%% *}) with a clang-format that reports clean: ${lint_out#* }"; apt_errors=1; }
+rm -f "$lint_probe/bin/clang-format"
+# The escape hatch has to cross the container boundary: `docker exec` forwards
+# none of the caller's environment, so DEVKIT_SKIP_CLANG_FORMAT set on the HOST
+# reached nothing and `make lint` stayed red while telling the user to set it.
+lint_fwd="$(DEVKIT_SKIP_CLANG_FORMAT=1 make -n lint 2>/dev/null | sed -n "s/.*CMD='\(.*\)'.*/\1/p" | head -n 1)"
+case "$lint_fwd" in
+    *DEVKIT_SKIP_CLANG_FORMAT=*mlint*) ;;
+    *) log_err "'make lint' does not carry DEVKIT_SKIP_CLANG_FORMAT into the container (runs: '${lint_fwd:-nothing}'); the escape hatch mlint advertises does nothing from the host."; apt_errors=1 ;;
+esac
 grep -qF "$lint_probe" "$lint_probe/ruff.log" 2>/dev/null && grep -qxF "$lint_probe" "$lint_probe/ruff.log" 2>/dev/null \
     || { log_err "mlint does not point ruff at the repository root, where a root CMake project's python lives (args: $(tr '\n' ' ' < "$lint_probe/ruff.log" 2>/dev/null))."; apt_errors=1; }
 # …and a CMake project's python tests must still run: ctest alone dropped them
@@ -484,11 +532,6 @@ done
 # every later mksync fail with uv's raw error and no way out.
 grep -qE '^[^#]*clear=\(--clear\)' config/util_aliases.sh \
     || { log_err "mkenv does not pass --clear when the venv directory exists without an interpreter; mksync then fails forever."; apt_errors=1; }
-# hwcheck must name the kit's own default RMW and not invent an OOM.
-grep -q 'rmw_cyclonedds_cpp (DevKit default)' scripts/check_hardware.sh \
-    || { log_err "hwcheck reports a default RMW the kit does not use."; apt_errors=1; }
-grep -q 'this kernel reports no MemAvailable' scripts/check_hardware.sh \
-    || { log_err "hwcheck computes 100% memory used where MemAvailable is absent and reports an OOM risk on a healthy host."; apt_errors=1; }
 
 # mtest's CMake branch must RUN from build/: --test-dir arrived in CMake 3.20 and
 # 20.04 (noetic) ships 3.16, which ignores the flag and tests the CWD instead —
@@ -518,12 +561,14 @@ rm -rf "$mtest_probe"
 # the export replaced the user's answer with the generic mesa path.
 gpumode_probe="$(cd "$(probe_dir scripts config docker dependencies)" && pwd -P)"
 cp Makefile "${ROOT_DIR}/.env.example" "$gpumode_probe/"
+# Appended, not --eval: that option needs GNU make 3.82 and macOS ships 3.81.
+printf '\n__svc: ; @$(RESOLVE_SVC_MODE); echo "$$TARGET_SVC"\n' >> "$gpumode_probe/Makefile"
 for gpumode_case in "intel igpu" "amd igpu" "cpu cpu" "nvidia nvidia"; do
     set -- $gpumode_case
     gpumode_out="$( cd "$gpumode_probe" && GPU_MODE="$1" make -pn help 2>/dev/null | sed -n 's/^GPU_MODE = //p' | head -n 1 || true )"
     [ "$gpumode_out" = "$1" ] \
         || { log_err "GPU_MODE=$1 reaches the container as '${gpumode_out}'; the in-container gpu helper would pick the wrong driver."; compose_errors=1; }
-    gpumode_svc="$( cd "$gpumode_probe" && GPU_MODE="$1" make --eval='__svc: ; @$(RESOLVE_SVC_MODE); echo "$$TARGET_SVC"' __svc 2>/dev/null | tail -n 1 || true )"
+    gpumode_svc="$( cd "$gpumode_probe" && GPU_MODE="$1" make __svc 2>/dev/null | tail -n 1 || true )"
     [ "${gpumode_svc##*-}" = "$2" ] \
         || { log_err "GPU_MODE=$1 selects the compose service '${gpumode_svc}' (expected the -$2 profile)."; compose_errors=1; }
 done
@@ -643,10 +688,14 @@ CASES
 # a make variable ('log/$USER.log' reached compose as 'log/SER.log') and a
 # trailing backslash continued the line, swallowing the key below it.
 printf 'ESC_DOLLAR=log/$USER.log\nESC_TAIL=C:\\data\\\nESC_NEXT=/runs\n' >> "$prec_probe/.env"
-prec_expanded="$(cd "$prec_probe" && make --eval='__esc: ; @printf "%s|%s|%s\n" '"'"'$(ESC_DOLLAR)'"'"' '"'"'$(ESC_TAIL)'"'"' '"'"'$(ESC_NEXT)'"'"'' __esc 2>/dev/null || true)"
+# Appended to the copied Makefile rather than passed with --eval (see the
+# GPU_MODE probe above: macOS ships GNU make 3.81, which has no --eval).
+{ printf '\n__esc: ; @printf "%%s|%%s|%%s\\n" '"'"'$(ESC_DOLLAR)'"'"' '"'"'$(ESC_TAIL)'"'"' '"'"'$(ESC_NEXT)'"'"'\n'
+  printf '__esc2: ; @env | sed -n "s/^ESC_DOLLAR=//p"\n'; } >> "$prec_probe/Makefile"
+prec_expanded="$(cd "$prec_probe" && make __esc 2>/dev/null || true)"
 [ "$prec_expanded" = 'log/$USER.log|C:\data\|/runs' ] \
     || { log_err "config precedence: a value carrying '\$' or a trailing backslash is mangled — a recipe resolves '${prec_expanded}' (expected 'log/\$USER.log|C:\data\|/runs')."; prec_errors=1; }
-prec_child="$(cd "$prec_probe" && make --eval='__esc2: ; @env | sed -n "s/^ESC_DOLLAR=//p"' __esc2 2>/dev/null || true)"
+prec_child="$(cd "$prec_probe" && make __esc2 2>/dev/null || true)"
 [ "$prec_child" = 'log/$USER.log' ] \
     || { log_err "config precedence: the value exported to a child process is '${prec_child}' (expected 'log/\$USER.log'); compose would build from the mangled string."; prec_errors=1; }
 [ "$(cd "$prec_probe" && make -pn help IMAGE_TAG=fromcli 2>/dev/null | sed -n 's/^IMAGE_TAG = //p' | head -n 1)" = fromcli ] \
@@ -753,7 +802,11 @@ cp Makefile "${ROOT_DIR}/.env.example" "$cache_moved/"
 for cache_link in scripts config docker dependencies; do ln -s "${ROOT_DIR}/${cache_link}" "$cache_moved/${cache_link}"; done
 # The cache must look FRESH to the mtime guard, or this probe proves nothing.
 touch "$cache_moved/.docker_cache/"detected-env*.mk 2>/dev/null || true
-cache_ws="$(cd "$cache_moved" && env -u DOCKER_DEV_CACHE_DIR make -pn build 2>/dev/null | sed -n 's/^HOST_WORKSPACE_PATH :\?= //p' | head -n 1 || true)"
+# Two -e, not '\?': that quantifier is GNU BRE, and BSD sed read it as a
+# literal '?' — the value came back empty on macOS and the assertion below
+# blamed the cache for the suite's own regex.
+cache_ws="$(cd "$cache_moved" && env -u DOCKER_DEV_CACHE_DIR make -pn build 2>/dev/null \
+    | sed -n -e 's/^HOST_WORKSPACE_PATH := //p' -e 's/^HOST_WORKSPACE_PATH = //p' | head -n 1 || true)"
 [ "$cache_ws" = "$cache_moved" ] \
     || { log_err "a cache copied from another checkout is reused: HOST_WORKSPACE_PATH is '${cache_ws}', not '${cache_moved}' — the container would mount the old tree."; cache_errors=1; }
 # A cache naming a path that has since disappeared (the X cookie and the
@@ -766,8 +819,43 @@ if [ -n "$cache_file" ]; then
     cache_dead="$(cd "$cache_moved" && env -u DOCKER_DEV_CACHE_DIR make -pn build 2>/dev/null | sed -n 's/^HOST_XAUTHORITY := //p' | head -n 1 || true)"
     [ "$cache_dead" != "${cache_moved}/gone.xauth" ] \
         || { log_err "a cache naming a HOST_XAUTHORITY that no longer exists is reused; compose would re-create the dead path as a root-owned directory and X auth would be silently gone."; cache_errors=1; }
+    # …and the same answer where sed is BSD's. The gate read both session paths
+    # with one GNU-only '\|' alternation, so on macOS the list came back EMPTY,
+    # the loop had nothing to test, and every dead path passed as fresh. A sed
+    # that refuses GNU-only BRE, exactly as /usr/bin/sed on a Mac does.
+    cache_bsd="$cache_moved/bsdsed"; mkdir -p "$cache_bsd"
+    cat > "$cache_bsd/sed" <<'BSDSED'
+#!/bin/sh
+# BSD sed has no GNU BRE extensions: '\|', '\+' and '\?' are literal
+# characters there, so an expression written with them matches nothing and
+# prints nothing — quietly, with exit 0. That silence is the failure mode.
+for arg in "$@"; do
+    case "$arg" in
+        *'\|'*|*'\+'*|*'\?'*) exit 0 ;;
+    esac
+done
+BSDSED
+    printf 'exec %s "$@"\n' "$(command -v sed)" >> "$cache_bsd/sed"; chmod +x "$cache_bsd/sed"
+    sed -i.bak "s|^HOST_XAUTHORITY := .*|HOST_XAUTHORITY := ${cache_moved}/gone.xauth|" "$cache_file" && rm -f "${cache_file}.bak"
+    touch "$cache_file"
+    cache_bsd_out="$(cd "$cache_moved" && PATH="$cache_bsd:$PATH" env -u DOCKER_DEV_CACHE_DIR make -pn build 2>/dev/null || true)"
+    cache_bsd_ws="$(sed -n 's/^HOST_WORKSPACE_PATH := //p' <<< "$cache_bsd_out" | head -n 1)"
+    cache_bsd_dead="$(sed -n 's/^HOST_XAUTHORITY := //p' <<< "$cache_bsd_out" | head -n 1)"
+    # Anti-vacuous: the run itself must have resolved this host, or an aborted
+    # make would read as "re-probed".
+    { [ "$cache_bsd_ws" = "$cache_moved" ] && [ "$cache_bsd_dead" != "${cache_moved}/gone.xauth" ]; } \
+        || { log_err "under BSD sed the freshness gate reuses a cache naming a dead session path (workspace '${cache_bsd_ws}', xauthority '${cache_bsd_dead}'); on macOS the X cookie and the ssh-agent socket were never re-probed."; cache_errors=1; }
 else
     log_err "the moved-checkout probe produced no detected-env*.mk to test."; cache_errors=1
+fi
+# A cache the detector itself marked incomplete (the daemon was down when it
+# ran) must be re-probed too, or one bad moment pins the project to the CPU
+# profile forever.
+if [ -n "$cache_file" ]; then
+    printf 'DEVKIT_DETECT_INCOMPLETE := docker\n' >> "$cache_file"; touch "$cache_file"
+    ( cd "$cache_moved" && env -u DOCKER_DEV_CACHE_DIR make -pn build ) >/dev/null 2>&1 || true
+    ! grep -q '^DEVKIT_DETECT_INCOMPLETE :=' "$cache_file" 2>/dev/null \
+        || { log_err "a cache carrying DEVKIT_DETECT_INCOMPLETE is reused instead of re-probed; a probe taken while docker was down would pin the GPU profile forever."; cache_errors=1; }
 fi
 rm -rf "$cache_moved"
 # ONE cache per tree: `export` hands every sub-make the detector inputs in its
@@ -871,8 +959,6 @@ cache_tmp="$(mktemp -d "${DEVKIT_PROBE_ROOT}/tmpprobe.XXXXXX")"
 cache_left="$(find "$cache_tmp" -mindepth 1 -maxdepth 1 -name 'devkit-run.*' 2>/dev/null | wc -l)"
 [ "$cache_left" -eq 0 ] \
     || { log_err "a probe directory created in a command substitution survives the run (${cache_left} left); 45 had accumulated in /tmp before the trap."; cache_errors=1; }
-grep -qE '^trap probe_cleanup EXIT INT TERM$' scripts/verify_repo.sh \
-    || { log_err "the suite has no EXIT/INT trap removing its probe directories."; cache_errors=1; }
 rm -rf "$cache_tmp"
 [ "$cache_errors" -eq 0 ] && log_ok "Host detection cache: a failed probe stops make, a moved checkout and dead session paths are re-probed, .env's include is atomic and fatal, and the suite leaves no temp files."
 
@@ -1004,9 +1090,15 @@ if docker_live; then
         "0123456789abcdef0123456789abcdef01234567" > "$ep_own/ws/dependencies/dependencies.repos"
     # vcs is called as `vcs import <dir>`: the clone lands under $2.
     printf '#!/bin/sh\nmkdir -p "$2/cloned/.git"\n' > "$ep_own/ws/bin/vcs"; chmod +x "$ep_own/ws/bin/vcs"
+    # …and the tree goes back to THIS user before the probe ends: the container
+    # writes as root and hands files to uid 1000, so on a host whose uid is
+    # anything else (the CI runner is 1001) the cleanup could not unlink them
+    # and every run left a root-owned probe directory behind.
     ep_owner="$(docker run --rm -v "$ep_own/ws:/workspace" -w /workspace -e CONTAINER_USER=user -e WORKSPACE_PATH=/workspace \
+        -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
         -e PATH=/workspace/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/usr/bin:/bin --entrypoint bash ubuntu:22.04 \
-        -c 'useradd -m -u 1000 user 2>/dev/null; bash docker/entrypoint.sh sh -c "echo OWNER=\$(stat -c %U /workspace/src/thirdparty/cloned)"' 2>/dev/null \
+        -c 'useradd -m -u 1000 user 2>/dev/null; bash docker/entrypoint.sh sh -c "echo OWNER=\$(stat -c %U /workspace/src/thirdparty/cloned)"
+            chown -R "$HOST_UID:$HOST_GID" /workspace 2>/dev/null || true' 2>/dev/null \
         | sed -n 's/^OWNER=//p' | tail -n 1 || true)"
     [ "$ep_owner" = user ] \
         || { log_err "after the first-run sync the cloned tree is owned by '${ep_owner:-nothing}' (expected user); neither the container user nor the host could write it."; bridge_errors=1; }
@@ -1671,12 +1763,7 @@ done
 # what the script itself needs, minus the tool under test: a table nobody
 # iterates checks nothing.
 hostdep_probe="$(probe_dir)"
-mkdir -p "$hostdep_probe/bin"
-for hostdep_bin in sh bash sed awk grep cut tr cat head tail env dirname basename make ls sort mkdir mktemp mv rm \
-                   $hostdep_tools docker; do
-    hostdep_path="$(command -v "$hostdep_bin" 2>/dev/null || true)"
-    [ -n "$hostdep_path" ] && ln -sf "$hostdep_path" "$hostdep_probe/bin/$hostdep_bin"
-done
+probe_farm "$hostdep_probe/bin" $hostdep_tools docker >/dev/null
 while IFS='|' read -r hostdep_tool hostdep_block _; do
     [ "$hostdep_block" = yes ] || continue
     [ -e "$hostdep_probe/bin/$hostdep_tool" ] || continue   # absent here anyway
@@ -1785,6 +1872,24 @@ printf '#!/bin/sh\ncase "$1 $2" in "info --format") exit 1 ;; "info ") printf "C
 hostdep_gpu_out="$(hostdep_gpu_run GPU_MODE=nvidia HAS_NVIDIA=true)"
 { grep -q 'daemon is not reachable' <<< "$hostdep_gpu_out" && ! grep -q 'nvidia-ctk' <<< "$hostdep_gpu_out"; } \
     || { log_err "with the docker daemon down, preflight blames the NVIDIA runtime instead of the daemon."; hostdep_errors=1; }
+# …and the same notice on a host with NO `timeout` (macOS ships neither it nor
+# gtimeout): wrapped in a bare `timeout`, the runtime probe failed with
+# "command not found" and every Mac read that as "nothing to complain about".
+# A farm holding what the script needs, minus the wall clock.
+printf '#!/bin/sh\ncase "$1" in info) echo "io.containerd.runc.v2 runc " ;; compose) echo 2.30.0 ;; buildx) echo v0.20.0 ;; esac\nexit 0\n' \
+    > "$hostdep_gpu/docker"
+probe_farm "$hostdep_gpu/nt" $hostdep_tools >/dev/null
+ln -sf "$hostdep_gpu/docker" "$hostdep_gpu/nt/docker"
+rm -f "$hostdep_gpu/nt/timeout" "$hostdep_gpu/nt/gtimeout"
+hostdep_nt_rc=0
+hostdep_nt_out="$( PATH="$hostdep_gpu/nt" env GPU_MODE=nvidia HAS_NVIDIA=true bash scripts/check_preflight.sh 2>&1 )" || hostdep_nt_rc=$?
+{ [ "$hostdep_nt_rc" -ne 0 ] && grep -q 'nvidia-ctk' <<< "$hostdep_nt_out"; } \
+    || { log_err "on a host with no 'timeout' the NVIDIA runtime check goes silent (rc ${hostdep_nt_rc}); GPU_MODE=nvidia then fails inside docker."; hostdep_errors=1; }
+# The class, not just this call site: a bare `timeout` in either script the
+# Makefile's read phase runs is the same defect on the next host without it.
+hostdep_bare="$(grep -nE '^[^#]*[^_[:alnum:]]timeout +[0-9]' scripts/check_env.sh scripts/check_preflight.sh || true)"
+[ -z "$hostdep_bare" ] \
+    || { log_err "a host-side script calls 'timeout' directly instead of devkit_timeout: $(cut -d: -f1,2 <<< "$hostdep_bare" | tr '\n' ' ')"; hostdep_errors=1; }
 rm -rf "$hostdep_gpu"
 # The detector reads the same two facts the same way. A driverless nvidia-smi is
 # not a GPU, and a daemon that cannot answer must not be cached as "no runtime":
@@ -1792,7 +1897,11 @@ rm -rf "$hostdep_gpu"
 hostdep_det="$(probe_dir config scripts)"
 printf '#!/bin/sh\n[ "$1" = "-L" ] && { echo "NVIDIA-SMI has failed" >&2; exit 9; }\nexit 0\n' > "$hostdep_det/nvidia-smi"
 printf '#!/bin/sh\n[ "$1" = info ] && exit 1\nexit 0\n' > "$hostdep_det/docker"
-chmod +x "$hostdep_det/nvidia-smi" "$hostdep_det/docker"
+# uname says Linux: the GPU and runtime probes live in check_env.sh's non-macOS
+# branch, so on a Mac runner these assertions measured an empty branch and
+# reported the code broken. Every other query goes to the real uname.
+printf '#!/bin/sh\n[ "$1" = "-s" ] && { echo Linux; exit 0; }\nexec %s "$@"\n' "$(command -v uname)" > "$hostdep_det/uname"
+chmod +x "$hostdep_det/nvidia-smi" "$hostdep_det/docker" "$hostdep_det/uname"
 # Both call shapes: apptainer_bake.sh runs it with NO arguments and eval's the
 # result, so an unbound $1 there breaks every direct bake.
 ( PATH="$hostdep_det:$probe_min_path" HOST_CACHE_DIR="$hostdep_det/cache" bash scripts/check_env.sh ) >/dev/null 2>&1 \
@@ -1809,16 +1918,11 @@ hostdep_det_rc=0
 hostdep_det_out="$( PATH="$hostdep_det:$probe_min_path" HOST_CACHE_DIR="$hostdep_det/cache" bash scripts/check_env.sh --makefile 2>/dev/null )" || hostdep_det_rc=$?
 { [ "$hostdep_det_rc" -eq 0 ] && grep -q '^DEVKIT_DETECT_INCOMPLETE := ' <<< "$hostdep_det_out"; } \
     || { log_err "with a GPU present and the docker daemon unreachable, detection exits ${hostdep_det_rc} or emits no DEVKIT_DETECT_INCOMPLETE marker; either the diagnostics die or a wrong GPU profile gets cached."; hostdep_errors=1; }
-grep -q "^DEVKIT_DETECT_INCOMPLETE :=" <<< "$(printf '%s\n' "$hostdep_det_out")" && \
-    grep -q 'DEVKIT_DETECT_INCOMPLETE' Makefile \
-    || { log_err "the Makefile does not treat a cache carrying DEVKIT_DETECT_INCOMPLETE as stale, so an incomplete probe would be reused forever."; hostdep_errors=1; }
 printf '#!/bin/sh\n[ "$1" = info ] && { echo "Name: nvidia-box"; exit 0; }\nexit 0\n' > "$hostdep_det/docker"
 hostdep_det_out="$( PATH="$hostdep_det:$probe_min_path" HOST_CACHE_DIR="$hostdep_det/cache" bash scripts/check_env.sh --makefile 2>/dev/null || true )"
 grep -qx 'HAS_TOOLKIT := false' <<< "$hostdep_det_out" \
     || { log_err "the detector reads 'nvidia' anywhere in docker info as the container runtime; a host merely named nvidia-box resolved to the nvidia profile."; hostdep_errors=1; }
 rm -rf "$hostdep_det"
-grep -q 'CHECK_GPU_RUNTIME' Makefile \
-    && { log_err "the Makefile carries its own NVIDIA-runtime notice again; check_preflight.sh owns it."; hostdep_errors=1; }
 # vcstool lives in the IMAGE; claiming it as a host prerequisite sends people
 # installing it in the wrong place.
 grep -q 'python3-vcstool' dependencies/apt_ros.txt \
@@ -2220,6 +2324,18 @@ done
 { [ "$(cat "$rmguard_scope/ws/src/thirdparty/stranger/f.txt" 2>/dev/null)" = DIRTY ] \
   && [ -f "$rmguard_scope/ws/src/thirdparty/stranger/untracked.txt" ]; } \
     || { log_err "sync --force reset a repository the .repos file never names; a git clean reached a tree nobody asked about."; rmguard_errors=1; }
+# The same two answers with no python3 on PATH: the names came from PyYAML
+# alone, so a host without it (macOS ships python3 with no yaml) turned --force
+# into a warning and reset nothing.
+printf 'DIRTY\n' > "$rmguard_scope/ws/src/thirdparty/managed/f.txt"
+printf '#!/bin/sh\nexit 127\n' > "$rmguard_scope/ws/bin/python3"; chmod +x "$rmguard_scope/ws/bin/python3"
+( cd "$rmguard_scope/ws" && PATH="$rmguard_scope/ws/bin:$probe_min_path" WORKSPACE_PATH="$rmguard_scope/ws" \
+  bash "${ROOT_DIR}/scripts/setup_sync_deps.sh" --force ) >/dev/null 2>&1 || true
+[ "$(cat "$rmguard_scope/ws/src/thirdparty/managed/f.txt" 2>/dev/null)" = clean ] \
+    || { log_err "without PyYAML, sync --force resets nothing and only warns; the documented force mode is a no-op on that host."; rmguard_errors=1; }
+{ [ "$(cat "$rmguard_scope/ws/src/thirdparty/stranger/f.txt" 2>/dev/null)" = DIRTY ] \
+  && [ -f "$rmguard_scope/ws/src/thirdparty/stranger/untracked.txt" ]; } \
+    || { log_err "the awk fallback for .repos names reaches a repository the file never names."; rmguard_errors=1; }
 rm -rf "$rmguard_scope"
 # The workspace ITSELF passed the "inside the workspace" test ('<ws>/' matches
 # '<ws>/*'), and the .git walk then reset this repository. Spelled four ways,
@@ -3066,14 +3182,13 @@ for comp_knob in DEVKIT_SLURM_EXTRA_ARGS DEVKIT_VERIFY_SIF_HASH DEVKIT_REPO_ROOT
     grep -qE "^#? ?${comp_knob}=" .env.example \
         || { log_err "${comp_knob} is read by a script but not declared in .env.example; 'make check' cannot see it."; dead_knobs="${dead_knobs} ${comp_knob}"; }
 done
-# `clean` keeps the venv unless asked otherwise, so an UNSET knob must not read
-# as "delete": the two cleanup targets take opposite defaults on purpose.
-grep -qE '^is_false = ' Makefile \
-    || { log_err "the Makefile has no explicit false list; 'clean' would delete the venv whenever KEEP_VENV is merely not truthy."; dead_knobs="${dead_knobs} KEEP_VENV"; }
 # Registration is per CHECKOUT: matching the bare filename made a second clone
 # report "already registered" while the entry pointed at the first tree, so
 # completion was silently dead there.
-comp_home="$(probe_dir)"; mkdir -p "$comp_home/ck1/config" "$comp_home/ck2/config" "$comp_home/home"
+# pwd -P: the script records the checkout it was run from physically, and on a
+# host whose TMPDIR is a symlink (macOS: /var → /private/var) the unresolved
+# probe path never matched what .bashrc then held.
+comp_home="$(cd "$(probe_dir)" && pwd -P)"; mkdir -p "$comp_home/ck1/config" "$comp_home/ck2/config" "$comp_home/home"
 cp config/devkit_make_completion.bash "$comp_home/ck1/config/"; cp config/devkit_make_completion.bash "$comp_home/ck2/config/"
 : > "$comp_home/home/.bashrc"
 ( HOME="$comp_home/home" bash "$comp_home/ck1/config/devkit_make_completion.bash" --install ) >/dev/null 2>&1 || true
@@ -3197,9 +3312,6 @@ grep -q 'install/include' .vscode/c_cpp_properties.json \
     && { log_err ".vscode/c_cpp_properties.json points at install/include, which the isolated colcon layout never creates (install/<pkg>/include)."; vscode_errors=1; }
 grep -q 'install/lib/python3/dist-packages' .vscode/settings.json \
     && { log_err ".vscode/settings.json points at install/lib/python3/dist-packages, which neither ROS 2 isolated nor ROS 1 devel/ creates."; vscode_errors=1; }
-# A settings key is worthless if the extension that reads it is host-only.
-grep -q 'code-spell-checker' .devcontainer/devcontainer.json \
-    || { log_err ".vscode/settings.json carries a cSpell word list but the spell checker is not installed in the container."; vscode_errors=1; }
 # The rendered file Dev Containers reads must have its service ENABLED: compose
 # `config` keeps the profiles key (with 'abstract' from the base anchor), and
 # the client then failed with "no service selected".

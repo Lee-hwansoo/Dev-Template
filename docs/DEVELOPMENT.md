@@ -87,8 +87,13 @@ DevKit이 추측하지 않고 파생 프로젝트의 `uv.lock`이 고정합니�
 규칙과 `mlint`가 검사하는 규칙이 동일하므로, 에디터에서 깨끗한 파일은 CI에서도 깨끗합니다.
 
 > [!NOTE]
-> `clang-format`은 **선택 설치**입니다(libllvm 의존성). 에디터는 C/C++ 확장에 내장된 복사본을
-> 쓰므로 CLI 검사가 필요할 때만 켭니다 ([opt-in 되살리기](DEPENDENCIES.md#-opt-in-기능-되살리기)). 테스트가 아직 없는 프로젝트에서 `mtest`는 실패가 아니라 안내를 출력합니다.
+> `clang-format`은 **선택 설치**입니다(libllvm 을 끌어와 이미지가 230 MB 늘어납니다). 에디터는
+> C/C++ 확장에 내장된 복사본을 쓰지만, **CLI 는 다릅니다**: C/C++ 소스가 있는데 `clang-format`
+> 이 없으면 `mlint` 는 "clean" 이 아니라 **실패**합니다 — 스타일 게이트가 장식이 되지 않도록
+> 닫아 둔 것입니다. 켜려면 `dependencies/apt.txt` 의 `clang-format # dev` 주석을 풀고
+> `make build` ([opt-in 되살리기](DEPENDENCIES.md#-opt-in-기능-되살리기)), 검사 없이 넘기려면
+> `DEVKIT_SKIP_CLANG_FORMAT=1 make lint` 입니다(이 저장소의 `project.yml` 이 그 예입니다).
+> 테스트가 아직 없는 프로젝트에서 `mtest`는 실패가 아니라 안내를 출력합니다.
 
 CI 에서 같은 루프를 도는 `project.yml` 은 아래 [CI 절](#-ci-github-actions) 에 있습니다.
 
